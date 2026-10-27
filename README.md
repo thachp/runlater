@@ -1,12 +1,27 @@
 # RunLater
 
-RunLater is a reusable HTTP task delivery API being designed around **Rust and Cloudflare**. Other systems will be able to submit work now and have RunLater deliver a signed HTTP request later, with bounded retries and a record of each attempt.
+RunLater is a reusable HTTP task delivery API with a local prototype built in **Rust on Cloudflare Workers**. Other systems will be able to submit work now and have RunLater deliver a signed HTTP request later, with bounded retries and a record of each attempt.
 
 Product domain: **runlater.io**. Domain registration does not mean a hosted service is available.
 
 ## Status
 
 **Early local prototype; not production-ready.** The repository includes a tested Rust/Cloudflare fixture-only vertical slice and the proposed product backlog. The architecture and delivery semantics below describe the broader design targets; they are not a claim that the full MVP is implemented. Real outbound HTTPS delivery is disabled. There is no published SLA, production endpoint, or verified capacity claim. See [local setup and limits](docs/LOCAL.md) and [verification evidence](docs/VERIFICATION.md).
+
+## Current local capabilities and launch gates
+
+Merged [#15](https://github.com/thachp/runlater/pull/15), [#16](https://github.com/thachp/runlater/pull/16), and [#17](https://github.com/thachp/runlater/pull/17) establish the following **local-fixture-only** capabilities:
+
+- CQRS command and read-only query handlers over one authoritative, tenant-scoped SQLite Durable Object ledger.
+- Durable acceptance/deduplication, alarm-driven ready/outbox recovery, Queue dispatch, expiring fenced leases, bounded retries, cancellation, and linked **failed-task** redrive. Callbacks are signed in-process fixtures, not network requests.
+- One configurable default queue per project, active-task/payload admission, durable token-bucket dispatch limits, expiring concurrency capacity, and structured throttling metadata. Retries share the same limits.
+- Project-scoped action permissions and hash-only local key issuance, revocation, rotation overlap/cutover, redacted receipts, and bounded lifecycle audit. No production credentials are provisioned.
+
+See [local setup](docs/LOCAL.md), [admission controls](docs/ADMISSION.md), and [local authentication](docs/AUTH.md). The pilot uses a bounded versioned SQLite snapshot, not a production-scale indexed task store. The broader design below includes planned capabilities beyond this slice, including real HTTPS and any expansion of redrive eligibility.
+
+**Verification checkpoint — 2026-10-27:** the merged key-lifecycle slice records 47 native Rust tests, 2 redirect tests, Wasm compilation and release bundling, plus codeowner-run local HTTP/SQLite/Queue integration suites. Independent QA reported 15 additional adversarial probes, and reviewed-head CI passed. These are checkpoint results, not a permanent test-count or production guarantee. This README update did not independently rerun the emulator. Details and earlier checkpoints are in [verification evidence](docs/VERIFICATION.md).
+
+**Still gated:** real HTTPS callbacks and connection-target/DNS-rebinding defenses; production key enrollment, secret delivery/recovery and callback-key rotation; live-runtime failure injection, prolonged outages, measured fairness/noisy-neighbor capacity; operational metrics and durable audit policy; and hosted service/DNS/deployment readiness. External HTTPS delivery remains disabled, and no hosted service is available.
 
 ## Planned hosts
 
@@ -32,7 +47,7 @@ Recurring cron schedules, workflow orchestration, a full dashboard, billing, and
 
 ## System design
 
-RunLater will use **CQRS (Command Query Responsibility Segregation)**: distinct command and query interfaces and handlers over a **tenant-scoped Durable Object with SQLite storage**, which remains the authoritative task ledger. Cloudflare Queues transports due work; it does not own task state or serve as long-term scheduled storage.
+RunLater uses **CQRS (Command Query Responsibility Segregation)**: distinct command and query interfaces and handlers over a **tenant-scoped Durable Object with SQLite storage**, which remains the authoritative task ledger. Cloudflare Queues transports due work; it does not own task state or serve as long-term scheduled storage.
 
 ```mermaid
 flowchart TD
@@ -73,7 +88,7 @@ flowchart TD
 - **One authority for the MVP.** Both sides can use the same Durable Object storage through separate interfaces. CQRS does not require event sourcing or a separate physical read database.
 - **Consistency is explicit.** Command success means the mutation is durably accepted; responses should include the identifiers and state/version needed for the API read-after-write contract. Any future asynchronous read projection must disclose lag and source versions, apply updates idempotently, and support ordering, rebuilds, and deletion propagation. Such a projection is not a second task authority.
 
-Implementation and separation tests are tracked in [issue #14](https://github.com/thachp/runlater/issues/14).
+The local CQRS implementation and separation-test scope is complete in [issue #14](https://github.com/thachp/runlater/issues/14). Broader production and consistency gates remain separate.
 
 ### Delivery path
 
@@ -88,7 +103,7 @@ Optional reporting stores are derived views, never a second authority for schedu
 
 ### Rust and platform validation
 
-The intended runtime is Rust compiled to WebAssembly using [Cloudflare workers-rs](https://github.com/cloudflare/workers-rs). Before implementation, [issue #2](https://github.com/thachp/runlater/issues/2) must pin released crate/toolchain versions and prove HTTP handling, Durable Object SQLite, alarms, queue publishing/consumption, and acknowledgement behavior together. Support on an upstream main branch is not proof that the chosen release works end to end.
+The local runtime uses Rust 1.92.0, released worker/worker-build 0.8.7, and Wrangler 4.154.0 with locked dependencies. The [workers-rs](https://github.com/cloudflare/workers-rs) compatibility spike in [issue #2](https://github.com/thachp/runlater/issues/2) is complete for the local prototype: HTTP handling, SQLite Durable Objects, alarms, Queue publishing/consumption, acknowledgement, and persisted emulator restart were exercised. This is local/native/Wasm evidence, not live Cloudflare deployment or production reliability proof; see [verification evidence](docs/VERIFICATION.md).
 
 ## Task state diagram
 
@@ -164,12 +179,12 @@ If the customer processes a callback but RunLater crashes before recording succe
 
 ## Implementation backlog
 
-All items below are planned work, not completed features.
+This tracks both completed local foundations and remaining MVP work. Issues #2 and #14 are closed for their bounded local scope; other entries can contain implemented slices without satisfying their full launch criteria. Consult each issue for current progress.
 
 | Issue | Work |
 | --- | --- |
 | [#1](https://github.com/thachp/runlater/issues/1) | MVP API contract and delivery guarantees |
-| [#2](https://github.com/thachp/runlater/issues/2) | Pinned Rust and Cloudflare runtime spike |
+| [#2](https://github.com/thachp/runlater/issues/2) | Pinned Rust and Cloudflare runtime spike — local scope complete |
 | [#3](https://github.com/thachp/runlater/issues/3) | Project authentication and tenant isolation |
 | [#4](https://github.com/thachp/runlater/issues/4) | Durable ledger, deduplication, and outbox |
 | [#5](https://github.com/thachp/runlater/issues/5) | Alarm-based scheduled dispatch |
@@ -181,4 +196,4 @@ All items below are planned work, not completed features.
 | [#11](https://github.com/thachp/runlater/issues/11) | Reliability and security release evidence |
 | [#12](https://github.com/thachp/runlater/issues/12) | Onboarding and an end-to-end integration |
 | [#13](https://github.com/thachp/runlater/issues/13) | Landing, docs, API hosts, and canonical www redirect |
-| [#14](https://github.com/thachp/runlater/issues/14) | CQRS command/query boundaries and consistency |
+| [#14](https://github.com/thachp/runlater/issues/14) | CQRS command/query boundaries and consistency — local scope complete |
