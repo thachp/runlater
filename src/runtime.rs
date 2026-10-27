@@ -5,6 +5,29 @@ use crate::{core::*, security::*};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use worker::*;
+fn staging_mode(env: &Env) -> bool {
+    cfg!(feature = "staging")
+        || env
+            .var("STAGING_MODE")
+            .map(|v| v.to_string() == "true")
+            .unwrap_or(false)
+}
+fn stage_expiry(env: &Env) -> i64 {
+    env.var("STAGING_EXPIRES_MS")
+        .ok()
+        .and_then(|v| v.to_string().parse().ok())
+        .unwrap_or(0)
+}
+fn stage_active(env: &Env) -> bool {
+    now() < stage_expiry(env)
+        && stage_expiry(env) > 0
+        && stage_expiry(env).saturating_sub(now()) <= 900_000
+}
+fn stage_run(env: &Env) -> String {
+    env.var("STAGING_RUN_ID")
+        .map(|v| v.to_string())
+        .unwrap_or_default()
+}
 fn now() -> i64 {
     Date::now().as_millis() as i64
 }
@@ -63,6 +86,32 @@ async fn call(
 }
 #[event(fetch)]
 pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    // FIRST boundary on every hostname/route, including health and version/preview URLs.
+    if staging_mode(&env) {
+        let expected = env
+            .secret("STAGING_INGRESS")
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let supplied = req
+            .headers()
+            .get("X-RunLater-Staging-Gate")?
+            .unwrap_or_default();
+        if !crate::staging::gate(&expected, &supplied, stage_expiry(&env), now()) {
+            return Response::error("Staging gate denied", 403);
+        }
+        let header_bytes: usize = req
+            .headers()
+            .entries()
+            .map(|(k, v)| k.len() + v.len())
+            .sum();
+        if header_bytes > 2048 {
+            return Response::error("Staging headers too large", 431);
+        }
+        if req.path() != "/health" && !crate::staging::api_route(req.method().as_ref(), &req.path())
+        {
+            return Response::error("Staging route disabled", 403);
+        }
+    }
     if req.path() == "/health" {
         return Response::from_json(&json!({"status":"prototype","outbound":"disabled"}));
     }
@@ -85,6 +134,9 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
             return Response::error("Invalid authentication configuration", 503)
         }
     };
+    if staging_mode(&env) && tenant != "alpha" {
+        return Response::error("Staging tenant disabled", 403);
+    }
     let path = req.path();
     if !(path == "/v1/queue"
         || path == "/v1/tasks"
@@ -106,13 +158,40 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
     // Read at most 24KiB even when Content-Length is absent or untrusted.
     use futures_util::StreamExt;
     let mut bytes = Vec::new();
-    if let Ok(mut reader) = req.stream() {
-        while let Some(chunk) = reader.next().await {
-            let chunk = chunk?;
-            if bytes.len() + chunk.len() > 24 * 1024 {
-                return Response::error("Payload too large", 413);
+    let read_body = async {
+        if let Ok(mut reader) = req.stream() {
+            while let Some(chunk) = reader.next().await {
+                let chunk = chunk?;
+                if bytes.len() + chunk.len() > 24 * 1024 {
+                    return Ok(false);
+                }
+                bytes.extend_from_slice(&chunk);
             }
-            bytes.extend_from_slice(&chunk);
+        }
+        Ok::<bool, worker::Error>(true)
+    };
+    if staging_mode(&env) {
+        use futures_util::{
+            future::{select, Either},
+            pin_mut,
+        };
+        use std::time::Duration;
+        let timeout = Delay::from(Duration::from_millis(3000));
+        pin_mut!(read_body);
+        pin_mut!(timeout);
+        match select(read_body, timeout).await {
+            Either::Left((result, _)) => {
+                if !result? {
+                    return Response::error("Payload too large", 413);
+                }
+            }
+            Either::Right((_done, _pending)) => {
+                return Response::error("Staging body deadline", 408)
+            }
+        }
+    } else {
+        if !read_body.await? {
+            return Response::error("Payload too large", 413);
         }
     }
     let body = if bytes.is_empty() {
@@ -147,6 +226,8 @@ struct Api {
 struct Stored {
     tenant: String,
     ledger: Ledger,
+    #[serde(default)]
+    staging_published: u32,
     #[serde(default)]
     keys: Option<Keyring>,
 }
@@ -201,7 +282,16 @@ impl TaskLedger {
     async fn rearm(&self, preserve_earlier: bool) -> Result<()> {
         let existing = self.state.storage().get_alarm().await?;
         let s = self.load()?;
-        if let Some(at) = s.ledger.next_wake(now()) {
+        if staging_mode(&self.env)
+            && (!stage_active(&self.env) || s.staging_published >= crate::staging::MAX_PUBLISH)
+        {
+            self.state.storage().delete_alarm().await?;
+            return Ok(());
+        }
+        if let Some(mut at) = s.ledger.next_wake(now()) {
+            if staging_mode(&self.env) {
+                at = at.min(stage_expiry(&self.env))
+            }
             let target = if preserve_earlier {
                 existing.map_or(at, |old| old.min(at))
             } else {
@@ -226,7 +316,14 @@ impl TaskLedger {
             .migrate_legacy_redrive_keys()
             .map_err(|_| Error::RustError("Invalid legacy redrive state".into()))?;
         s.ledger.purge(now());
-        let messages = s.ledger.outbox(&s.tenant, now());
+        let mut messages = s.ledger.outbox(&s.tenant, now());
+        if staging_mode(&self.env) {
+            messages.truncate(
+                (crate::staging::MAX_PUBLISH.saturating_sub(s.staging_published)) as usize,
+            );
+            // Reserve attempts before Queue I/O; uncertainty spends budget rather than amplifying it.
+            s.staging_published += messages.len() as u32;
+        }
         self.save(&s)?;
         for d in messages {
             self.env.queue("READY")?.send(d).await?;
@@ -247,6 +344,9 @@ impl DurableObject for TaskLedger {
             return Response::error("Invalid tenant", 400);
         }
         let path = req.path();
+        if staging_mode(&self.env) && !stage_active(&self.env) {
+            return Response::error("Staging expired", 403);
+        }
         let raw: serde_json::Value = req.json().await?;
         // Parse and authenticate API requests before watchdog or business effects.
         let mut credential: Option<Credential> = None;
@@ -283,6 +383,23 @@ impl DurableObject for TaskLedger {
                 }
                 return query_response(&snapshot.ledger, a);
             }
+            if staging_mode(&self.env) {
+                if !stage_active(&self.env)
+                    || tenant != "alpha"
+                    || !crate::staging::api_route(&a.method, &a.path)
+                {
+                    return Response::error("Staging request disabled", 403);
+                }
+                if a.method == "POST" && a.path == "/v1/tasks" {
+                    let input: Create = match serde_json::from_value(a.body.clone()) {
+                        Ok(c) => c,
+                        Err(_) => return fault(Fault::Invalid),
+                    };
+                    if !crate::staging::input_allowed(&input, &stage_run(&self.env), now()) {
+                        return fault(Fault::Invalid);
+                    }
+                }
+            }
             permission = Some(required);
             credential = Some(c);
             if a.path.starts_with("/v1/keys") {
@@ -293,7 +410,7 @@ impl DurableObject for TaskLedger {
                 };
                 None
             } else {
-                match parse_command(a) {
+                match parse_command(a, staging_mode(&self.env)) {
                     Ok(Some(c)) => Some(c),
                     Ok(None) => return Response::error("Not found", 404),
                     Err(e) => return fault(e),
@@ -405,11 +522,18 @@ impl DurableObject for TaskLedger {
         } else {
             Response::error("Not found", 404)
         };
+        if staging_mode(&self.env) && s.ledger.tasks.len() > crate::staging::MAX_TASKS {
+            return Response::error("Staging task budget exhausted", 429);
+        }
         self.save(&s)?;
         self.rearm(true).await?;
         result
     }
     async fn alarm(&self) -> Result<Response> {
+        if staging_mode(&self.env) && !stage_active(&self.env) {
+            self.state.storage().delete_alarm().await?;
+            return Response::ok("staging expired");
+        }
         self.pump().await?;
         Response::ok("reconciled")
     }
@@ -417,7 +541,15 @@ impl DurableObject for TaskLedger {
 #[event(queue)]
 pub async fn consume(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> Result<()> {
     for message in batch.messages()? {
+        if staging_mode(&env) && !stage_active(&env) {
+            message.ack();
+            continue;
+        }
         let d = message.body();
+        if staging_mode(&env) && d.tenant != "alpha" {
+            message.ack();
+            continue;
+        }
         let mut claim = call(&env, &d.tenant, "/claim", serde_json::to_value(d)?, None).await?;
         if claim.status_code() == 429 {
             // A durable ready/outbox disposition and alarm were committed before this response.
@@ -439,7 +571,9 @@ pub async fn consume(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> 
             .map(|v| v.to_string())
             .unwrap_or_default()
             == "true";
-        let status = if enabled && destination_allowed(&task.input.destination) {
+        let status = if staging_mode(&env) && task.input.destination == "staging://receiver" {
+            controlled_delivery(&env, &d.tenant, &task).await
+        } else if enabled && destination_allowed(&task.input.destination) {
             let key = b"public-local-fixture-signing-key-not-for-production";
             let ts = now() / 1000;
             let delivery_id = format!("{}:{}", d.tenant, task.id);
@@ -521,13 +655,18 @@ struct Finish {
     fence: u64,
     status: u16,
 }
-fn parse_command(a: Api) -> std::result::Result<Option<crate::application::Command>, Fault> {
+fn parse_command(
+    a: Api,
+    staging: bool,
+) -> std::result::Result<Option<crate::application::Command>, Fault> {
     use crate::application::Command;
     let parts: Vec<&str> = a.path.trim_matches('/').split('/').collect();
     let c = match (a.method.as_str(), parts.as_slice()) {
         ("POST", ["v1", "tasks"]) => {
             let input: Create = serde_json::from_value(a.body).map_err(|_| Fault::Invalid)?;
-            if !destination_allowed(&input.destination) {
+            if !destination_allowed(&input.destination)
+                && !(staging && input.destination == "staging://receiver")
+            {
                 return Err(Fault::DestinationDisabled);
             }
             Some(Command::Enqueue { key: a.key, input })
@@ -586,4 +725,118 @@ fn parse_key_command(a: Api) -> std::result::Result<Option<KeyCommand>, Fault> {
         }
         _ => Ok(None),
     }
+}
+
+async fn controlled_delivery(env: &Env, tenant: &str, task: &Task) -> u16 {
+    use futures_util::{
+        future::{select, Either},
+        pin_mut, StreamExt,
+    };
+    use std::time::Duration;
+    let enabled = env
+        .var("STAGING_DELIVERY_ENABLED")
+        .map(|v| v.to_string() == "true")
+        .unwrap_or(false);
+    let url = env
+        .var("STAGING_RECEIVER_URL")
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    let host = env
+        .var("STAGING_RECEIVER_HOST")
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    let run = stage_run(env);
+    let gate = env
+        .secret("STAGING_INGRESS")
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    let secret = env
+        .secret("STAGING_CALLBACK_HMAC")
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    if !enabled
+        || !stage_active(env)
+        || !crate::staging::receiver_url_allowed(&url, &host, &run)
+        || !crate::staging::valid_secret(&gate)
+        || !crate::staging::valid_secret(&secret)
+        || crate::staging::synthetic(&task.input.body, &run).is_none()
+    {
+        return 400;
+    }
+    let task_id = format!("{tenant}:{}", task.id);
+    let timestamp = now() / 1000;
+    let signature = sign(
+        secret.as_bytes(),
+        timestamp,
+        &task_id,
+        &task.input.operation_key,
+        task.input.body.as_bytes(),
+    );
+    let controller = AbortController::default();
+    let signal = controller.signal();
+    let operation = async {
+        let headers = Headers::new();
+        headers.set("Content-Type", "application/json")?;
+        headers.set("X-RunLater-Staging-Gate", &gate)?;
+        headers.set("RunLater-Task-Id", &task_id)?;
+        headers.set("RunLater-Operation-Key", &task.input.operation_key)?;
+        headers.set("RunLater-Timestamp", &timestamp.to_string())?;
+        headers.set("RunLater-Signature", &signature)?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post)
+            .with_redirect(RequestRedirect::Manual)
+            .with_headers(headers)
+            .with_body(Some(task.input.body.clone().into()));
+        let req = Request::new_with_init(&url, &init)?;
+        let mut response = Fetch::Request(req).send_with_signal(&signal).await?;
+        let status = response.status_code();
+        if (300..=399).contains(&status) {
+            return Ok::<u16, worker::Error>(400);
+        }
+        let header_bytes: usize = response
+            .headers()
+            .entries()
+            .map(|(k, v)| k.len() + v.len())
+            .sum();
+        if header_bytes > 2048 {
+            return Ok(400);
+        }
+        let receipt = response
+            .headers()
+            .get("RunLater-Receipt")?
+            .unwrap_or_default();
+        let mut size = 0;
+        if let Ok(mut body) = response.stream() {
+            while let Some(chunk) = body.next().await {
+                size += chunk?.len();
+                if size > 1024 {
+                    return Ok(400);
+                }
+            }
+        }
+        if status == 204
+            && crate::staging::verify_receipt(
+                &secret,
+                timestamp,
+                &task_id,
+                &task.input.operation_key,
+                task.input.body.as_bytes(),
+                &receipt,
+                now() / 1000,
+            )
+        {
+            Ok(204)
+        } else {
+            Ok(400)
+        }
+    };
+    let timeout = Delay::from(Duration::from_millis(crate::staging::TIMEOUT_MS));
+    pin_mut!(operation);
+    pin_mut!(timeout);
+    let status = match select(operation, timeout).await {
+        Either::Left((result, _)) => result.unwrap_or(408),
+        Either::Right((_done, _pending)) => 408,
+    };
+    controller.abort();
+    status
 }

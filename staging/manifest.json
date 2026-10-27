@@ -1,0 +1,50 @@
+{
+  "status": "review_only_live_blocked_by_budget",
+  "run_id_proposal": "20261027r1",
+  "account_selection": "Existing authorized OM.Network, LLC account only; resolve ID through existing session",
+  "inventory_verified_utc": "2026-10-27",
+  "inventory_counts": {
+    "workers": 2,
+    "queues": 0,
+    "durable_object_namespaces": 4
+  },
+  "candidate_name_collision": false,
+  "resources_proposed": {
+    "api_worker": "runlater-staging-20261027r1-api",
+    "receiver_worker": "runlater-staging-20261027r1-receiver",
+    "sqlite_namespace": "TaskLedger, owned only by the new API Worker",
+    "queue": "runlater-staging-20261027r1-ready",
+    "secrets": [
+      "STAGING_INGRESS",
+      "STAGING_CALLBACK_HMAC"
+    ],
+    "secret_note": "Two distinct 256-bit values; each is bound to both Workers (four bindings, not four secrets). Never publish values."
+  },
+  "live_resources_created": [],
+  "real_secrets_generated": 0,
+  "test_envelope": {
+    "lifetime_seconds": 900,
+    "operator_http_requests_max": 200,
+    "accepted_tasks_max": 12,
+    "staging_project": "alpha only",
+    "synthetic_payload_bytes_max": 256,
+    "queue_publish_calls_max": 128,
+    "queue_transport_retries": 1,
+    "consumer_batch_size": 1,
+    "consumer_concurrency": 1,
+    "worker_cpu_ms_per_invocation": 50,
+    "worker_subrequests_per_invocation": 4,
+    "controlled_callback_timeout_ms": 3000,
+    "controlled_callback_response_bytes_max": 1024,
+    "response_header_bytes_max": 2048,
+    "customer_dns_routes": 0,
+    "outbound_initially_enabled": false
+  },
+  "budget": {
+    "authorized_incremental_usd": 5,
+    "desired_unspent_reserve_usd": 4,
+    "worst_case_certified_within_budget": false,
+    "blocker": "Official DO pricing rounds overage duration to the next million GB-second billable unit at USD12.50. Included account allowance is unverified; billing access was denied and is not bypassed. A tiny test crossing that boundary can exceed USD5. Public unauthenticated edge traffic is also not an account-wide hard-capped quantity.",
+    "interpretation_status": "Provisional billing-quantum interpretation under independent review; budget hold remains until resolved."
+  }
+}

@@ -1,0 +1,56 @@
+# Disposable staging patch — review first; live execution blocked
+
+No live resource mutations or real staging secret generation were performed for this patch. Read-only inventory through the existing Cloudflare connector found the authorized account, 2 existing Workers, no Queues and 4 existing Durable Object namespaces. None uses the proposed `runlater-staging-20261027r1-*` names. Preserve every existing resource and repeat the inventory/collision check immediately before any future creation. Existing Wrangler authentication matches that account; no login, credential reading or permission expansion was performed. Billing access remains unavailable and was not retried through another interface.
+
+## Current budget hold: US$5 has not been certified
+
+The billing-quantum interpretation below is provisional and under independent verification; do not treat it as a settled claim about a minimum charge. The current [official Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) says billable usage over monthly allowance is rounded to the next billable unit; its example rounds 500,000 overage GB-s to 1,000,000. The paid duration rate is $12.50 per million GB-s. With remaining allowance unverified, even this very small test could cross a $12.50 billing boundary. The account also has unrelated existing usage that this test cannot cap. **Do not create/deploy/run live resources under the current $5 worst-case requirement.** Parent must resolve this with authorized cost evidence or an explicitly revised budget; this patch does not request/bypass billing scope or upgrade a plan. A shared gate limits application work, not all public edge-request billing.
+
+[manifest.json](manifest.json) is the proposed resource/test manifest, not a creation receipt. No live cleanup is required yet because `live_resources_created` is empty.
+
+## Source and security boundary
+
+- API is built with the `staging` Cargo feature. The ingress gate is the first operation of the fetch handler, including health, unknown routes, alternate hosts and version/preview URLs. The feature keeps it mandatory even if `STAGING_MODE` is accidentally unset. Missing secrets, malformed or expired deadlines fail closed. Preview URLs are disabled in generated config as an additional restriction.
+- Public fixture bearer tokens still require the independent `X-RunLater-Staging-Gate` secret. Only project alpha and task create/read/attempt/cancel paths are reachable. Key management, queue reconfiguration, redrive and other routes are disabled in staging.
+- Task bodies must be <=256-byte JSON with exactly `run`, `case` and `synthetic:true`; operation identity must match. Scheduling is at most 30 seconds ahead. No customer payloads, arbitrary destinations or destination headers are accepted. Maximum 12 retained tasks bounds accepted work for this short run.
+- Phase 1 uses in-process fixtures; `STAGING_DELIVERY_ENABLED` defaults false. Phase 2, only after parent review/release, may accept the symbolic `staging://receiver` destination. The actual URL is assembled from the exact operator-controlled receiver Worker hostname. It must equal its canonical HTTPS `/callback` URL, with no port, credentials, query, fragment, alternate host or customer URL.
+- The controlled path sets `redirect: manual`, rejects every 3xx, uses a 3-second abort deadline, bounded response/header consumption, and a small fixed outbound header set. It sends the separate callback HMAC plus the receiver ingress gate, never customer API credentials. A domain-separated authenticated receipt proves the receiver knows the HMAC secret; merely echoing the request signature is insufficient.
+- Receiver has no fetch/proxy/state path. Every route is gated before URL/body parsing; only POST `/callback` accepts a small synthetic body with timestamped HMAC and a 30-second replay window. Its only successful effect is a 204 authenticated receipt. There are no customer side effects to undo on duplicate delivery.
+- Publication budget is persisted before Queue I/O; uncertain sends spend a slot. A run publishes at most 128 messages from the sole alpha DO. Consumer transport retry is 1, batch/concurrency are 1. Alarms are clamped to run expiry and stop on expiry/publication exhaustion; expired queue work is acknowledged without new DO access. The ordinary local prototype remains unchanged outside staging mode.
+- Observability persistence is disabled. Application responses/evidence contain task IDs, statuses, timing and receipts, never payloads or secrets in logs. No URLs carry secret values. This controlled receiver does **not** prove arbitrary customer-host DNS-rebinding/SSRF safety. Arbitrary destinations remain disabled.
+
+## Conservative test envelope and cost review
+
+Proposed upper bounds: 15-minute lifetime, 200 operator HTTP calls, 12 accepted tasks, 128 Queue publications and one transport retry. Under these limits, application-owned Queue work is at most 512 <=64KB operations (write, up to 2 reads, delete). One alpha DO can be active for at most the 900-second run window (approximately 113 GB-s at 128MB, before conservatism). Reserve 10,000 DO invocations and 1 million SQL row reads/writes for metadata and automatic alarm retries; these are conservative planning ceilings, not measured capacity promises.
+
+[Workers rates](https://developers.cloudflare.com/workers/platform/pricing/) list $0.30/million requests and $0.02/million CPU ms. [Queue rates](https://developers.cloudflare.com/queues/platform/pricing/) list $0.40/million operations. DO overage units can add $12.50 duration, $0.15 requests and $1 SQL writes (plus small read/storage amounts), even though raw proportional usage is tiny. Thus the $5 authorization cannot be called safe by multiplying fractional rates alone. No included account allowance is assumed. Stop immediately if resource usage, duplicates, cleanup, or authentication behavior is uncertain; never run unbounded polling/load.
+
+## Local verification only
+
+```
+./scripts/check.sh
+node --test staging/receiver.test.mjs
+./scripts/build-staging.sh
+# Generate configs only, with an expiry <=15 minutes ahead and a fresh /tmp output folder:
+node staging/render-config.mjs review thachp <expiry-ms> /tmp/runlater-staging-local-config
+```
+
+Local staging verification uses explicitly public `a...a`/`b...b` test values in an untracked temporary emulator config, never real staging secrets. Start `wrangler dev --local` with that config and an empty `--persist-to` directory. `RUNLATER_STATE_DIR=<that-directory> node staging/local-check.mjs` refuses non-loopback URLs, checks gate-before-body/DO behavior on alias hosts, tests actual local DO/alarm/Queue persistence with egress disabled, and checks synthetic-only admission and the 12-task cap. Receiver unit tests cover signatures, receipts, foreign tenants, replay window, body bounds and no-gate aliases. The controlled Rust fetch path is compiled; live HTTPS/runtime network behavior is unverified until a separately released bounded test.
+
+## Execution phase — NOT released by this patch
+
+1. Resolve the budget blocker first, then obtain parent release of the exact reviewed SHA. Re-read the existing account ID/subdomain using existing access. Inventory scripts, queues and namespace IDs; record their original names/IDs privately. Require candidate names absent; never reuse a previous resource.
+2. Render fresh configs with a unique run ID, the verified existing account subdomain and <=15-minute absolute expiry. The generator performs no provider calls. Confirm no routes/custom domains, one new SQLite class, dedicated queue, 50ms CPU limit, preview URLs off, outbound false, and observability off.
+3. Only then run `prepare-secrets.py --parent-released-execution /tmp/<unique-private-file>.json`. It writes exactly two CSPRNG 256-bit values, mode 0600, refuses overwrite and prints no values. It was **not run** during review preparation. Never cat/read values into a model/tool transcript, put them in CLI arguments, GitHub or messages. Reuse the two values as bindings on both new Workers; no provider credentials are generated.
+4. Use supported [Wrangler `--secrets-file`](https://developers.cloudflare.com/workers/configuration/secrets/#upload-secrets-alongside-code) to upload secrets atomically with the initial code. Set `umask 077` and keep Wrangler debug logs in a private temporary file. Only the new receiver and API Worker may be deployed; create exactly the dedicated Queue through existing authorized API/CLI. No account-plan changes. If existing access denies an action, stop without refreshing OAuth scopes.
+5. `synthetic-campaign.mjs` is a bounded execution-phase runner and refuses to read staging secrets or make network calls while the manifest budget is uncertified. It is syntax-checked only in this review; do not override its budget gate. Record exact Worker/version IDs, queue ID and the newly generated namespace ID after each successful mutation. First verify no-gate/wrong-gate requests fail on all reachable host forms with no DO allocation, then run a fixed small phase-1 task/Queue test. Inspect metadata only. No open-ended loops.
+6. Enable only the canonical controlled receiver for phase 2 after its exact deployed ownership/URL and signatures are verified. Keep task/request counters below the manifest ceilings. Read staging secrets directly from the private file inside the runner; do not expose them in model context. No customer traffic.
+7. Teardown in a foreground `finally` workflow; do not leave cleanup to a future reminder.
+
+## Supported teardown and required confirmation
+
+Record a creation ledger containing names, IDs, owning Worker and created-by-this-run flags (no secrets). Teardown refuses anything not in that ledger or not matching this run's prefix. Stop the driver, disable/delete the dedicated Queue consumer, and verify no unrelated references.
+
+For the new API Worker, render/use the generated teardown config: it removes the DO binding/class from code and applies the pinned Wrangler-supported `deleted_classes: [TaskLedger]` migration. This deletes this Worker's fresh namespace and its synthetic state; no other Worker may reference it. Confirm the captured namespace ID is absent in a full namespace inventory before proceeding. Then delete only the two new Worker scripts using the supported Worker DELETE API with `force` false, and delete the captured dedicated Queue. Do not force-delete shared references. The [DO lifecycle docs](https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/) and the existing API's Worker-delete schema describe destructive namespace deletion; use the migration route so data removal is explicit.
+
+Finally list Workers, queues and namespaces again. Require both new script names, the queue ID and namespace ID absent, and original resources preserved. Remove the private staging secret file and any private temporary secret-bearing runner files after cleanup verification. If deletion is denied or uncertain, inspect the actual resource state once before retrying; report exact surviving names/IDs and keep unrelated resources untouched. No success/cleanup claim may rest solely on a CLI exit message.
