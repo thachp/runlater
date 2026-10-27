@@ -485,7 +485,15 @@ impl DurableObject for TaskLedger {
                 .ledger
                 .finish(&f.id, f.fence, Outcome::Http(f.status), now())
             {
-                Ok(t) => Response::from_json(&t),
+                Ok(mut t) => {
+                    if staging_mode(&self.env) {
+                        if let Some(a) = t.attempts.last_mut() {
+                            a.staging_diagnostic = f.diagnostic;
+                        }
+                        s.ledger.tasks.insert(t.id.clone(), t.clone());
+                    }
+                    Response::from_json(&t)
+                }
                 Err(e) => fault(e),
             }
         } else if let Some(c) = key_command {
@@ -569,8 +577,11 @@ pub async fn consume(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> 
             .map(|v| v.to_string())
             .unwrap_or_default()
             == "true";
+        let mut diagnostic = None;
         let status = if staging_mode(&env) && task.input.destination == "staging://receiver" {
-            controlled_delivery(&env, &d.tenant, &task).await
+            let result = controlled_delivery(&env, &d.tenant, &task).await;
+            diagnostic = Some(result.1);
+            result.0
         } else if enabled && destination_allowed(&task.input.destination) {
             let key = b"public-local-fixture-signing-key-not-for-production";
             let ts = now() / 1000;
@@ -606,7 +617,7 @@ pub async fn consume(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> 
             &env,
             &d.tenant,
             "/finish",
-            json!({"id":task.id,"fence":task.fence,"status":status}),
+            json!({"id":task.id,"fence":task.fence,"status":status,"diagnostic":diagnostic}),
             None,
         )
         .await?;
@@ -652,6 +663,8 @@ struct Finish {
     id: String,
     fence: u64,
     status: u16,
+    #[serde(default)]
+    diagnostic: Option<crate::staging::DeliveryDiagnostic>,
 }
 fn parse_command(
     a: Api,
@@ -725,7 +738,12 @@ fn parse_key_command(a: Api) -> std::result::Result<Option<KeyCommand>, Fault> {
     }
 }
 
-async fn controlled_delivery(env: &Env, tenant: &str, task: &Task) -> u16 {
+async fn controlled_delivery(
+    env: &Env,
+    tenant: &str,
+    task: &Task,
+) -> (u16, crate::staging::DeliveryDiagnostic) {
+    use crate::staging::DeliveryDiagnostic as D;
     use futures_util::{
         future::{select, Either},
         pin_mut, StreamExt,
@@ -759,7 +777,7 @@ async fn controlled_delivery(env: &Env, tenant: &str, task: &Task) -> u16 {
         || !crate::staging::valid_secret(&secret)
         || crate::staging::synthetic(&task.input.body, &run).is_none()
     {
-        return 400;
+        return (400, D::PolicyRejected);
     }
     let task_id = format!("{tenant}:{}", task.id);
     let timestamp = now() / 1000;
@@ -789,7 +807,7 @@ async fn controlled_delivery(env: &Env, tenant: &str, task: &Task) -> u16 {
         let mut response = Fetch::Request(req).send_with_signal(&signal).await?;
         let status = response.status_code();
         if (300..=399).contains(&status) {
-            return Ok::<u16, worker::Error>(400);
+            return Ok::<_, worker::Error>((400, D::RedirectRejected));
         }
         let header_bytes: usize = response
             .headers()
@@ -797,7 +815,7 @@ async fn controlled_delivery(env: &Env, tenant: &str, task: &Task) -> u16 {
             .map(|(k, v)| k.len() + v.len())
             .sum();
         if header_bytes > 2048 {
-            return Ok(400);
+            return Ok((400, D::ResponseHeadersTooLarge));
         }
         let receipt = response
             .headers()
@@ -808,32 +826,33 @@ async fn controlled_delivery(env: &Env, tenant: &str, task: &Task) -> u16 {
             while let Some(chunk) = body.next().await {
                 size += chunk?.len();
                 if size > 1024 {
-                    return Ok(400);
+                    return Ok((400, D::ResponseBodyTooLarge));
                 }
             }
         }
-        if status == 204
-            && crate::staging::verify_receipt(
-                &secret,
-                timestamp,
-                &task_id,
-                &task.input.operation_key,
-                task.input.body.as_bytes(),
-                &receipt,
-                now() / 1000,
-            )
-        {
-            Ok(204)
+        if status != 204 {
+            return Ok((400, D::ReceiverStatus(status)));
+        }
+        if crate::staging::verify_receipt(
+            &secret,
+            timestamp,
+            &task_id,
+            &task.input.operation_key,
+            task.input.body.as_bytes(),
+            &receipt,
+            now() / 1000,
+        ) {
+            Ok((204, D::VerifiedReceipt))
         } else {
-            Ok(400)
+            Ok((400, D::ReceiptRejected))
         }
     };
     let timeout = Delay::from(Duration::from_millis(crate::staging::TIMEOUT_MS));
     pin_mut!(operation);
     pin_mut!(timeout);
     let status = match select(operation, timeout).await {
-        Either::Left((result, _)) => result.unwrap_or(408),
-        Either::Right((_done, _pending)) => 408,
+        Either::Left((result, _)) => result.unwrap_or((408, D::FetchError)),
+        Either::Right((_done, _pending)) => (408, D::Timeout),
     };
     controller.abort();
     status

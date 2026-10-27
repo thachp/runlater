@@ -150,3 +150,18 @@ pub fn command_allowed(command: &crate::application::Command, run: &str, now: i6
         _ => false,
     }
 }
+
+/// Fixed metadata only: never stores URLs, headers, receipts, signatures or bodies.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryDiagnostic {
+    PolicyRejected,
+    RedirectRejected,
+    ResponseHeadersTooLarge,
+    ResponseBodyTooLarge,
+    ReceiverStatus(u16),
+    ReceiptRejected,
+    FetchError,
+    Timeout,
+    VerifiedReceipt,
+}

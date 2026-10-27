@@ -187,3 +187,21 @@ fn parsed_enqueue_always_obeys_payload_content_size_and_horizon() {
         1000
     ));
 }
+
+#[test]
+fn diagnostics_are_closed_metadata_and_old_attempts_remain_readable() {
+    use runlater::{core::Attempt, staging::DeliveryDiagnostic};
+    let old = r#"{"fence":1,"started_ms":1000,"finished_ms":1001,"outcome":"http_400"}"#;
+    let mut attempt: Attempt = serde_json::from_str(old).unwrap();
+    assert!(attempt.staging_diagnostic.is_none());
+    assert!(!serde_json::to_string(&attempt)
+        .unwrap()
+        .contains("staging_diagnostic"));
+    attempt.staging_diagnostic = Some(DeliveryDiagnostic::ReceiverStatus(403));
+    let encoded = serde_json::to_value(&attempt).unwrap();
+    assert_eq!(
+        encoded["staging_diagnostic"],
+        serde_json::json!({"receiver_status":403})
+    );
+    assert!(serde_json::from_str::<DeliveryDiagnostic>(r#""secret-or-response-text""#).is_err());
+}

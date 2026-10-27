@@ -38,6 +38,8 @@ pub struct Attempt {
     pub started_ms: i64,
     pub finished_ms: Option<i64>,
     pub outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staging_diagnostic: Option<crate::staging::DeliveryDiagnostic>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Task {
@@ -367,6 +369,7 @@ impl Ledger {
             started_ms: now,
             finished_ms: None,
             outcome: None,
+            staging_diagnostic: None,
         });
         Ok(Some(t.clone()))
     }
