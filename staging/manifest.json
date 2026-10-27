@@ -1,5 +1,5 @@
 {
-  "status": "review_only_live_blocked_by_budget",
+  "status": "review_only_live_not_released",
   "run_id_proposal": "20261027r1",
   "account_selection": "Existing authorized OM.Network, LLC account only; resolve ID through existing session",
   "inventory_verified_utc": "2026-10-27",
@@ -41,10 +41,43 @@
     "outbound_initially_enabled": false
   },
   "budget": {
-    "authorized_incremental_usd": 5,
-    "desired_unspent_reserve_usd": 4,
+    "authorized_incremental_usd": 20,
+    "desired_unspent_reserve_usd": 5.429,
     "worst_case_certified_within_budget": false,
-    "blocker": "Official DO pricing rounds overage duration to the next million GB-second billable unit at USD12.50. Included account allowance is unverified; billing access was denied and is not bypassed. A tiny test crossing that boundary can exceed USD5. Public unauthenticated edge traffic is also not an account-wide hard-capped quantity.",
-    "interpretation_status": "Provisional billing-quantum interpretation under independent review; budget hold remains until resolved."
+    "blocker": "Budget amount approved; exact code/manifest/cleanup review and parent live release remain required. Missing aggregate invocation/SQL/CPU/cleanup enforcement must not be presented as implemented. Public unauthenticated edge requests are not hard-capped.",
+    "interpretation_status": "Independent research confirmed DO rounding; user approved USD20 incremental staging-test risk budget without a guaranteed account-wide cap.",
+    "conservative_whole_rate_unit_reserve_usd": 14.571,
+    "reserve_is_hard_cap": false
+  },
+  "cleanup_implementation": "Manual foreground operator procedure only; provider-resource ledger validation/finally enforcement is not implemented. Partial failures require identity discovery and verified cleanup before completion.",
+  "execution_readiness": {
+    "live_released": false,
+    "implemented_bounds": {
+      "operator_http_calls": "200 in execution runner including API task cleanup attempts",
+      "accepted_tasks": "12 retained alpha task rows",
+      "queue_publications": "128 reservations persisted before send I/O",
+      "transport_retry": "1 configured: at most 2 deliveries per publication under that policy",
+      "queue_driven_do_calls": "At most 512: 128 publications x 2 deliveries x 2 private calls",
+      "api_driven_do_calls": "At most 200 from the bounded operator runner; denied gates make no DO calls",
+      "per_invocation_cpu_ms": "50 configured; this is not a cumulative CPU counter",
+      "run_deadline_seconds": 900
+    },
+    "not_implemented_as_durable_counters": [
+      "DO invocation total including alarms/provider retries",
+      "SQL read/write operation total",
+      "cumulative CPU total",
+      "provider-resource cleanup operation total"
+    ],
+    "planning_estimates_not_enforced": {
+      "do_invocations": 10000,
+      "sql_rows_read": 1000000,
+      "sql_rows_written": 1000000
+    },
+    "live_release_conditions": [
+      "Parent releases reviewed exact SHA",
+      "Review verifies conservative finite DO/SQL/cumulative-CPU bounds or adds enforcement",
+      "Named foreground operator owns identity-validated manual partial-failure cleanup",
+      "Stop new tests if usage or cleanup is uncertain; preserve unrelated resources"
+    ]
   }
 }

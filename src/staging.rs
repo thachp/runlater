@@ -112,14 +112,41 @@ pub fn verify_receipt(
             now,
         )
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StageRoute {
+    Enqueue,
+    List,
+    Task,
+    Attempts,
+    Cancel,
+}
+/// Staging accepts canonical paths only. Do not trim slashes or decode aliases here.
+/// URL-layer normalization (for example dot segments) is still subject to typed command validation.
+pub fn canonical_route(method: &str, path: &str) -> Option<StageRoute> {
+    let segments: Vec<_> = path.strip_prefix('/')?.split('/').collect();
+    match (method, segments.as_slice()) {
+        ("POST", ["v1", "tasks"]) => Some(StageRoute::Enqueue),
+        ("GET", ["v1", "tasks"]) => Some(StageRoute::List),
+        ("GET", ["v1", "tasks", id]) if crate::security::task_id_valid(id) => {
+            Some(StageRoute::Task)
+        }
+        ("GET", ["v1", "tasks", id, "attempts"]) if crate::security::task_id_valid(id) => {
+            Some(StageRoute::Attempts)
+        }
+        ("POST", ["v1", "tasks", id, "cancel"]) if crate::security::task_id_valid(id) => {
+            Some(StageRoute::Cancel)
+        }
+        _ => None,
+    }
+}
 pub fn api_route(method: &str, path: &str) -> bool {
-    let p: Vec<_> = path.trim_matches('/').split('/').collect();
-    matches!(
-        (method, p.as_slice()),
-        ("POST", ["v1", "tasks"])
-            | ("GET", ["v1", "tasks"])
-            | ("GET", ["v1", "tasks", _])
-            | ("GET", ["v1", "tasks", _, "attempts"])
-            | ("POST", ["v1", "tasks", _, "cancel"])
-    )
+    canonical_route(method, path).is_some()
+}
+/// Enforce the campaign envelope on the parsed mutation, independent of route spelling.
+pub fn command_allowed(command: &crate::application::Command, run: &str, now: i64) -> bool {
+    match command {
+        crate::application::Command::Enqueue { input, .. } => input_allowed(input, run, now),
+        crate::application::Command::Cancel { .. } => true,
+        _ => false,
+    }
 }

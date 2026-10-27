@@ -1,6 +1,6 @@
 // Dedicated synthetic receiver: no fetch/proxy path, no durable state, no user destinations.
 const enc=new TextEncoder();
-export function equalSecret(expected,supplied,cryptoApi=crypto){if(typeof cryptoApi?.subtle?.timingSafeEqual!=='function')return false;if(!/^[0-9a-f]{64}$/.test(expected??'')||supplied?.length!==64)return false;return cryptoApi.subtle.timingSafeEqual(enc.encode(expected),enc.encode(supplied));}
+export function equalSecret(expected,supplied,cryptoApi=crypto){if(typeof cryptoApi?.subtle?.timingSafeEqual!=='function')return false;if(!/^[0-9a-f]{64}$/.test(expected??'')||!/^[0-9a-f]{64}$/.test(supplied??''))return false;return cryptoApi.subtle.timingSafeEqual(enc.encode(expected),enc.encode(supplied));}
 export async function handle(request,env,cryptoApi=crypto){
  const now=Date.now();
  // First boundary on every route/hostname, before URL/body parsing or signature work.

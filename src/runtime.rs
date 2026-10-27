@@ -354,6 +354,14 @@ impl DurableObject for TaskLedger {
         let mut key_command = None;
         let command = if path == "/api" {
             let a: Api = serde_json::from_value(raw.clone())?;
+            if staging_mode(&self.env)
+                && (!stage_active(&self.env)
+                    || tenant != "alpha"
+                    || crate::staging::canonical_route(&a.method, &a.path).is_none())
+            {
+                return Response::error("Staging request disabled", 403);
+            }
+
             let Some(required) = auth::required_permission(&a.method, &a.path) else {
                 return Response::error("Not found", 404);
             };
@@ -383,23 +391,6 @@ impl DurableObject for TaskLedger {
                 }
                 return query_response(&snapshot.ledger, a);
             }
-            if staging_mode(&self.env) {
-                if !stage_active(&self.env)
-                    || tenant != "alpha"
-                    || !crate::staging::api_route(&a.method, &a.path)
-                {
-                    return Response::error("Staging request disabled", 403);
-                }
-                if a.method == "POST" && a.path == "/v1/tasks" {
-                    let input: Create = match serde_json::from_value(a.body.clone()) {
-                        Ok(c) => c,
-                        Err(_) => return fault(Fault::Invalid),
-                    };
-                    if !crate::staging::input_allowed(&input, &stage_run(&self.env), now()) {
-                        return fault(Fault::Invalid);
-                    }
-                }
-            }
             permission = Some(required);
             credential = Some(c);
             if a.path.starts_with("/v1/keys") {
@@ -411,7 +402,14 @@ impl DurableObject for TaskLedger {
                 None
             } else {
                 match parse_command(a, staging_mode(&self.env)) {
-                    Ok(Some(c)) => Some(c),
+                    Ok(Some(c)) => {
+                        if staging_mode(&self.env)
+                            && !crate::staging::command_allowed(&c, &stage_run(&self.env), now())
+                        {
+                            return fault(Fault::Invalid);
+                        }
+                        Some(c)
+                    }
                     Ok(None) => return Response::error("Not found", 404),
                     Err(e) => return fault(e),
                 }

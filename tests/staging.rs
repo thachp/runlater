@@ -96,8 +96,94 @@ fn receipt_is_domain_separated_and_authenticates_context() {
 #[test]
 fn staging_surface_disables_key_and_configuration_mutations() {
     assert!(api_route("POST", "/v1/tasks"));
-    assert!(api_route("GET", "/v1/tasks/x/attempts"));
+    assert!(api_route("GET", "/v1/tasks/task_0000000000000001/attempts"));
     assert!(!api_route("POST", "/v1/keys"));
     assert!(!api_route("PUT", "/v1/queue"));
     assert!(!api_route("POST", "/v1/tasks/x/redrive"));
+}
+
+#[test]
+fn staging_rejects_noncanonical_route_aliases() {
+    assert_eq!(
+        canonical_route("POST", "/v1/tasks"),
+        Some(StageRoute::Enqueue)
+    );
+    for path in [
+        "/v1/tasks/",
+        "//v1/tasks",
+        "/v1//tasks",
+        "/v1/tasks//",
+        "/v1/./tasks",
+        "/v1/x/../tasks",
+        "/v1/%74asks",
+        "/v1/tasks%2f",
+        "/V1/tasks",
+    ] {
+        assert_eq!(
+            canonical_route("POST", path),
+            None,
+            "alias accepted: {path}"
+        );
+    }
+    assert!(!api_route(
+        "GET",
+        "/v1/tasks/task_0000000000000001/attempts/"
+    ));
+    assert!(!api_route(
+        "POST",
+        "/v1/tasks/task_0000000000000001/cancel/"
+    ));
+}
+#[test]
+fn parsed_enqueue_always_obeys_payload_content_size_and_horizon() {
+    use runlater::application::Command;
+    let valid = Create {
+        destination: "fixture://success".into(),
+        body: r#"{"run":"review","case":"initial","synthetic":true}"#.into(),
+        operation_key: "run_review_initial".into(),
+        run_at_ms: 0,
+    };
+    assert!(command_allowed(
+        &Command::Enqueue {
+            key: "k".into(),
+            input: valid.clone()
+        },
+        "review",
+        1000
+    ));
+    for input in [
+        Create {
+            body: "not-synthetic".into(),
+            ..valid.clone()
+        },
+        Create {
+            body: "x".repeat(257),
+            ..valid.clone()
+        },
+        Create {
+            run_at_ms: 31_001,
+            ..valid.clone()
+        },
+        Create {
+            run_at_ms: 365 * runlater::core::DAY,
+            ..valid.clone()
+        },
+    ] {
+        assert!(!command_allowed(
+            &Command::Enqueue {
+                key: "k".into(),
+                input
+            },
+            "review",
+            1000
+        ));
+    }
+    assert!(!command_allowed(
+        &Command::Redrive {
+            id: "task_0000000000000001".into(),
+            key: "k".into()
+        },
+        "review",
+        1000
+    ));
 }
