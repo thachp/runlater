@@ -8,6 +8,17 @@ Product domain: **runlater.io**. Domain registration does not mean a hosted serv
 
 **Early planning; not production-ready.** This repository currently documents the proposed product and implementation backlog. The architecture, API, and delivery semantics below are design targets, not implemented capabilities. There is no published SLA, production endpoint, or verified capacity claim.
 
+## Planned hosts
+
+| Host | Intended role |
+| --- | --- |
+| `runlater.io` | Product landing page |
+| `docs.runlater.io` | Developer documentation |
+| `api.runlater.io` | HTTP API |
+| `www.runlater.io` | Redirect to `https://runlater.io`, preserving path and query |
+
+This is the confirmed host layout, not a deployment claim. DNS, routes, certificates, and live service readiness still need verification before launch. See [issue #13](https://github.com/thachp/runlater/issues/13).
+
 ## Proposed MVP
 
 - Create an immediate or one-time scheduled HTTP task.
@@ -132,7 +143,7 @@ If the customer processes a callback but RunLater crashes before recording succe
 
 - Authorize project ownership on every API and internal ledger operation. Store API-key hashes, support rotation/revocation, and test cross-tenant access failures.
 - Require approved public HTTPS destinations. Reject local, private, link-local, metadata, and disallowed address forms, including IPv6 variants. Disable redirects by default. URL parsing alone is not an SSRF defense.
-- **Prove DNS-rebinding and actual connection-target defenses in the deployed Workers runtime before enabling arbitrary destinations.** If those controls cannot be established, restrict beta delivery to verified allowlisted endpoints rather than claiming arbitrary URLs are safe.
+- **Prove DNS-rebinding and actual connection-target defenses in the deployed Workers runtime before enabling arbitrary destinations.** Until that evidence exists, any restricted alpha must use controlled, independently validated endpoints. An allowlist alone does not prevent DNS rebinding; runtime egress validation remains a release gate for arbitrary destinations.
 - Sign callbacks with a timestamp and key identifier; document receiver verification, replay windows, and key rotation. Keep authorization credentials out of logs and URLs.
 - Bound request/response sizes, header handling, timeouts, scheduling horizon, attempts, retention, and tenant resource use. Final defaults remain open decisions.
 - Test failures between persistence, enqueue, claim, callback, result recording, and acknowledgement. Add duplicate-delivery, lease-expiry, cancellation-race, rate-limit, SSRF, and tenant-isolation tests before public beta.
@@ -155,3 +166,4 @@ All items below are planned work, not completed features.
 | [#10](https://github.com/thachp/runlater/issues/10) | Attempts, audit events, and retention |
 | [#11](https://github.com/thachp/runlater/issues/11) | Reliability and security release evidence |
 | [#12](https://github.com/thachp/runlater/issues/12) | Onboarding and an end-to-end integration |
+| [#13](https://github.com/thachp/runlater/issues/13) | Landing, docs, API hosts, and canonical www redirect |
