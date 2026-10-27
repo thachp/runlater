@@ -69,6 +69,8 @@ pub struct Dispatch {
 pub struct Ledger {
     pub tasks: BTreeMap<String, Task>,
     pub dedupe: BTreeMap<String, Dedupe>,
+    #[serde(default)]
+    pub redrive_dedupe: BTreeMap<String, BTreeMap<String, Dedupe>>,
     pub sequence: u64,
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -111,6 +113,22 @@ impl Ledger {
                 false,
             ));
         }
+        let task = self.insert_task(input, None, now)?;
+        self.dedupe.insert(
+            key.into(),
+            Dedupe {
+                fingerprint,
+                task: task.id.clone(),
+            },
+        );
+        Ok((task, true))
+    }
+    fn insert_task(
+        &mut self,
+        input: Create,
+        parent: Option<String>,
+        now: i64,
+    ) -> Result<Task, Fault> {
         if self.tasks.len() >= 1000
             || self
                 .tasks
@@ -140,17 +158,38 @@ impl Ledger {
             cancel_requested: false,
             terminal_ms: None,
             attempts: vec![],
-            parent: None,
+            parent,
         };
-        self.dedupe.insert(
-            key.into(),
-            Dedupe {
-                fingerprint,
-                task: id.clone(),
-            },
-        );
         self.tasks.insert(id, task.clone());
-        Ok((task, true))
+        Ok(task)
+    }
+    /// Additive migration from the first local snapshot format. Only historical linked
+    /// executions can own a legacy synthetic key; ordinary enqueue keys remain untouched.
+    pub fn migrate_legacy_redrive_keys(&mut self) -> Result<(), Fault> {
+        let legacy: Vec<_> = self
+            .dedupe
+            .iter()
+            .filter_map(|(key, d)| {
+                let task = self.tasks.get(&d.task)?;
+                let parent = task.parent.as_ref()?;
+                let prefix = format!("redrive:{parent}:");
+                key.strip_prefix(&prefix)
+                    .map(|k| (key.clone(), parent.clone(), k.to_string(), task.clone()))
+            })
+            .collect();
+        for (legacy, parent, key, task) in legacy {
+            let fingerprint = Self::redrive_fingerprint(&parent, &task.input)?;
+            self.redrive_dedupe
+                .entry(parent)
+                .or_default()
+                .entry(key)
+                .or_insert(Dedupe {
+                    fingerprint,
+                    task: task.id,
+                });
+            self.dedupe.remove(&legacy);
+        }
+        Ok(())
     }
     pub fn get(&self, id: &str) -> Result<Task, Fault> {
         self.tasks.get(id).cloned().ok_or(Fault::NotFound)
@@ -167,31 +206,51 @@ impl Ledger {
         Ok(t.clone())
     }
     pub fn redrive(&mut self, id: &str, key: &str, now: i64) -> Result<(Task, bool), Fault> {
+        if key.is_empty() || key.len() > 64 {
+            return Err(Fault::Invalid);
+        }
+        // Resolve an existing execution before consulting a possibly expired source task.
+        if let Some(d) = self.redrive_dedupe.get(id).and_then(|keys| keys.get(key)) {
+            let task = self.get(&d.task)?;
+            let fingerprint = Self::redrive_fingerprint(id, &task.input)?;
+            if d.fingerprint != fingerprint || task.parent.as_deref() != Some(id) {
+                return Err(Fault::Conflict);
+            }
+            return Ok((task, false));
+        }
         let old = self.get(id)?;
         if old.status != Status::Failed {
             return Err(Fault::Conflict);
         }
-        if key.is_empty() || key.len() > 64 {
-            return Err(Fault::Invalid);
-        }
-        let full_key = format!("redrive:{id}:{key}");
-        if let Some(d) = self.dedupe.get(&full_key) {
-            return Ok((self.get(&d.task)?, false));
-        }
-        // Include parent in the key namespace and fingerprint, preserving explicit execution identity.
-        let (mut t, created) = self.create(
-            &full_key,
+        let fingerprint = Self::redrive_fingerprint(id, &old.input)?;
+        let task = self.insert_task(
             Create {
                 run_at_ms: now,
                 ..old.input
             },
+            Some(id.into()),
             now,
         )?;
-        if created {
-            t.parent = Some(id.into());
-            self.tasks.insert(t.id.clone(), t.clone());
-        }
-        Ok((t, created))
+        self.redrive_dedupe.entry(id.into()).or_default().insert(
+            key.into(),
+            Dedupe {
+                fingerprint,
+                task: task.id.clone(),
+            },
+        );
+        Ok((task, true))
+    }
+    fn redrive_fingerprint(parent: &str, input: &Create) -> Result<String, Fault> {
+        Ok(digest(
+            &serde_json::to_vec(&(
+                "redrive",
+                parent,
+                &input.destination,
+                &input.body,
+                &input.operation_key,
+            ))
+            .map_err(|_| Fault::Invalid)?,
+        ))
     }
     pub fn reconcile(&mut self, now: i64) {
         for t in self.tasks.values_mut() {
@@ -315,5 +374,9 @@ impl Ledger {
         self.tasks
             .retain(|_, t| t.terminal_ms.is_none_or(|x| x + RETENTION > now));
         self.dedupe.retain(|_, d| self.tasks.contains_key(&d.task));
+        self.redrive_dedupe.retain(|_, keys| {
+            keys.retain(|_, d| self.tasks.contains_key(&d.task));
+            !keys.is_empty()
+        });
     }
 }

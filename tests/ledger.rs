@@ -216,3 +216,76 @@ fn immediate_zero_uses_acceptance_time_for_age_budget() {
         Status::RetryWait
     );
 }
+
+#[test]
+fn enqueue_keys_cannot_shadow_redrive_namespace() {
+    let mut l = Ledger::default();
+    let (old, _) = l.create("original", input(0), 0).unwrap();
+    let c = claim(&mut l, 0);
+    l.finish(&old.id, c.fence, Outcome::Http(400), 1).unwrap();
+    let malicious = format!("redrive:{}:chosen", old.id);
+    let (other, _) = l.create(&malicious, input(0), 2).unwrap();
+    let (redriven, created) = l.redrive(&old.id, "chosen", 3).unwrap();
+    assert!(created);
+    assert_ne!(redriven.id, other.id);
+    assert_eq!(redriven.parent.as_deref(), Some(old.id.as_str()));
+    assert_eq!(l.redrive(&old.id, "chosen", 4).unwrap().0.id, redriven.id);
+    assert_eq!(l.create(&malicious, input(0), 4).unwrap().0.id, other.id);
+}
+#[test]
+fn redrive_replay_rejects_corrupt_lineage_or_fingerprint() {
+    let mut l = Ledger::default();
+    let (old, _) = l.create("original", input(0), 0).unwrap();
+    let c = claim(&mut l, 0);
+    l.finish(&old.id, c.fence, Outcome::Http(400), 1).unwrap();
+    let (new, _) = l.redrive(&old.id, "r", 2).unwrap();
+    let mut wrong = l.clone();
+    wrong.tasks.get_mut(&new.id).unwrap().parent = None;
+    assert_eq!(wrong.redrive(&old.id, "r", 3).unwrap_err(), Fault::Conflict);
+    l.redrive_dedupe
+        .get_mut(&old.id)
+        .unwrap()
+        .get_mut("r")
+        .unwrap()
+        .fingerprint = "corrupt".into();
+    assert_eq!(l.redrive(&old.id, "r", 3).unwrap_err(), Fault::Conflict);
+}
+#[test]
+fn active_redrive_replay_survives_source_retention_expiry() {
+    let mut l = Ledger::default();
+    let (old, _) = l.create("original", input(0), 0).unwrap();
+    let c = claim(&mut l, 0);
+    l.finish(&old.id, c.fence, Outcome::Http(400), 1).unwrap();
+    let (new, _) = l.redrive(&old.id, "late", 29 * DAY).unwrap();
+    l.purge(31 * DAY);
+    assert_eq!(l.get(&old.id).unwrap_err(), Fault::NotFound);
+    let (replayed, created) = l.redrive(&old.id, "late", 31 * DAY).unwrap();
+    assert!(!created);
+    assert_eq!(replayed.id, new.id);
+    assert_eq!(
+        l.redrive(&old.id, "fresh", 31 * DAY).unwrap_err(),
+        Fault::NotFound
+    );
+}
+#[test]
+fn legacy_redrive_migration_preserves_linked_execution_and_ordinary_keys() {
+    let mut l = Ledger::default();
+    let (old, _) = l.create("original", input(0), 0).unwrap();
+    let c = claim(&mut l, 0);
+    l.finish(&old.id, c.fence, Outcome::Http(400), 1).unwrap();
+    let (new, _) = l.redrive(&old.id, "r", 2).unwrap();
+    let legacy = format!("redrive:{}:r", old.id);
+    let d = l
+        .redrive_dedupe
+        .remove(&old.id)
+        .unwrap()
+        .remove("r")
+        .unwrap();
+    l.dedupe.insert(legacy.clone(), d);
+    let ordinary = "redrive:arbitrary:enqueue";
+    let (other, _) = l.create(ordinary, input(0), 2).unwrap();
+    l.migrate_legacy_redrive_keys().unwrap();
+    assert!(!l.dedupe.contains_key(&legacy));
+    assert_eq!(l.redrive(&old.id, "r", 3).unwrap().0.id, new.id);
+    assert_eq!(l.create(ordinary, input(0), 3).unwrap().0.id, other.id);
+}

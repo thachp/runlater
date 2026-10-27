@@ -112,7 +112,19 @@ pub struct TaskLedger {
 impl TaskLedger {
     fn load(&self) -> Result<Stored> {
         let sql = self.state.storage().sql();
-        sql.exec("CREATE TABLE IF NOT EXISTS ledger (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=1), data TEXT NOT NULL)",None)?;
+        #[derive(Deserialize)]
+        struct Exists {
+            count: i64,
+        }
+        let exists: Vec<Exists> = sql
+            .exec(
+                "SELECT count(*) AS count FROM sqlite_master WHERE type='table' AND name='ledger'",
+                None,
+            )?
+            .to_array()?;
+        if exists.first().is_none_or(|row| row.count == 0) {
+            return Ok(Stored::default());
+        }
         let rows: Vec<Row> = sql
             .exec("SELECT data FROM ledger WHERE id=1", None)?
             .to_array()?;
@@ -120,6 +132,10 @@ impl TaskLedger {
             Some(r) => Ok(serde_json::from_str(&r.data)?),
             None => Ok(Stored::default()),
         }
+    }
+    fn initialize_schema(&self) -> Result<()> {
+        self.state.storage().sql().exec("CREATE TABLE IF NOT EXISTS ledger (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=1), data TEXT NOT NULL)",None)?;
+        Ok(())
     }
     fn save(&self, s: &Stored) -> Result<()> {
         self.state.storage().sql().exec("INSERT INTO ledger(id,version,data) VALUES(1,1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",vec![serde_json::to_string(s)?.into()])?;
@@ -147,7 +163,11 @@ impl TaskLedger {
     async fn pump(&self) -> Result<()> {
         // A durable watchdog exists before work and throughout queue I/O.
         self.state.storage().set_alarm(1000).await?;
+        self.initialize_schema()?;
         let mut s = self.load()?;
+        s.ledger
+            .migrate_legacy_redrive_keys()
+            .map_err(|_| Error::RustError("Invalid legacy redrive state".into()))?;
         s.ledger.purge(now());
         let messages = s.ledger.outbox(&s.tenant, now());
         self.save(&s)?;
@@ -166,13 +186,23 @@ impl DurableObject for TaskLedger {
         if tenant.is_empty() {
             return Response::error("Missing tenant", 400);
         }
+        let path = req.path();
+        let raw: serde_json::Value = req.json().await?;
+        // CQRS reads return before schema initialization, watchdog, reconciliation, or persistence.
+        if path == "/api" && raw["method"].as_str() == Some("GET") {
+            let a: Api = serde_json::from_value(raw)?;
+            let s = self.load()?;
+            if !s.tenant.is_empty() && s.tenant != tenant {
+                return Response::error("Tenant mismatch", 403);
+            }
+            return query_response(&s.ledger, a);
+        }
         // Arm before acceptance without postponing already due work. Reload after all awaits.
         let existing = self.state.storage().get_alarm().await?;
         if existing.is_none_or(|at| at > now() + 1000) {
             self.state.storage().set_alarm(1000).await?;
         }
-        let path = req.path();
-        let raw: serde_json::Value = req.json().await?;
+        self.initialize_schema()?;
         let mut s = self.load()?;
         if s.tenant.is_empty() {
             s.tenant = tenant.clone()
@@ -180,6 +210,9 @@ impl DurableObject for TaskLedger {
         if s.tenant != tenant {
             return Response::error("Tenant mismatch", 403);
         }
+        s.ledger
+            .migrate_legacy_redrive_keys()
+            .map_err(|_| Error::RustError("Invalid legacy redrive state".into()))?;
         s.ledger.reconcile(now());
         let result = if path == "/claim" {
             let d: Dispatch = serde_json::from_value(raw)?;
@@ -201,7 +234,7 @@ impl DurableObject for TaskLedger {
         } else if path == "/api" {
             let a: Api = serde_json::from_value(raw)?;
             let parts: Vec<&str> = a.path.trim_matches('/').split('/').collect();
-            use crate::application::{self, Command, Query};
+            use crate::application::{self, Command};
             let command = match (a.method.as_str(), parts.as_slice()) {
                 ("POST", ["v1", "tasks"]) => {
                     let input: Create = match serde_json::from_value(a.body) {
@@ -231,29 +264,7 @@ impl DurableObject for TaskLedger {
                     Err(e) => fault(e),
                 }
             } else {
-                let q = match (a.method.as_str(), parts.as_slice()) {
-                    ("GET", ["v1", "tasks"]) => {
-                        let params: std::collections::BTreeMap<_, _> =
-                            url::form_urlencoded::parse(a.query.as_bytes())
-                                .into_owned()
-                                .collect();
-                        Some(Query::List {
-                            after: params.get("after").cloned().unwrap_or_default(),
-                        })
-                    }
-                    ("GET", ["v1", "tasks", id]) => Some(Query::Task { id: (*id).into() }),
-                    ("GET", ["v1", "tasks", id, "attempts"]) => {
-                        Some(Query::Attempts { id: (*id).into() })
-                    }
-                    _ => None,
-                };
-                match q {
-                    Some(q) => match application::query(&s.ledger, q) {
-                        Ok(v) => Response::from_json(&v),
-                        Err(e) => fault(e),
-                    },
-                    None => Response::error("Not found", 404),
-                }
+                Response::error("Not found", 404)
             }
         } else {
             Response::error("Not found", 404)
@@ -335,4 +346,30 @@ pub async fn consume(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> 
         }
     }
     Ok(())
+}
+
+fn query_response(ledger: &Ledger, a: Api) -> Result<Response> {
+    use crate::application::{self, Query};
+    let parts: Vec<&str> = a.path.trim_matches('/').split('/').collect();
+    let q = match parts.as_slice() {
+        ["v1", "tasks"] => {
+            let params: std::collections::BTreeMap<_, _> =
+                url::form_urlencoded::parse(a.query.as_bytes())
+                    .into_owned()
+                    .collect();
+            Some(Query::List {
+                after: params.get("after").cloned().unwrap_or_default(),
+            })
+        }
+        ["v1", "tasks", id] => Some(Query::Task { id: (*id).into() }),
+        ["v1", "tasks", id, "attempts"] => Some(Query::Attempts { id: (*id).into() }),
+        _ => None,
+    };
+    match q {
+        Some(q) => match application::query(ledger, q) {
+            Ok(v) => Response::from_json(&v),
+            Err(e) => fault(e),
+        },
+        None => Response::error("Not found", 404),
+    }
 }
