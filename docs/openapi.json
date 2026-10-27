@@ -44,23 +44,6 @@
           }
         },
         "responses": {
-          "201": {
-            "description": "Durably accepted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "oneOf": [
-                    {
-                      "$ref": "#/components/schemas/Task"
-                    },
-                    {
-                      "$ref": "#/components/schemas/TaskReceipt"
-                    }
-                  ]
-                }
-              }
-            }
-          },
           "200": {
             "description": "Same canonical input and key returns original task",
             "content": {
@@ -78,17 +61,34 @@
               }
             }
           },
+          "201": {
+            "description": "Durably accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Task"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TaskReceipt"
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid request"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Unauthorized"
+            "description": "Missing, invalid, revoked or expired credential."
           },
-          "404": {
+          "403": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Not found in authenticated tenant"
+            "description": "Credential lacks the required permission or authority."
           },
           "409": {
             "$ref": "#/components/responses/LocalError",
@@ -96,7 +96,11 @@
           },
           "413": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Envelope too large"
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
           },
           "422": {
             "$ref": "#/components/responses/LocalError",
@@ -108,15 +112,7 @@
           },
           "503": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Prototype disabled"
-          },
-          "415": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Expected application/json for JSON request body"
-          },
-          "403": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Project credential lacks required enqueue permission"
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "enqueue"
@@ -145,39 +141,23 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid request"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Unauthorized"
-          },
-          "404": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Not found in authenticated tenant"
-          },
-          "409": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Idempotency conflict or invalid transition"
-          },
-          "413": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Envelope too large"
-          },
-          "422": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Destination disabled"
-          },
-          "429": {
-            "$ref": "#/components/responses/LocalThrottle",
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change."
-          },
-          "503": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Prototype disabled"
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Project credential lacks required read permission"
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "read"
@@ -210,39 +190,27 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid request"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Unauthorized"
+            "description": "Missing, invalid, revoked or expired credential."
+          },
+          "403": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
           },
           "404": {
             "$ref": "#/components/responses/LocalError",
             "description": "Not found in authenticated tenant"
           },
-          "409": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Idempotency conflict or invalid transition"
-          },
           "413": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Envelope too large"
-          },
-          "422": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Destination disabled"
-          },
-          "429": {
-            "$ref": "#/components/responses/LocalThrottle",
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change."
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
           },
           "503": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Prototype disabled"
-          },
-          "403": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Project credential lacks required read permission"
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "read"
@@ -278,39 +246,27 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid request"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Unauthorized"
+            "description": "Missing, invalid, revoked or expired credential."
+          },
+          "403": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
           },
           "404": {
             "$ref": "#/components/responses/LocalError",
             "description": "Not found in authenticated tenant"
           },
-          "409": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Idempotency conflict or invalid transition"
-          },
           "413": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Envelope too large"
-          },
-          "422": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Destination disabled"
-          },
-          "429": {
-            "$ref": "#/components/responses/LocalThrottle",
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change."
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
           },
           "503": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Prototype disabled"
-          },
-          "403": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Project credential lacks required read permission"
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "read"
@@ -351,43 +307,31 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid request"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Unauthorized"
+            "description": "Missing, invalid, revoked or expired credential."
+          },
+          "403": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
           },
           "404": {
             "$ref": "#/components/responses/LocalError",
             "description": "Not found in authenticated tenant"
           },
-          "409": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Idempotency conflict or invalid transition"
-          },
           "413": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Envelope too large"
-          },
-          "422": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Destination disabled"
-          },
-          "429": {
-            "$ref": "#/components/responses/LocalThrottle",
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change."
-          },
-          "503": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Prototype disabled"
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
           },
           "415": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Expected application/json for JSON request body"
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
           },
-          "403": {
+          "503": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Project credential lacks required cancel permission"
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "cancel"
@@ -456,11 +400,15 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid request"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Unauthorized"
+            "description": "Missing, invalid, revoked or expired credential."
+          },
+          "403": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
           },
           "404": {
             "$ref": "#/components/responses/LocalError",
@@ -472,11 +420,11 @@
           },
           "413": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Envelope too large"
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
           },
-          "422": {
+          "415": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Destination disabled"
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
           },
           "429": {
             "$ref": "#/components/responses/LocalThrottle",
@@ -484,15 +432,7 @@
           },
           "503": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Prototype disabled"
-          },
-          "415": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Expected application/json for JSON request body"
-          },
-          "403": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Project credential lacks required redrive permission"
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "redrive"
@@ -515,23 +455,23 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid limit fields or range"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Unauthorized"
-          },
-          "415": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Expected application/json"
-          },
-          "503": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Prototype disabled or malformed authentication configuration"
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Project credential lacks required read permission"
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "read"
@@ -562,23 +502,27 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid limit fields or range"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Unauthorized"
-          },
-          "415": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Expected application/json for JSON request body"
-          },
-          "503": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Prototype disabled or malformed authentication configuration"
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Project credential lacks required configure permission"
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "configure"
@@ -601,31 +545,23 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Malformed DTO, unsupported local policy or lifetime"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Missing operation permission or attempted privilege escalation"
+            "description": "Credential lacks the required permission or authority."
           },
-          "404": {
+          "413": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Unknown project-owned key"
-          },
-          "409": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Immutable key/rotation identity conflict"
-          },
-          "429": {
-            "$ref": "#/components/responses/LocalThrottle",
-            "description": "64 retained local keys maximum per project"
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
           },
           "503": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Nonproduction prototype/configuration gate closed"
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         }
       },
@@ -666,23 +602,27 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Malformed DTO, unsupported local policy or lifetime"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Missing operation permission or attempted privilege escalation"
-          },
-          "404": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Unknown project-owned key"
+            "description": "Credential lacks the required permission or authority."
           },
           "409": {
             "$ref": "#/components/responses/LocalError",
             "description": "Immutable key/rotation identity conflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
           },
           "429": {
             "$ref": "#/components/responses/LocalThrottle",
@@ -690,7 +630,7 @@
           },
           "503": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Nonproduction prototype/configuration gate closed"
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         }
       }
@@ -712,31 +652,23 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Malformed DTO, unsupported local policy or lifetime"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Missing operation permission or attempted privilege escalation"
+            "description": "Credential lacks the required permission or authority."
           },
-          "404": {
+          "413": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Unknown project-owned key"
-          },
-          "409": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Immutable key/rotation identity conflict"
-          },
-          "429": {
-            "$ref": "#/components/responses/LocalThrottle",
-            "description": "64 retained local keys maximum per project"
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
           },
           "503": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Nonproduction prototype/configuration gate closed"
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         }
       }
@@ -769,31 +701,31 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Malformed DTO, unsupported local policy or lifetime"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Missing operation permission or attempted privilege escalation"
+            "description": "Credential lacks the required permission or authority."
           },
           "404": {
             "$ref": "#/components/responses/LocalError",
             "description": "Unknown project-owned key"
           },
-          "409": {
+          "413": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Immutable key/rotation identity conflict"
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
           },
-          "429": {
-            "$ref": "#/components/responses/LocalThrottle",
-            "description": "64 retained local keys maximum per project"
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
           },
           "503": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Nonproduction prototype/configuration gate closed"
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         }
       }
@@ -860,15 +792,15 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Malformed DTO, unsupported local policy or lifetime"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Missing operation permission or attempted privilege escalation"
+            "description": "Credential lacks the required permission or authority."
           },
           "404": {
             "$ref": "#/components/responses/LocalError",
@@ -878,13 +810,21 @@
             "$ref": "#/components/responses/LocalError",
             "description": "Immutable key/rotation identity conflict"
           },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
+          },
           "429": {
             "$ref": "#/components/responses/LocalThrottle",
             "description": "64 retained local keys maximum per project"
           },
           "503": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Nonproduction prototype/configuration gate closed"
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         }
       }
@@ -905,39 +845,23 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid request"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Unauthorized"
-          },
-          "404": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Not found in authenticated tenant"
-          },
-          "409": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Idempotency conflict or invalid transition"
-          },
-          "413": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Envelope too large"
-          },
-          "422": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Destination disabled"
-          },
-          "429": {
-            "$ref": "#/components/responses/LocalThrottle",
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change."
-          },
-          "503": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Prototype disabled"
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Project credential lacks required read permission"
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "read"
@@ -959,39 +883,23 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid request"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Unauthorized"
-          },
-          "404": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Not found in authenticated tenant"
-          },
-          "409": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Idempotency conflict or invalid transition"
-          },
-          "413": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Envelope too large"
-          },
-          "422": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Destination disabled"
-          },
-          "429": {
-            "$ref": "#/components/responses/LocalThrottle",
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change."
-          },
-          "503": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Prototype disabled"
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Project credential lacks required read permission"
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "read"
@@ -1024,39 +932,27 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Invalid request"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Unauthorized"
+            "description": "Missing, invalid, revoked or expired credential."
+          },
+          "403": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
           },
           "404": {
             "$ref": "#/components/responses/LocalError",
             "description": "Not found in authenticated tenant"
           },
-          "409": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Idempotency conflict or invalid transition"
-          },
           "413": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Envelope too large"
-          },
-          "422": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Destination disabled"
-          },
-          "429": {
-            "$ref": "#/components/responses/LocalThrottle",
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change."
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
           },
           "503": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Prototype disabled"
-          },
-          "403": {
-            "$ref": "#/components/responses/LocalError",
-            "description": "Project credential lacks required read permission"
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "read"
@@ -1091,15 +987,27 @@
           },
           "400": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Nonempty object, absent object, or query parameters"
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Unauthorized"
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
             "$ref": "#/components/responses/LocalError",
-            "description": "Configure permission required"
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         }
       }

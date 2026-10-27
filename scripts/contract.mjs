@@ -1,5 +1,5 @@
 // Executable OpenAPI parity against fresh local workerd; no provider resources or callbacks.
-import fs from 'node:fs';import assert from 'node:assert/strict';import {createHash} from 'node:crypto';
+import {request as httpRequest} from 'node:http';import fs from 'node:fs';import assert from 'node:assert/strict';import {createHash} from 'node:crypto';
 import Ajv2020 from 'ajv/dist/2020.js';import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
 import {LocalRunLater,RunLaterError} from '../examples/local-client.mjs';
 const spec=JSON.parse(fs.readFileSync(new URL('../docs/openapi.json',import.meta.url)));
@@ -15,7 +15,7 @@ for(const [path,methods]of Object.entries(spec.paths))for(const [method,op]of Ob
  operations.set(op.operationId,{...op,path,method,validateRequest:requestSchema&&compile(requestSchema),validators:responses});
 }
 const bindings=JSON.parse(fs.readFileSync(new URL('../wrangler.jsonc',import.meta.url))).vars;
-const mf=new Miniflare(convertV4MiniflareOptions({workers:[{name:'contract-api',modules:[{type:'ESModule',path:'build/index.js'},{type:'CompiledWasm',path:'build/index_bg.wasm'}],compatibilityDate:'2026-10-27',bindings,durableObjects:{LEDGER:{className:'TaskLedger',useSQLite:true}},queueProducers:{READY:'contract-ready'},queueConsumers:{'contract-ready':{maxBatchSize:1,maxBatchTimeout:0,maxRetries:1}},outboundService:'deny-egress'},{name:'deny-egress',modules:true,compatibilityDate:'2026-10-27',script:'export default {fetch(){return new Response(null,{status:403})}}'}]}));
+const mf=new Miniflare(convertV4MiniflareOptions({workers:[{name:'contract-api',modules:[{type:'ESModule',path:'build/index.js'},{type:'CompiledWasm',path:'build/index_bg.wasm'}],compatibilityDate:'2026-10-27',bindings,durableObjects:{LEDGER:{className:'TaskLedger',useSQLite:true}},queueProducers:{READY:'contract-ready'},queueConsumers:{'contract-ready':{maxBatchSize:1,maxBatchTimeout:0,maxRetries:1}},outboundService:'deny-egress'},{name:'contract-disabled',modules:[{type:'ESModule',path:'build/index.js'},{type:'CompiledWasm',path:'build/index_bg.wasm'}],compatibilityDate:'2026-10-27',bindings:{...bindings,LOCAL_FIXTURES:'false'},outboundService:'deny-egress'},{name:'deny-egress',modules:true,compatibilityDate:'2026-10-27',script:'export default {fetch(){return new Response(null,{status:403})}}'}]}));
 const covered=new Set();let calls=0;
 const dispatch=(...args)=>{assert.ok(++calls<=200,'Finite contract HTTP call budget');return mf.dispatchFetch(...args);};
 async function probe(id,{path,body,status=200,token='local-alpha',key,invalid=false,raw,contentType='application/json'}={}){
@@ -32,6 +32,40 @@ async function probe(id,{path,body,status=200,token='local-alpha',key,invalid=fa
 const client=new LocalRunLater({fetchImpl:dispatch});
 try{
  await probe('getRuntimeHealth',{token:''});
+ // Audit every shared POST/PUT media/envelope exit, including keys and maintenance.
+ for(const [id,op]of operations){
+  if(!['post','put'].includes(op.method))continue;
+  const path=op.path.replace('{id}','task_0000000000000001').replace('{key_id}','contract_probe');
+  await probe(id,{path,raw:'{}',contentType:'text/plain',status:415,invalid:true});
+  await probe(id,{path,raw:'x'.repeat(25000),status:413,invalid:true});
+ }
+ // GET bodies are legal incoming HTTP but forbidden by fetch clients. Use bounded
+ // raw loopback HTTP to exercise the same envelope reader, without changing method.
+ const local=new URL(await mf.ready);assert.equal(local.hostname,'127.0.0.1');
+ async function rawGet(id,status,body,contentType='application/json'){
+  const op=operations.get(id),path=op.path.replace('{id}','task_0000000000000001');
+  assert.ok(++calls<=200,'Finite contract HTTP call budget');
+  const result=await new Promise((resolve,reject)=>{
+   const req=httpRequest(new URL(path,local),{method:'GET',headers:{Authorization:'Bearer local-alpha','Content-Type':contentType,'Content-Length':Buffer.byteLength(body)}},response=>{
+    let text='';response.on('data',chunk=>{text+=chunk;if(Buffer.byteLength(text)>262144)req.destroy(new Error('Bounded middleware response exceeded'));});response.on('end',()=>resolve({status:response.statusCode,type:response.headers['content-type']?.split(';')[0],text}));response.on('error',reject);
+   });req.on('error',reject);req.setTimeout(5000,()=>req.destroy(new Error('Local middleware timeout')));req.end(body);
+  });
+  assert.equal(result.status,status,`Raw GET envelope ${id}`);const validate=op.validators.get(status+':'+result.type);assert.ok(validate,`Undocumented raw GET status/media ${id}`);assert.ok(validate(result.type==='application/json'?JSON.parse(result.text):result.text),`Raw GET schema ${id}`);
+ }
+ for(const [id,op]of operations){if(op.method!=='get'||id==='getRuntimeHealth')continue;await rawGet(id,400,'not-json');await rawGet(id,413,'x'.repeat(25000));}
+ await rawGet('getDefaultQueueLimits',200,'{}','text/plain'); // GET has no 415 media gate.
+ // Disabled prototype gate precedes auth/body/media on every tenant operation.
+ const disabled=await mf.getWorker('contract-disabled');
+ for(const [id,op]of operations){
+  if(id==='getRuntimeHealth')continue;
+  assert.ok(++calls<=200,'Finite contract HTTP call budget');
+  const path=op.path.replace('{id}','task_0000000000000001').replace('{key_id}','contract_probe');
+  const response=await disabled.fetch('http://127.0.0.1:8787'+path,{method:op.method.toUpperCase()});
+  assert.equal(response.status,503,`Prototype gate ${id}`);
+  const type=response.headers.get('Content-Type')?.split(';')[0],validate=op.validators.get('503:'+type);
+  assert.ok(validate,`Undocumented prototype media ${id}`);assert.ok(validate(await response.text()),`Prototype body schema ${id}`);
+ }
+
  const input={destination:'fixture://success',body:'contract fixture',operation_key:'contract_operation',run_at_ms:Date.now()+60000};
  const t=await probe('createTask',{body:input,key:'enqueue',status:201});
  assert.equal((await probe('createTask',{body:input,key:'enqueue'})).id,t.id);
