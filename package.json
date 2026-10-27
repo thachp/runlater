@@ -1,1 +1,15 @@
-{"name":"runlater-local","private":true,"scripts":{"dev":"wrangler dev --local","test:local":"node scripts/integration.mjs"},"devDependencies":{"wrangler":"4.154.0"}}
+{
+  "name": "runlater-local",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "test:local": "node scripts/integration.mjs",
+    "test:examples": "node --test examples/local-examples.test.mjs",
+    "test:contract": "./scripts/build.sh && node scripts/contract.mjs",
+    "example:local": "node examples/quickstart.mjs"
+  },
+  "devDependencies": {
+    "ajv": "8.20.0",
+    "wrangler": "4.154.0"
+  }
+}

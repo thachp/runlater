@@ -197,3 +197,5 @@ This tracks both completed local foundations and remaining MVP work. Issues #2 a
 | [#12](https://github.com/thachp/runlater/issues/12) | Onboarding and an end-to-end integration |
 | [#13](https://github.com/thachp/runlater/issues/13) | Landing, docs, API hosts, and canonical www redirect |
 | [#14](https://github.com/thachp/runlater/issues/14) | CQRS command/query boundaries and consistency — local scope complete |
+
+A loopback-only client example, receiver protocol demonstration and executable local API contract are documented in [the local quickstart](docs/QUICKSTART.md). No account provisioning or live callbacks are required.
