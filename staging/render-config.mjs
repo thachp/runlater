@@ -1,0 +1,11 @@
+// Pure config generation: NO provider calls, secret generation or deployment.
+import fs from 'node:fs';import path from 'node:path';import {fileURLToPath} from 'node:url';
+const [run,subdomain,expires,out]=process.argv.slice(2),expiry=Number(expires);if(!/^[a-z0-9-]{1,24}$/.test(run??'')||!/^[a-z0-9-]{1,63}$/.test(subdomain??'')||!Number.isSafeInteger(expiry)||expiry<=Date.now()||expiry>Date.now()+900000||!out)throw Error('Expected run, existing account subdomain, <=15min absolute expiry, output directory');
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'),api=`runlater-staging-${run}-api`,receiver=`runlater-staging-${run}-receiver`,queue=`runlater-staging-${run}-ready`,host=`${receiver}.${subdomain}.workers.dev`;
+const common={compatibility_date:'2026-10-27',workers_dev:true,preview_urls:false,observability:{enabled:false},limits:{cpu_ms:50,subrequests:4},vars:{STAGING_MODE:'true',STAGING_RUN_ID:run,STAGING_EXPIRES_MS:String(expiry)}};
+const base=JSON.parse(fs.readFileSync(path.join(root,'wrangler.jsonc'),'utf8'));
+const config={...common,name:api,main:path.join(root,'build/worker/shim.mjs'),build:{command:path.join(root,'scripts/build-staging.sh'),cwd:root},vars:{...common.vars,LOCAL_FIXTURES:'true',API_KEY_HASHES:base.vars.API_KEY_HASHES,STAGING_DELIVERY_ENABLED:'false',STAGING_RECEIVER_HOST:host,STAGING_RECEIVER_URL:`https://${host}/callback`},durable_objects:{bindings:[{name:'LEDGER',class_name:'TaskLedger'}]},migrations:[{tag:'v1',new_sqlite_classes:['TaskLedger']}],queues:{producers:[{binding:'READY',queue}],consumers:[{queue,max_batch_size:1,max_batch_timeout:1,max_retries:1,max_concurrency:1}]}};
+const receiverConfig={...common,name:receiver,main:path.join(root,'staging/receiver.mjs')};
+const teardown={...common,name:api,main:path.join(root,'staging/teardown-api.mjs'),migrations:[{tag:'v1',new_sqlite_classes:['TaskLedger']},{tag:'v2-retire',deleted_classes:['TaskLedger']}]};
+fs.mkdirSync(out,{recursive:true});for(const[name,value]of[['api',config],['receiver',receiverConfig],['teardown',teardown]])fs.writeFileSync(path.join(out,name+'.json'),JSON.stringify(value,null,2)+'\n',{flag:'wx'});
+console.log(JSON.stringify({run,api,receiver,queue,receiver_host:host,expires_ms:expiry,outbound_enabled:false,resources_created:0}));
