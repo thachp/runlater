@@ -32,12 +32,14 @@ Recurring cron schedules, workflow orchestration, a full dashboard, billing, and
 
 ## System design
 
-The proposed source of truth is a **tenant-scoped Durable Object with SQLite storage**. Cloudflare Queues transports due work; it does not own task state or serve as long-term scheduled storage.
+RunLater will use **CQRS (Command Query Responsibility Segregation)**: distinct command and query interfaces and handlers over a **tenant-scoped Durable Object with SQLite storage**, which remains the authoritative task ledger. Cloudflare Queues transports due work; it does not own task state or serve as long-term scheduled storage.
 
 ```mermaid
 flowchart TD
     Client["Customer application"]
-    API["Rust API Worker: authenticate, authorize, validate"]
+    API["Rust API Worker: authenticate and authorize"]
+    Commands["Command handlers: enqueue, cancel, redrive, configure"]
+    Queries["Query handlers: status, attempts, paginated lists"]
     Ledger["Tenant-scoped Durable Object: SQLite task ledger, attempts, outbox, leases"]
     Alarm["Durable Object alarm: wake for next due work"]
     Queue["Cloudflare Queues: task identifiers and dispatch generation"]
@@ -47,7 +49,10 @@ flowchart TD
     Reports["Optional derived reporting: not authoritative"]
 
     Client -->|"Create, inspect, cancel, redrive"| API
-    API -->|"Project-scoped operations"| Ledger
+    API -->|"Validated mutation commands"| Commands
+    API -->|"Tenant-scoped read queries"| Queries
+    Commands -->|"Durable writes and state transitions"| Ledger
+    Queries -->|"Read-only access to authoritative state"| Ledger
     Ledger -->|"Arm earliest due time"| Alarm
     Alarm -->|"Reconcile due work and re-arm"| Ledger
     Ledger -->|"Publish durable outbox entries"| Queue
@@ -60,6 +65,15 @@ flowchart TD
     Consumer -->|"Acknowledge only after durable disposition"| Queue
     Ledger -.->|"Redacted events"| Reports
 ```
+
+### CQRS boundaries
+
+- **Commands** validate and change state: enqueue, cancel, redrive, and queue configuration. Their DTOs and handlers are separate from queries. Internal attempt claims and outcomes also use the command side so consumers cannot bypass state-transition rules.
+- **Queries** read task status, attempt history, and paginated lists through tenant-scoped, read-only handlers. They must not mutate business state.
+- **One authority for the MVP.** Both sides can use the same Durable Object storage through separate interfaces. CQRS does not require event sourcing or a separate physical read database.
+- **Consistency is explicit.** Command success means the mutation is durably accepted; responses should include the identifiers and state/version needed for the API read-after-write contract. Any future asynchronous read projection must disclose lag and source versions, apply updates idempotently, and support ordering, rebuilds, and deletion propagation. Such a projection is not a second task authority.
+
+Implementation and separation tests are tracked in [issue #14](https://github.com/thachp/runlater/issues/14).
 
 ### Delivery path
 
@@ -167,3 +181,4 @@ All items below are planned work, not completed features.
 | [#11](https://github.com/thachp/runlater/issues/11) | Reliability and security release evidence |
 | [#12](https://github.com/thachp/runlater/issues/12) | Onboarding and an end-to-end integration |
 | [#13](https://github.com/thachp/runlater/issues/13) | Landing, docs, API hosts, and canonical www redirect |
+| [#14](https://github.com/thachp/runlater/issues/14) | CQRS command/query boundaries and consistency |
