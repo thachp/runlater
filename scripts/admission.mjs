@@ -8,13 +8,23 @@ try{
  const limits={...saved,max_active_tasks:1,max_concurrent:1,dispatch_per_second:1,dispatch_burst:1};
  assert.deepEqual((await request('/v1/queue',{method:'PUT',body:limits})).data,limits);
  assert.deepEqual((await request('/v1/queue')).data,limits);
- const input={destination:'fixture://success',body:'local-admission-fixture',operation_key:prefix,run_at_ms:Date.now()+60000};
+ const input={destination:'fixture://success',body:'local-admission-alpha-'+prefix,operation_key:prefix+'_alpha',run_at_ms:Date.now()+60000};
  const first=(await request('/v1/tasks',{method:'POST',body:input,key:prefix,expected:201})).data;created.push(['alpha',first.id]);
  assert.equal((await request('/v1/tasks',{method:'POST',body:input,key:prefix})).data.id,first.id);
  const limited=await request('/v1/tasks',{method:'POST',body:input,key:prefix+'-second',expected:429});assert.equal(limited.data.reason,'active_tasks');assert.ok(limited.data.retry_after_ms>0);assert.equal(limited.r.headers.get('Retry-After'),'1');
- const other=(await request('/v1/tasks',{tenant:'beta',method:'POST',body:input,key:prefix,expected:201})).data;created.push(['beta',other.id]);
- // User-supplied tenant headers cannot override authenticated ownership.
- const scoped=await fetch(base+'/v1/tasks/'+other.id,{headers:{Authorization:'Bearer local-alpha','x-tenant':'beta'}});if(scoped.status===200){assert.notEqual((await scoped.json()).input.operation_key,prefix)}else{assert.equal(scoped.status,404)}
+ const betaInput={...input,body:'local-admission-beta-'+prefix,operation_key:prefix+'_beta'};
+ const other=(await request('/v1/tasks',{tenant:'beta',method:'POST',body:betaInput,key:prefix,expected:201})).data;created.push(['beta',other.id]);
+ if(process.env.RUNLATER_REQUIRE_COINCIDENT_IDS==='1'){assert.equal(first.id,'task_0000000000000001');assert.equal(other.id,first.id,'fresh tenants must exercise coincident tenant-local task IDs');}
+ // Compare each forged-header read with the actual authenticated tenant's owned result.
+ // Distinct tenant markers make coincident task IDs unambiguous on a fresh store.
+ const alphaOwned=(await request('/v1/tasks/'+first.id)).data;
+ const alphaForged=(await request('/v1/tasks/'+first.id,{extra:{'x-tenant':'beta'}})).data;
+ assert.deepEqual(alphaOwned.input,input);assert.deepEqual(alphaForged.input,alphaOwned.input);assert.equal(alphaForged.id,first.id);
+ const betaOwned=(await request('/v1/tasks/'+other.id,{tenant:'beta'})).data;
+ const betaForged=(await request('/v1/tasks/'+other.id,{tenant:'beta',extra:{'x-tenant':'alpha'}})).data;
+ assert.deepEqual(betaOwned.input,betaInput);assert.deepEqual(betaForged.input,betaOwned.input);assert.equal(betaForged.id,other.id);
+ assert.notEqual(alphaForged.input.operation_key,betaForged.input.operation_key);assert.notEqual(alphaForged.input.body,betaForged.input.body);
+ if(first.id===other.id){console.log('PASS: coincident tenant-local task IDs return distinct tenant-owned markers despite forged tenant headers');}
  await request('/v1/tasks/'+first.id+'/cancel',{method:'POST'});
  const next=(await request('/v1/tasks',{method:'POST',body:input,key:prefix+'-second',expected:201})).data;created.push(['alpha',next.id]);
  await request('/v1/queue',{method:'PUT',body:{...limits,max_concurrent:0},expected:400});assert.deepEqual((await request('/v1/queue')).data,limits);
