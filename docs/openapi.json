@@ -1,0 +1,521 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "RunLater LOCAL prototype",
+    "version": "0.1.0",
+    "description": "No production service. At-least-once design; no ordering or exact-time guarantee. Active idempotency plus 30 days after termination. All numeric limits proposed. Arbitrary outbound HTTPS disabled."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8787",
+      "description": "Local emulator only"
+    }
+  ],
+  "security": [
+    {
+      "projectToken": []
+    }
+  ],
+  "paths": {
+    "/v1/tasks": {
+      "post": {
+        "operationId": "createTask",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Create"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Durably accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Same canonical input and key returns original task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not found in authenticated tenant"
+          },
+          "409": {
+            "description": "Idempotency conflict or invalid transition"
+          },
+          "413": {
+            "description": "Envelope too large"
+          },
+          "422": {
+            "description": "Destination disabled"
+          },
+          "429": {
+            "description": "Tenant capacity; Retry-After: 1"
+          },
+          "503": {
+            "description": "Prototype disabled"
+          }
+        }
+      },
+      "get": {
+        "operationId": "listTasks",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "At most 50 items with next_after cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tasks": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Task"
+                      }
+                    },
+                    "next_after": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not found in authenticated tenant"
+          },
+          "409": {
+            "description": "Idempotency conflict or invalid transition"
+          },
+          "413": {
+            "description": "Envelope too large"
+          },
+          "422": {
+            "description": "Destination disabled"
+          },
+          "429": {
+            "description": "Tenant capacity; Retry-After: 1"
+          },
+          "503": {
+            "description": "Prototype disabled"
+          }
+        }
+      }
+    },
+    "/v1/tasks/{id}": {
+      "get": {
+        "operationId": "getTask",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tenant-owned task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not found in authenticated tenant"
+          },
+          "409": {
+            "description": "Idempotency conflict or invalid transition"
+          },
+          "413": {
+            "description": "Envelope too large"
+          },
+          "422": {
+            "description": "Destination disabled"
+          },
+          "429": {
+            "description": "Tenant capacity; Retry-After: 1"
+          },
+          "503": {
+            "description": "Prototype disabled"
+          }
+        }
+      }
+    },
+    "/v1/tasks/{id}/attempts": {
+      "get": {
+        "operationId": "getAttempts",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Redacted outcomes, no response bodies",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Attempt"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not found in authenticated tenant"
+          },
+          "409": {
+            "description": "Idempotency conflict or invalid transition"
+          },
+          "413": {
+            "description": "Envelope too large"
+          },
+          "422": {
+            "description": "Destination disabled"
+          },
+          "429": {
+            "description": "Tenant capacity; Retry-After: 1"
+          },
+          "503": {
+            "description": "Prototype disabled"
+          }
+        }
+      }
+    },
+    "/v1/tasks/{id}/cancel": {
+      "post": {
+        "operationId": "cancelTask",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "Cancellation cannot undo a leased external effect; recorded success can win.",
+        "responses": {
+          "200": {
+            "description": "Existing result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not found in authenticated tenant"
+          },
+          "409": {
+            "description": "Idempotency conflict or invalid transition"
+          },
+          "413": {
+            "description": "Envelope too large"
+          },
+          "422": {
+            "description": "Destination disabled"
+          },
+          "429": {
+            "description": "Tenant capacity; Retry-After: 1"
+          },
+          "503": {
+            "description": "Prototype disabled"
+          }
+        }
+      }
+    },
+    "/v1/tasks/{id}/redrive": {
+      "post": {
+        "operationId": "redriveTask",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        ],
+        "description": "Failed-only. New linked execution; original history and operation_key preserved.",
+        "responses": {
+          "200": {
+            "description": "Existing result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "New linked task",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not found in authenticated tenant"
+          },
+          "409": {
+            "description": "Idempotency conflict or invalid transition"
+          },
+          "413": {
+            "description": "Envelope too large"
+          },
+          "422": {
+            "description": "Destination disabled"
+          },
+          "429": {
+            "description": "Tenant capacity; Retry-After: 1"
+          },
+          "503": {
+            "description": "Prototype disabled"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "projectToken": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "Create": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "destination",
+          "body",
+          "operation_key"
+        ],
+        "properties": {
+          "destination": {
+            "type": "string",
+            "enum": [
+              "fixture://success",
+              "fixture://retry",
+              "fixture://fail"
+            ]
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 16384,
+            "description": "UTF-8 byte bound is also enforced"
+          },
+          "operation_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$",
+            "description": "Business operation identity, preserved on redrive"
+          },
+          "run_at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "default": 0,
+            "description": "UTC Unix milliseconds; 0 or omitted means immediate; max 365 days ahead"
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "input": {
+            "$ref": "#/components/schemas/Create"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "scheduled",
+              "ready",
+              "running",
+              "retry_wait",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "due_ms": {
+            "type": "integer"
+          },
+          "generation": {
+            "type": "integer"
+          },
+          "fence": {
+            "type": "integer"
+          },
+          "lease_until": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cancel_requested": {
+            "type": "boolean"
+          },
+          "terminal_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Attempt"
+            }
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "initial_due_ms": {
+            "type": "integer",
+            "description": "Persisted initial actual due time used for retry age, separate from canonical input"
+          }
+        }
+      },
+      "Attempt": {
+        "type": "object",
+        "required": [
+          "fence",
+          "started_ms"
+        ],
+        "properties": {
+          "fence": {
+            "type": "integer"
+          },
+          "started_ms": {
+            "type": "integer"
+          },
+          "finished_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+name: Local prototype checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  rust-and-hosts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: cargo fmt -- --check
+      - run: cargo test --locked
+      - run: cargo check --locked --target wasm32-unknown-unknown
+      - run: node --test web/redirect/worker.test.mjs
