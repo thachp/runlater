@@ -39,3 +39,45 @@ pub fn verify(
     mac.update(body);
     mac.verify_slice(&bytes).is_ok()
 }
+
+pub fn tenant_valid(tenant: &str) -> bool {
+    !tenant.is_empty()
+        && tenant.len() <= 64
+        && tenant
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+pub fn task_id_valid(id: &str) -> bool {
+    id.len() == 21
+        && id.starts_with("task_")
+        && id[5..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AuthFault {
+    Unauthorized,
+    InvalidConfiguration,
+}
+pub fn authenticate(config: &str, token: &str) -> Result<String, AuthFault> {
+    let keys: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(config).map_err(|_| AuthFault::InvalidConfiguration)?;
+    if keys.is_empty()
+        || keys.iter().any(|(hash, tenant)| {
+            hash.len() != 64
+                || !hash
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                || !tenant_valid(tenant)
+        })
+    {
+        return Err(AuthFault::InvalidConfiguration);
+    }
+    if token.is_empty() || token.len() > 256 {
+        return Err(AuthFault::Unauthorized);
+    }
+    keys.get(&digest(token.as_bytes()))
+        .cloned()
+        .ok_or(AuthFault::Unauthorized)
+}

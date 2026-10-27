@@ -1,4 +1,5 @@
 //! Deterministic ledger transitions. Runtime persists one atomic SQLite snapshot per tenant.
+use crate::limits::{Bucket, QueueLimits};
 use crate::security::digest;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -60,6 +61,7 @@ pub struct Dedupe {
     pub task: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Dispatch {
     pub tenant: String,
     pub id: String,
@@ -72,14 +74,31 @@ pub struct Ledger {
     #[serde(default)]
     pub redrive_dedupe: BTreeMap<String, BTreeMap<String, Dedupe>>,
     pub sequence: u64,
+    #[serde(default)]
+    pub limits: QueueLimits,
+    #[serde(default)]
+    pub bucket: Option<Bucket>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Fault {
+    DestinationDisabled,
     Invalid,
     Conflict,
     NotFound,
     Capacity,
     Stale,
+    Limited {
+        reason: LimitReason,
+        retry_after_ms: i64,
+    },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitReason {
+    ActiveTasks,
+    PayloadBytes,
+    Concurrency,
+    DispatchRate,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum Outcome {
@@ -129,16 +148,29 @@ impl Ledger {
         parent: Option<String>,
         now: i64,
     ) -> Result<Task, Fault> {
-        if self.tasks.len() >= 1000
-            || self
-                .tasks
-                .values()
-                .map(|t| t.input.body.len())
-                .sum::<usize>()
-                + input.body.len()
-                > 128 * 1024
-        {
+        if self.tasks.len() >= 1000 {
             return Err(Fault::Capacity);
+        }
+        if self.tasks.values().filter(|t| !t.status.terminal()).count()
+            >= self.limits.max_active_tasks as usize
+        {
+            return Err(Fault::Limited {
+                reason: LimitReason::ActiveTasks,
+                retry_after_ms: 1000,
+            });
+        }
+        if self
+            .tasks
+            .values()
+            .map(|t| t.input.body.len())
+            .sum::<usize>()
+            + input.body.len()
+            > self.limits.max_payload_bytes as usize
+        {
+            return Err(Fault::Limited {
+                reason: LimitReason::PayloadBytes,
+                retry_after_ms: 1000,
+            });
         }
         self.sequence += 1;
         let id = format!("task_{:016x}", self.sequence);
@@ -252,6 +284,17 @@ impl Ledger {
             .map_err(|_| Fault::Invalid)?,
         ))
     }
+    pub fn configure(&mut self, limits: QueueLimits, now: i64) -> Result<(), Fault> {
+        limits.validate()?;
+        if let Some(bucket) = self.bucket.as_mut() {
+            bucket.refill(&self.limits, now);
+            bucket.available_milli = bucket
+                .available_milli
+                .min(limits.dispatch_burst as u64 * 1000);
+        }
+        self.limits = limits;
+        Ok(())
+    }
     pub fn reconcile(&mut self, now: i64) {
         for t in self.tasks.values_mut() {
             if t.status == Status::Running && t.lease_until.is_some_and(|x| x <= now) {
@@ -278,20 +321,38 @@ impl Ledger {
     }
     pub fn claim(&mut self, d: &Dispatch, now: i64) -> Result<Option<Task>, Fault> {
         self.reconcile(now);
-        // Conservative per-tenant concurrency cap. Every retry also needs this permit.
-        let busy = self
-            .tasks
-            .values()
-            .filter(|t| t.status == Status::Running)
-            .count()
-            >= 4;
-        let t = self.tasks.get_mut(&d.id).ok_or(Fault::NotFound)?;
-        if t.generation != d.generation || t.status != Status::Ready || t.due_ms > now {
+        let candidate = self.tasks.get(&d.id).ok_or(Fault::NotFound)?;
+        if candidate.generation != d.generation
+            || candidate.status != Status::Ready
+            || candidate.due_ms > now
+        {
             return Ok(None);
         }
-        if busy {
-            return Err(Fault::Capacity);
+        // Expired age is terminal even when no dispatch capacity is available.
+        if now - candidate.initial_due_ms <= DAY {
+            let running: Vec<_> = self
+                .tasks
+                .values()
+                .filter(|t| t.status == Status::Running)
+                .collect();
+            if running.len() >= self.limits.max_concurrent as usize {
+                let retry_after_ms = running
+                    .iter()
+                    .filter_map(|t| t.lease_until)
+                    .min()
+                    .unwrap_or(now + LEASE)
+                    .saturating_sub(now)
+                    .max(1);
+                return Err(Fault::Limited {
+                    reason: LimitReason::Concurrency,
+                    retry_after_ms,
+                });
+            }
+            self.bucket
+                .get_or_insert_with(|| Bucket::new(&self.limits, now))
+                .take(&self.limits, now)?;
         }
+        let t = self.tasks.get_mut(&d.id).ok_or(Fault::NotFound)?;
         if now - t.initial_due_ms > DAY {
             t.status = Status::Failed;
             t.terminal_ms = Some(now);
