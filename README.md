@@ -124,7 +124,7 @@ The target is **at-least-once delivery attempts within configured budgets**, not
 Two different forms of idempotency matter:
 
 - **Create-request deduplication:** a project-scoped idempotency key with the same request returns the original task during a documented retention window. Reusing it with different content is a conflict. This prevents duplicate task creation, not duplicate callback effects.
-- **Callback idempotency:** automatic retries carry a stable task-level identity, while each attempt has its own identity. The receiver should atomically deduplicate the business operation with its side effect. Explicit redrive has a new task identity; if the business operation must remain deduplicated across redrives, retain a customer-defined business-operation key in the payload.
+- **Callback idempotency:** automatic retries carry a stable task-level identity, while each attempt has its own identity. The receiver should atomically deduplicate the business operation with its side effect. Explicit redrive has a new task identity. Supply a customer-defined business-operation key in the top-level `operation_key` field when creating the task; RunLater preserves this key across automatic retries and redrive and delivers it in the signature-covered `RunLater-Operation-Key` header. The receiver can use that stable key to deduplicate across redrives without changing the payload.
 
 If the customer processes a callback but RunLater crashes before recording success, the callback can be sent again. Receiver-side idempotency is required even with leases, signatures, and queue deduplication.
 
