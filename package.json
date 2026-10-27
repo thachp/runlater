@@ -1,0 +1,1 @@
+{"name":"runlater-local","private":true,"scripts":{"dev":"wrangler dev --local","test:local":"node scripts/integration.mjs"},"devDependencies":{"wrangler":"4.154.0"}}

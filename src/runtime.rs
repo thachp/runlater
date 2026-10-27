@@ -1,0 +1,338 @@
+//! workers-rs released API adapter. No customer-controlled network requests exist here.
+use crate::{core::*, security::*};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use worker::*;
+fn now() -> i64 {
+    Date::now().as_millis() as i64
+}
+fn fault(e: Fault) -> Result<Response> {
+    let (code, label) = match e {
+        Fault::Invalid => (400, "invalid_request"),
+        Fault::Conflict => (409, "idempotency_conflict"),
+        Fault::NotFound => (404, "not_found"),
+        Fault::Capacity => (429, "tenant_capacity"),
+        Fault::Stale => (409, "stale_lease"),
+    };
+    let mut r = Response::from_json(&json!({"error":label}))?.with_status(code);
+    if code == 429 {
+        r.headers_mut().set("Retry-After", "1")?;
+    }
+    Ok(r)
+}
+async fn call(env: &Env, tenant: &str, path: &str, body: serde_json::Value) -> Result<Response> {
+    let ns = env.durable_object("LEDGER")?;
+    let stub = ns.id_from_name(tenant)?.get_stub()?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_body(Some(serde_json::to_string(&body)?.into()));
+    let mut req = Request::new_with_init(&format!("https://ledger{path}"), &init)?;
+    req.headers_mut()?.set("x-tenant", tenant)?;
+    stub.fetch_with_request(req).await
+}
+#[event(fetch)]
+pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    if req.path() == "/health" {
+        return Response::from_json(&json!({"status":"prototype","outbound":"disabled"}));
+    }
+    if env
+        .var("LOCAL_FIXTURES")
+        .map(|v| v.to_string())
+        .unwrap_or_default()
+        != "true"
+    {
+        return Response::error("Prototype disabled; no production configuration", 503);
+    }
+    let auth = req.headers().get("Authorization")?.unwrap_or_default();
+    let Some(token) = auth.strip_prefix("Bearer ") else {
+        return Response::error("Unauthorized", 401);
+    };
+    let keys: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&env.var("API_KEY_HASHES")?.to_string())?;
+    let Some(tenant) = keys.get(&digest(token.as_bytes())) else {
+        return Response::error("Unauthorized", 401);
+    };
+    let path = req.path();
+    if !path.starts_with("/v1/tasks") {
+        return Response::error("Not found", 404);
+    }
+    // Read at most 24KiB even when Content-Length is absent or untrusted.
+    use futures_util::StreamExt;
+    let mut bytes = Vec::new();
+    if let Ok(mut reader) = req.stream() {
+        while let Some(chunk) = reader.next().await {
+            let chunk = chunk?;
+            if bytes.len() + chunk.len() > 24 * 1024 {
+                return Response::error("Payload too large", 413);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+    }
+    let body = if bytes.is_empty() {
+        json!(null)
+    } else {
+        match serde_json::from_slice(&bytes) {
+            Ok(b) => b,
+            Err(_) => return Response::error("Invalid JSON", 400),
+        }
+    };
+    let key = req.headers().get("Idempotency-Key")?.unwrap_or_default();
+    let url = req.url()?;
+    let query = url.query().unwrap_or("");
+    call(
+        &env,
+        tenant,
+        "/api",
+        json!({"method":req.method().to_string(),"path":path,"query":query,"key":key,"body":body}),
+    )
+    .await
+}
+#[derive(Deserialize)]
+struct Api {
+    method: String,
+    path: String,
+    query: String,
+    key: String,
+    body: serde_json::Value,
+}
+#[derive(Default, Serialize, Deserialize)]
+struct Stored {
+    tenant: String,
+    ledger: Ledger,
+}
+#[derive(Deserialize)]
+struct Row {
+    data: String,
+}
+#[durable_object]
+pub struct TaskLedger {
+    state: State,
+    env: Env,
+}
+impl TaskLedger {
+    fn load(&self) -> Result<Stored> {
+        let sql = self.state.storage().sql();
+        sql.exec("CREATE TABLE IF NOT EXISTS ledger (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL CHECK(version=1), data TEXT NOT NULL)",None)?;
+        let rows: Vec<Row> = sql
+            .exec("SELECT data FROM ledger WHERE id=1", None)?
+            .to_array()?;
+        match rows.first() {
+            Some(r) => Ok(serde_json::from_str(&r.data)?),
+            None => Ok(Stored::default()),
+        }
+    }
+    fn save(&self, s: &Stored) -> Result<()> {
+        self.state.storage().sql().exec("INSERT INTO ledger(id,version,data) VALUES(1,1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",vec![serde_json::to_string(s)?.into()])?;
+        Ok(())
+    }
+    async fn rearm(&self, preserve_earlier: bool) -> Result<()> {
+        let existing = self.state.storage().get_alarm().await?;
+        let s = self.load()?;
+        if let Some(at) = s.ledger.next_wake(now()) {
+            let target = if preserve_earlier {
+                existing.map_or(at, |old| old.min(at))
+            } else {
+                at
+            };
+            // Released workers-rs i64 is a relative offset, NOT an absolute timestamp.
+            self.state
+                .storage()
+                .set_alarm((target - now()).max(1))
+                .await?;
+        } else {
+            self.state.storage().delete_alarm().await?;
+        }
+        Ok(())
+    }
+    async fn pump(&self) -> Result<()> {
+        // A durable watchdog exists before work and throughout queue I/O.
+        self.state.storage().set_alarm(1000).await?;
+        let mut s = self.load()?;
+        s.ledger.purge(now());
+        let messages = s.ledger.outbox(&s.tenant, now());
+        self.save(&s)?;
+        for d in messages {
+            self.env.queue("READY")?.send(d).await?;
+        }
+        self.rearm(false).await
+    }
+}
+impl DurableObject for TaskLedger {
+    fn new(state: State, env: Env) -> Self {
+        Self { state, env }
+    }
+    async fn fetch(&self, mut req: Request) -> Result<Response> {
+        let tenant = req.headers().get("x-tenant")?.unwrap_or_default();
+        if tenant.is_empty() {
+            return Response::error("Missing tenant", 400);
+        }
+        // Arm before acceptance without postponing already due work. Reload after all awaits.
+        let existing = self.state.storage().get_alarm().await?;
+        if existing.is_none_or(|at| at > now() + 1000) {
+            self.state.storage().set_alarm(1000).await?;
+        }
+        let path = req.path();
+        let raw: serde_json::Value = req.json().await?;
+        let mut s = self.load()?;
+        if s.tenant.is_empty() {
+            s.tenant = tenant.clone()
+        }
+        if s.tenant != tenant {
+            return Response::error("Tenant mismatch", 403);
+        }
+        s.ledger.reconcile(now());
+        let result = if path == "/claim" {
+            let d: Dispatch = serde_json::from_value(raw)?;
+            if d.tenant != tenant {
+                return Response::error("Tenant mismatch", 403);
+            }
+            match s.ledger.claim(&d, now()) {
+                Ok(t) => Response::from_json(&t),
+                Err(e) => fault(e),
+            }
+        } else if path == "/finish" {
+            let id = raw["id"].as_str().unwrap_or("");
+            let fence = raw["fence"].as_u64().unwrap_or(0);
+            let status = raw["status"].as_u64().unwrap_or(500) as u16;
+            match s.ledger.finish(id, fence, Outcome::Http(status), now()) {
+                Ok(t) => Response::from_json(&t),
+                Err(e) => fault(e),
+            }
+        } else if path == "/api" {
+            let a: Api = serde_json::from_value(raw)?;
+            let parts: Vec<&str> = a.path.trim_matches('/').split('/').collect();
+            use crate::application::{self, Command, Query};
+            let command = match (a.method.as_str(), parts.as_slice()) {
+                ("POST", ["v1", "tasks"]) => {
+                    let input: Create = match serde_json::from_value(a.body) {
+                        Ok(i) => i,
+                        Err(_) => return fault(Fault::Invalid),
+                    };
+                    if !destination_allowed(&input.destination) {
+                        return Response::error(
+                            "Arbitrary outbound destinations are disabled",
+                            422,
+                        );
+                    }
+                    Some(Command::Enqueue { key: a.key, input })
+                }
+                ("POST", ["v1", "tasks", id, "cancel"]) => {
+                    Some(Command::Cancel { id: (*id).into() })
+                }
+                ("POST", ["v1", "tasks", id, "redrive"]) => Some(Command::Redrive {
+                    id: (*id).into(),
+                    key: a.key,
+                }),
+                _ => None,
+            };
+            if let Some(c) = command {
+                match application::command(&mut s.ledger, c, now()) {
+                    Ok(r) => Ok(Response::from_json(&r.body)?.with_status(r.status)),
+                    Err(e) => fault(e),
+                }
+            } else {
+                let q = match (a.method.as_str(), parts.as_slice()) {
+                    ("GET", ["v1", "tasks"]) => {
+                        let params: std::collections::BTreeMap<_, _> =
+                            url::form_urlencoded::parse(a.query.as_bytes())
+                                .into_owned()
+                                .collect();
+                        Some(Query::List {
+                            after: params.get("after").cloned().unwrap_or_default(),
+                        })
+                    }
+                    ("GET", ["v1", "tasks", id]) => Some(Query::Task { id: (*id).into() }),
+                    ("GET", ["v1", "tasks", id, "attempts"]) => {
+                        Some(Query::Attempts { id: (*id).into() })
+                    }
+                    _ => None,
+                };
+                match q {
+                    Some(q) => match application::query(&s.ledger, q) {
+                        Ok(v) => Response::from_json(&v),
+                        Err(e) => fault(e),
+                    },
+                    None => Response::error("Not found", 404),
+                }
+            }
+        } else {
+            Response::error("Not found", 404)
+        };
+        self.save(&s)?;
+        self.rearm(true).await?;
+        result
+    }
+    async fn alarm(&self) -> Result<Response> {
+        self.pump().await?;
+        Response::ok("reconciled")
+    }
+}
+#[event(queue)]
+pub async fn consume(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> Result<()> {
+    for message in batch.messages()? {
+        let d = message.body();
+        let mut claim = call(&env, &d.tenant, "/claim", serde_json::to_value(d)?).await?;
+        if claim.status_code() == 429 {
+            message.retry();
+            continue;
+        }
+        if claim.status_code() != 200 {
+            message.retry();
+            continue;
+        }
+        let Some(task) = claim.json::<Option<Task>>().await? else {
+            message.ack();
+            continue;
+        };
+        // In-process receiver: never fetches URLs, follows redirects, resolves DNS, or touches external systems.
+        let enabled = env
+            .var("LOCAL_FIXTURES")
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+            == "true";
+        let status = if enabled && destination_allowed(&task.input.destination) {
+            let key = b"public-local-fixture-signing-key-not-for-production";
+            let ts = now() / 1000;
+            let delivery_id = format!("{}:{}", d.tenant, task.id);
+            let signature = sign(
+                key,
+                ts,
+                &delivery_id,
+                &task.input.operation_key,
+                task.input.body.as_bytes(),
+            );
+            if !verify(
+                key,
+                ts,
+                &delivery_id,
+                &task.input.operation_key,
+                task.input.body.as_bytes(),
+                &signature,
+                ts,
+            ) {
+                500
+            } else {
+                match task.input.destination.as_str() {
+                    "fixture://success" => 204,
+                    "fixture://retry" if task.attempts.len() < 2 => 503,
+                    _ => 400,
+                }
+            }
+        } else {
+            400
+        };
+        let done = call(
+            &env,
+            &d.tenant,
+            "/finish",
+            json!({"id":task.id,"fence":task.fence,"status":status}),
+        )
+        .await?;
+        if done.status_code() == 200 || done.status_code() == 409 {
+            message.ack()
+        } else {
+            message.retry()
+        }
+    }
+    Ok(())
+}
