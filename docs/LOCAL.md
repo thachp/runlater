@@ -4,11 +4,11 @@ This is a tested first vertical slice, not completion of issues 1–13. Original
 
 ## Tools
 
-Released worker/worker-build 0.8.7, Wrangler 4.154.0 (package-lock), Rust 1.92.0, wasm32-unknown-unknown. worker 0.8.7 requires Rust >=1.91. On this Mac Homebrew rustc 1.90 precedes rustup, so the build script explicitly selects the installed stable rustc. Dependencies are locked in Cargo.lock. No upstream main dependencies.
+Released worker/worker-build 0.8.7, Wrangler 4.154.0 (package-lock), Rust 1.92.0, wasm32-unknown-unknown. worker 0.8.7 requires Rust >=1.91. On this Mac Homebrew rustc 1.90 precedes rustup, so the build script explicitly selects the pinned Rust 1.92.0 compiler. Dependencies are locked in Cargo.lock. No upstream main dependencies.
 
 ```
-rustup target add wasm32-unknown-unknown --toolchain stable
-RUSTC="$(rustup which rustc --toolchain stable)" rustup run stable cargo install worker-build --version 0.8.7 --locked
+rustup target add wasm32-unknown-unknown --toolchain 1.92.0
+RUSTC="$(rustup which rustc --toolchain 1.92.0)" rustup run 1.92.0 cargo install worker-build --version 0.8.7 --locked
 npm ci
 ./scripts/check.sh
 npm run dev -- --ip 127.0.0.1 --port 8787

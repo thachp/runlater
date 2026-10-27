@@ -6,7 +6,7 @@ Product domain: **runlater.io**. Domain registration does not mean a hosted serv
 
 ## Status
 
-**Early planning; not production-ready.** This repository currently documents the proposed product and implementation backlog. The architecture, API, and delivery semantics below are design targets, not implemented capabilities. There is no published SLA, production endpoint, or verified capacity claim.
+**Early local prototype; not production-ready.** The repository includes a tested Rust/Cloudflare fixture-only vertical slice and the proposed product backlog. The architecture and delivery semantics below describe the broader design targets; they are not a claim that the full MVP is implemented. Real outbound HTTPS delivery is disabled. There is no published SLA, production endpoint, or verified capacity claim. See [local setup and limits](docs/LOCAL.md) and [verification evidence](docs/VERIFICATION.md).
 
 ## Planned hosts
 
@@ -28,7 +28,7 @@ This is the confirmed host layout, not a deployment claim. DNS, routes, certific
 - Deliver signed HTTPS callbacks with bounded retries, rate limits, and concurrency controls.
 - Keep auditable outcomes without logging credentials or sensitive payloads by default.
 
-Recurring cron schedules, workflow orchestration, a full dashboard, billing, and language-specific SDKs are outside the first MVP. The versioned API contract, limits, and retention policy will be finalized in [issue #1](https://github.com/thachp/runlater/issues/1); no runnable client examples or setup commands are published yet.
+Recurring cron schedules, workflow orchestration, a full dashboard, billing, and language-specific SDKs are outside the first MVP. The versioned API contract, limits, and retention policy will be finalized in [issue #1](https://github.com/thachp/runlater/issues/1); a local-only fixture prototype and setup commands are now available in [docs/LOCAL.md](docs/LOCAL.md). The hosted service and real HTTPS delivery remain unavailable.
 
 ## System design
 
