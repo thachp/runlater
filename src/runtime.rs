@@ -1,4 +1,6 @@
 //! workers-rs released API adapter. No customer-controlled network requests exist here.
+use crate::auth::Permission;
+use crate::auth::{self, AccessFault, Actor, Credential, KeyCommand, KeyQuery, Keyring};
 use crate::{core::*, security::*};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -22,6 +24,7 @@ fn fault(e: Fault) -> Result<Response> {
     }
     let (code, label) = match e {
         Fault::Invalid => (400, "invalid_request"),
+        Fault::Forbidden => (403, "forbidden"),
         Fault::DestinationDisabled => (422, "destination_disabled"),
         Fault::Conflict => (409, "idempotency_conflict"),
         Fault::NotFound => (404, "not_found"),
@@ -35,7 +38,13 @@ fn fault(e: Fault) -> Result<Response> {
     }
     Ok(r)
 }
-async fn call(env: &Env, tenant: &str, path: &str, body: serde_json::Value) -> Result<Response> {
+async fn call(
+    env: &Env,
+    tenant: &str,
+    path: &str,
+    body: serde_json::Value,
+    auth_token: Option<&str>,
+) -> Result<Response> {
     if !tenant_valid(tenant) {
         return Response::error("Invalid tenant", 400);
     }
@@ -46,6 +55,10 @@ async fn call(env: &Env, tenant: &str, path: &str, body: serde_json::Value) -> R
         .with_body(Some(serde_json::to_string(&body)?.into()));
     let mut req = Request::new_with_init(&format!("https://ledger{path}"), &init)?;
     req.headers_mut()?.set("x-tenant", tenant)?;
+    if let Some(token) = auth_token {
+        req.headers_mut()?
+            .set("Authorization", &format!("Bearer {token}"))?;
+    }
     stub.fetch_with_request(req).await
 }
 #[event(fetch)]
@@ -65,15 +78,20 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
     let Some(token) = auth.strip_prefix("Bearer ") else {
         return Response::error("Unauthorized", 401);
     };
-    let tenant = match authenticate(&env.var("API_KEY_HASHES")?.to_string(), token) {
-        Ok(t) => t,
+    let tenant = match auth::route_credential(&env.var("API_KEY_HASHES")?.to_string(), token) {
+        Ok(c) => c.tenant,
         Err(AuthFault::Unauthorized) => return Response::error("Unauthorized", 401),
         Err(AuthFault::InvalidConfiguration) => {
             return Response::error("Invalid authentication configuration", 503)
         }
     };
     let path = req.path();
-    if !(path == "/v1/queue" || path == "/v1/tasks" || path.starts_with("/v1/tasks/")) {
+    if !(path == "/v1/queue"
+        || path == "/v1/tasks"
+        || path.starts_with("/v1/tasks/")
+        || path == "/v1/keys"
+        || path.starts_with("/v1/keys/"))
+    {
         return Response::error("Not found", 404);
     }
     if matches!(req.method(), Method::Post | Method::Put) {
@@ -81,7 +99,7 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
             if content_type.split(';').next().unwrap_or("").trim() != "application/json" {
                 return Response::error("Expected application/json", 415);
             }
-        } else if path == "/v1/tasks" || path == "/v1/queue" {
+        } else if path == "/v1/tasks" || path == "/v1/queue" || path == "/v1/keys" {
             return Response::error("Expected application/json", 415);
         }
     }
@@ -113,6 +131,7 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         &tenant,
         "/api",
         json!({"method":req.method().to_string(),"path":path,"query":query,"key":key,"body":body}),
+        Some(token),
     )
     .await
 }
@@ -128,6 +147,8 @@ struct Api {
 struct Stored {
     tenant: String,
     ledger: Ledger,
+    #[serde(default)]
+    keys: Option<Keyring>,
 }
 #[derive(Deserialize)]
 struct Row {
@@ -139,6 +160,13 @@ pub struct TaskLedger {
     env: Env,
 }
 impl TaskLedger {
+    fn effective_keys(&self, s: &Stored, tenant: &str) -> Result<Keyring> {
+        match &s.keys {
+            Some(keys) => Ok(keys.clone()),
+            None => Keyring::bootstrap(&self.env.var("API_KEY_HASHES")?.to_string(), tenant)
+                .map_err(|_| Error::RustError("Invalid authentication configuration".into())),
+        }
+    }
     fn load(&self) -> Result<Stored> {
         let sql = self.state.storage().sql();
         #[derive(Deserialize)]
@@ -220,20 +248,56 @@ impl DurableObject for TaskLedger {
         }
         let path = req.path();
         let raw: serde_json::Value = req.json().await?;
-        // Parse routes and DTOs before any command-side durable effects.
+        // Parse and authenticate API requests before watchdog or business effects.
+        let mut credential: Option<Credential> = None;
+        let mut permission = None;
+        let mut key_command = None;
         let command = if path == "/api" {
             let a: Api = serde_json::from_value(raw.clone())?;
-            if a.method == "GET" {
-                let s = self.load()?;
-                if !s.tenant.is_empty() && s.tenant != tenant {
-                    return Response::error("Tenant mismatch", 403);
-                }
-                return query_response(&s.ledger, a);
+            let Some(required) = auth::required_permission(&a.method, &a.path) else {
+                return Response::error("Not found", 404);
+            };
+            let header = req.headers().get("Authorization")?.unwrap_or_default();
+            let Some(token) = header.strip_prefix("Bearer ") else {
+                return Response::error("Unauthorized", 401);
+            };
+            let c =
+                match auth::route_credential(&self.env.var("API_KEY_HASHES")?.to_string(), token) {
+                    Ok(c) if c.tenant == tenant => c,
+                    _ => return Response::error("Unauthorized", 401),
+                };
+            let snapshot = self.load()?;
+            if !snapshot.tenant.is_empty() && snapshot.tenant != tenant {
+                return Response::error("Tenant mismatch", 403);
             }
-            match parse_command(a) {
-                Ok(Some(c)) => Some(c),
-                Ok(None) => return Response::error("Not found", 404),
-                Err(e) => return fault(e),
+            let keys = self.effective_keys(&snapshot, &tenant)?;
+            if let Err(e) = keys.authorize(&c, required, now()) {
+                return access_fault(e);
+            }
+            if a.method == "GET" {
+                if a.path == "/v1/keys" {
+                    return Response::from_json(&keys.query(KeyQuery::List));
+                }
+                if a.path == "/v1/keys/audit" {
+                    return Response::from_json(&keys.query(KeyQuery::Audit));
+                }
+                return query_response(&snapshot.ledger, a);
+            }
+            permission = Some(required);
+            credential = Some(c);
+            if a.path.starts_with("/v1/keys") {
+                key_command = match parse_key_command(a) {
+                    Ok(Some(c)) => Some(c),
+                    Ok(None) => return Response::error("Not found", 404),
+                    Err(e) => return fault(e),
+                };
+                None
+            } else {
+                match parse_command(a) {
+                    Ok(Some(c)) => Some(c),
+                    Ok(None) => return Response::error("Not found", 404),
+                    Err(e) => return fault(e),
+                }
             }
         } else {
             None
@@ -262,7 +326,7 @@ impl DurableObject for TaskLedger {
         } else {
             None
         };
-        if command.is_none() && dispatch.is_none() && finish.is_none() {
+        if command.is_none() && key_command.is_none() && dispatch.is_none() && finish.is_none() {
             return Response::error("Not found", 404);
         }
         // Arm before acceptance without postponing already due work. Reload after all awaits.
@@ -278,6 +342,20 @@ impl DurableObject for TaskLedger {
         if s.tenant != tenant {
             return Response::error("Tenant mismatch", 403);
         }
+        // Storage awaits above may interleave revocation. Recheck the authoritative keyring
+        // immediately before the synchronous mutation/commit section, without another await.
+        let actor: Option<Actor> =
+            if let (Some(c), Some(required)) = (credential.as_ref(), permission) {
+                let keys = self.effective_keys(&s, &tenant)?;
+                let actor = match keys.authorize(c, required, now()) {
+                    Ok(a) => a,
+                    Err(e) => return access_fault(e),
+                };
+                s.keys = Some(keys);
+                Some(actor)
+            } else {
+                None
+            };
         s.ledger
             .migrate_legacy_redrive_keys()
             .map_err(|_| Error::RustError("Invalid legacy redrive state".into()))?;
@@ -295,9 +373,33 @@ impl DurableObject for TaskLedger {
                 Ok(t) => Response::from_json(&t),
                 Err(e) => fault(e),
             }
+        } else if let Some(c) = key_command {
+            let keys = s
+                .keys
+                .as_mut()
+                .ok_or_else(|| Error::RustError("Missing project keys".into()))?;
+            match keys.command(
+                actor
+                    .as_ref()
+                    .ok_or_else(|| Error::RustError("Missing key actor".into()))?,
+                c,
+                now(),
+            ) {
+                Ok((view, created)) => {
+                    Ok(Response::from_json(&view)?.with_status(if created { 201 } else { 200 }))
+                }
+                Err(e) => fault(e),
+            }
         } else if let Some(c) = command {
             match crate::application::command(&mut s.ledger, c, now()) {
-                Ok(r) => Ok(Response::from_json(&r.body)?.with_status(r.status)),
+                Ok(r) => Ok(Response::from_json(
+                    &r.scoped_body(
+                        actor
+                            .as_ref()
+                            .is_some_and(|a| a.permissions.contains(&Permission::Read)),
+                    ),
+                )?
+                .with_status(r.status)),
                 Err(e) => fault(e),
             }
         } else {
@@ -316,7 +418,7 @@ impl DurableObject for TaskLedger {
 pub async fn consume(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> Result<()> {
     for message in batch.messages()? {
         let d = message.body();
-        let mut claim = call(&env, &d.tenant, "/claim", serde_json::to_value(d)?).await?;
+        let mut claim = call(&env, &d.tenant, "/claim", serde_json::to_value(d)?, None).await?;
         if claim.status_code() == 429 {
             // A durable ready/outbox disposition and alarm were committed before this response.
             // Admission deferral does not start an independent transport retry loop.
@@ -373,6 +475,7 @@ pub async fn consume(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> 
             &d.tenant,
             "/finish",
             json!({"id":task.id,"fence":task.fence,"status":status}),
+            None,
         )
         .await?;
         if done.status_code() == 200 || done.status_code() == 409 {
@@ -445,4 +548,42 @@ fn parse_command(a: Api) -> std::result::Result<Option<crate::application::Comma
         _ => None,
     };
     Ok(c)
+}
+
+fn access_fault(e: AccessFault) -> Result<Response> {
+    match e {
+        AccessFault::Unauthorized => Response::error("Unauthorized", 401),
+        AccessFault::Forbidden => fault(Fault::Forbidden),
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RotateBody {
+    new_key: auth::NewKey,
+    revoke_old_at_ms: i64,
+}
+fn parse_key_command(a: Api) -> std::result::Result<Option<KeyCommand>, Fault> {
+    let parts: Vec<&str> = a.path.trim_matches('/').split('/').collect();
+    match (a.method.as_str(), parts.as_slice()) {
+        ("POST", ["v1", "keys"]) => Ok(Some(KeyCommand::Create(
+            serde_json::from_value(a.body).map_err(|_| Fault::Invalid)?,
+        ))),
+        ("POST", ["v1", "keys", id, "revoke"]) if auth::key_id_valid(id) => {
+            if !a.body.is_null() {
+                return Err(Fault::Invalid);
+            }
+            Ok(Some(KeyCommand::Revoke {
+                key_id: (*id).into(),
+            }))
+        }
+        ("POST", ["v1", "keys", id, "rotate"]) if auth::key_id_valid(id) => {
+            let body: RotateBody = serde_json::from_value(a.body).map_err(|_| Fault::Invalid)?;
+            Ok(Some(KeyCommand::Rotate {
+                key_id: (*id).into(),
+                new_key: body.new_key,
+                revoke_old_at_ms: body.revoke_old_at_ms,
+            }))
+        }
+        _ => Ok(None),
+    }
 }

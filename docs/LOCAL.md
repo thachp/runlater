@@ -56,3 +56,5 @@ During the local spike, integration caught and corrected two runtime-specific de
 Reviewer regression commands (with local emulator running): `node scripts/query-readonly.mjs` checks actual durable SQLite schema/ledger/alarm immutability across HTTP GETs; `node scripts/delayed-body.mjs` overlaps a streamed request body with an earlier scheduled alarm. Redrive dedupe uses a separate nested parent/key map, checks fingerprint and lineage, and survives source retention expiry while the new execution remains retained.
 
 Default-queue admission and durable dispatch rate/concurrency controls are documented in [ADMISSION.md](ADMISSION.md). All source and endpoints remain local-fixture-only.
+
+Project-scoped action permissions, nonproduction key issuance/revocation/rotation and redacted lifecycle audit are now implemented in [AUTH.md](AUTH.md). Run `node scripts/key-lifecycle.mjs` against a fresh local emulator store. These tests deliberately use public fixture credentials; production key provisioning remains gated.

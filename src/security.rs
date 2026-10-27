@@ -60,7 +60,9 @@ pub enum AuthFault {
     Unauthorized,
     InvalidConfiguration,
 }
-pub fn authenticate(config: &str, token: &str) -> Result<String, AuthFault> {
+pub fn configured_keys(
+    config: &str,
+) -> Result<std::collections::BTreeMap<String, String>, AuthFault> {
     let keys: std::collections::BTreeMap<String, String> =
         serde_json::from_str(config).map_err(|_| AuthFault::InvalidConfiguration)?;
     if keys.is_empty()
@@ -74,6 +76,10 @@ pub fn authenticate(config: &str, token: &str) -> Result<String, AuthFault> {
     {
         return Err(AuthFault::InvalidConfiguration);
     }
+    Ok(keys)
+}
+pub fn authenticate(config: &str, token: &str) -> Result<String, AuthFault> {
+    let keys = configured_keys(config)?;
     if token.is_empty() || token.len() > 256 {
         return Err(AuthFault::Unauthorized);
     }
