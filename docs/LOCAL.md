@@ -16,7 +16,7 @@ npm run dev -- --ip 127.0.0.1 --port 8787
 npm run test:local
 ```
 
-All callbacks run in-process. No HTTP callbacks, DNS queries, redirects or production secrets exist. Public test tokens `local-alpha` and `local-beta` map to separate Durable Objects through SHA-256 token hashes. Fixture signing key is public test data. Configuration-based token revocation takes effect on each request; key provisioning/rotation/admin APIs are deferred.
+All callbacks run in-process. No HTTP callbacks, DNS queries, redirects or production secrets exist. Public test tokens `local-alpha` and `local-beta` map to separate Durable Objects through SHA-256 token hashes. Fixture signing key is public test data. Local project-scoped key issuance, revocation, rotation and administrative permissions are now implemented; see [AUTH.md](AUTH.md). Once initialized, the persisted keyring is authoritative. Production credential provisioning and secure administrator enrollment remain deferred.
 
 Create requires `Idempotency-Key` (1–128 bytes); body is a UTF-8 string, maximum 16KiB; JSON envelope maximum 24KiB. UTC Unix milliseconds are used for scheduling (at most 365 days ahead). `0` requests immediate delivery. Exact dispatch time and ordering are not guaranteed. GET list accepts `after` cursor, returns at most 50 tasks. POST cancel suppresses future attempts, while recorded success can win an in-flight race. Failed-only redrive requires a fresh idempotency key (maximum 64 bytes) and creates a linked task, leaving history intact.
 
@@ -32,7 +32,7 @@ Proposed defaults: lease 30s; 4 concurrent attempts per tenant by default (now c
 
 ## Boundaries still required before beta
 
-Actual HTTPS delivery, runtime DNS-rebinding proof and verified destination enrollment; bounded real HTTP timeout/headers/body and key rotation; stronger API key lifecycle/scopes; multiple named queues and measured rate/fairness/load controls; DLQ operational reconciliation; normalized SQL/index migration and load limits; full failure injection, noisy-neighbor and restart suites; metrics; capacity evidence; hosted landing/docs/API; deployment and DNS review. Do not close all backlog issues based on this slice.
+Actual HTTPS delivery, runtime DNS-rebinding proof and verified destination enrollment; bounded real HTTP timeout/headers/body and key rotation; production API-key provisioning, enrollment and recovery; multiple named queues and measured rate/fairness/load controls; DLQ operational reconciliation; normalized SQL/index migration and load limits; full failure injection, noisy-neighbor and restart suites; metrics; capacity evidence; hosted landing/docs/API; deployment and DNS review. Do not close all backlog issues based on this slice.
 
 ## CQRS
 
