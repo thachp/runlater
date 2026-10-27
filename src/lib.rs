@@ -6,3 +6,5 @@ pub mod security;
 pub mod application;
 
 pub mod limits;
+
+pub mod auth;

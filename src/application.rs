@@ -17,6 +17,22 @@ pub struct CommandResult {
     pub status: u16,
     pub body: Value,
 }
+impl CommandResult {
+    /// Mutation permissions do not grant access to persisted payloads or attempt history.
+    /// Legacy full-scope fixtures retain their original response contract.
+    pub fn scoped_body(&self, can_read: bool) -> Value {
+        if can_read || self.body.get("id").is_none() {
+            return self.body.clone();
+        }
+        let mut receipt = serde_json::Map::new();
+        for field in ["id", "status", "generation", "cancel_requested", "parent"] {
+            if let Some(value) = self.body.get(field) {
+                receipt.insert(field.into(), value.clone());
+            }
+        }
+        Value::Object(receipt)
+    }
+}
 pub fn command(ledger: &mut Ledger, c: Command, now: i64) -> Result<CommandResult, Fault> {
     if let Command::ConfigureQueue { limits } = c {
         ledger.configure(limits, now)?;

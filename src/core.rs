@@ -81,6 +81,7 @@ pub struct Ledger {
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Fault {
+    Forbidden,
     DestinationDisabled,
     Invalid,
     Conflict,

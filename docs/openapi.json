@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "RunLater LOCAL prototype",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "No production service. At-least-once design; no ordering or exact-time guarantee. Active idempotency plus 30 days after termination. All numeric limits proposed. Arbitrary outbound HTTPS disabled."
   },
   "servers": [
@@ -48,7 +48,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Task"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Task"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TaskReceipt"
+                    }
+                  ]
                 }
               }
             }
@@ -58,7 +65,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Task"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Task"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TaskReceipt"
+                    }
+                  ]
                 }
               }
             }
@@ -123,8 +137,12 @@
           },
           "415": {
             "description": "Expected application/json for JSON request body"
+          },
+          "403": {
+            "description": "Project credential lacks required enqueue permission"
           }
-        }
+        },
+        "x-required-permission": "enqueue"
       },
       "get": {
         "operationId": "listTasks",
@@ -219,8 +237,12 @@
           },
           "503": {
             "description": "Prototype disabled"
+          },
+          "403": {
+            "description": "Project credential lacks required read permission"
           }
-        }
+        },
+        "x-required-permission": "read"
       }
     },
     "/v1/tasks/{id}": {
@@ -304,8 +326,12 @@
           },
           "503": {
             "description": "Prototype disabled"
+          },
+          "403": {
+            "description": "Project credential lacks required read permission"
           }
-        }
+        },
+        "x-required-permission": "read"
       }
     },
     "/v1/tasks/{id}/attempts": {
@@ -392,8 +418,12 @@
           },
           "503": {
             "description": "Prototype disabled"
+          },
+          "403": {
+            "description": "Project credential lacks required read permission"
           }
-        }
+        },
+        "x-required-permission": "read"
       }
     },
     "/v1/tasks/{id}/cancel": {
@@ -416,7 +446,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Task"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Task"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TaskReceipt"
+                    }
+                  ]
                 }
               }
             }
@@ -481,8 +518,12 @@
           },
           "415": {
             "description": "Expected application/json for JSON request body"
+          },
+          "403": {
+            "description": "Project credential lacks required cancel permission"
           }
-        }
+        },
+        "x-required-permission": "cancel"
       }
     },
     "/v1/tasks/{id}/redrive": {
@@ -515,7 +556,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Task"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Task"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TaskReceipt"
+                    }
+                  ]
                 }
               }
             }
@@ -525,7 +573,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Task"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Task"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TaskReceipt"
+                    }
+                  ]
                 }
               }
             }
@@ -590,8 +645,12 @@
           },
           "415": {
             "description": "Expected application/json for JSON request body"
+          },
+          "403": {
+            "description": "Project credential lacks required redrive permission"
           }
-        }
+        },
+        "x-required-permission": "redrive"
       }
     },
     "/v1/queue": {
@@ -620,8 +679,12 @@
           },
           "503": {
             "description": "Prototype disabled or malformed authentication configuration"
+          },
+          "403": {
+            "description": "Project credential lacks required read permission"
           }
-        }
+        },
+        "x-required-permission": "read"
       },
       "put": {
         "operationId": "configureDefaultQueueLimits",
@@ -658,6 +721,311 @@
           },
           "503": {
             "description": "Prototype disabled or malformed authentication configuration"
+          },
+          "403": {
+            "description": "Project credential lacks required configure permission"
+          }
+        },
+        "x-required-permission": "configure"
+      }
+    },
+    "/v1/keys": {
+      "get": {
+        "operationId": "listProjectKeys",
+        "x-required-permission": "manage_keys",
+        "responses": {
+          "200": {
+            "description": "Existing/current redacted result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/KeyView"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed DTO, unsupported local policy or lifetime"
+          },
+          "401": {
+            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+          },
+          "403": {
+            "description": "Missing operation permission or attempted privilege escalation"
+          },
+          "404": {
+            "description": "Unknown project-owned key"
+          },
+          "409": {
+            "description": "Immutable key/rotation identity conflict"
+          },
+          "429": {
+            "description": "64 retained local keys maximum per project"
+          },
+          "503": {
+            "description": "Nonproduction prototype/configuration gate closed"
+          }
+        }
+      },
+      "post": {
+        "operationId": "issueLocalProjectKey",
+        "x-required-permission": "manage_keys",
+        "description": "Fixture-only. Same key ID and canonical spec replay without reactivating revoked/expired keys. Grants cannot exceed actor permissions.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewLocalKey"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Existing/current redacted result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyView"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "New key durably committed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed DTO, unsupported local policy or lifetime"
+          },
+          "401": {
+            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+          },
+          "403": {
+            "description": "Missing operation permission or attempted privilege escalation"
+          },
+          "404": {
+            "description": "Unknown project-owned key"
+          },
+          "409": {
+            "description": "Immutable key/rotation identity conflict"
+          },
+          "429": {
+            "description": "64 retained local keys maximum per project"
+          },
+          "503": {
+            "description": "Nonproduction prototype/configuration gate closed"
+          }
+        }
+      }
+    },
+    "/v1/keys/audit": {
+      "get": {
+        "operationId": "getKeyAudit",
+        "x-required-permission": "manage_keys",
+        "responses": {
+          "200": {
+            "description": "Existing/current redacted result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "events": {
+                      "type": "array",
+                      "maxItems": 256,
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "actor_key_id": {
+                            "type": "string"
+                          },
+                          "target_key_id": {
+                            "type": "string"
+                          },
+                          "action": {
+                            "type": "string"
+                          },
+                          "at_ms": {
+                            "type": "integer"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed DTO, unsupported local policy or lifetime"
+          },
+          "401": {
+            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+          },
+          "403": {
+            "description": "Missing operation permission or attempted privilege escalation"
+          },
+          "404": {
+            "description": "Unknown project-owned key"
+          },
+          "409": {
+            "description": "Immutable key/rotation identity conflict"
+          },
+          "429": {
+            "description": "64 retained local keys maximum per project"
+          },
+          "503": {
+            "description": "Nonproduction prototype/configuration gate closed"
+          }
+        }
+      }
+    },
+    "/v1/keys/{key_id}/revoke": {
+      "post": {
+        "operationId": "revokeProjectKey",
+        "x-required-permission": "manage_keys",
+        "parameters": [
+          {
+            "name": "key_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "Immediate for subsequent API authorization. Does not cancel accepted work or undo a command that already committed. Target permissions must be a subset of actor permissions.",
+        "responses": {
+          "200": {
+            "description": "Existing/current redacted result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed DTO, unsupported local policy or lifetime"
+          },
+          "401": {
+            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+          },
+          "403": {
+            "description": "Missing operation permission or attempted privilege escalation"
+          },
+          "404": {
+            "description": "Unknown project-owned key"
+          },
+          "409": {
+            "description": "Immutable key/rotation identity conflict"
+          },
+          "429": {
+            "description": "64 retained local keys maximum per project"
+          },
+          "503": {
+            "description": "Nonproduction prototype/configuration gate closed"
+          }
+        }
+      }
+    },
+    "/v1/keys/{key_id}/rotate": {
+      "post": {
+        "operationId": "rotateLocalProjectKey",
+        "x-required-permission": "manage_keys",
+        "parameters": [
+          {
+            "name": "key_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "Atomically issue a new immutable key and schedule source revocation. Overlap <=24h; no validity gap permitted; replays are keyed by the new immutable key ID.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "new_key",
+                  "revoke_old_at_ms"
+                ],
+                "properties": {
+                  "new_key": {
+                    "$ref": "#/components/schemas/NewLocalKey"
+                  },
+                  "revoke_old_at_ms": {
+                    "type": "integer",
+                    "format": "int64"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Existing/current redacted result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyView"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "New key durably committed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed DTO, unsupported local policy or lifetime"
+          },
+          "401": {
+            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+          },
+          "403": {
+            "description": "Missing operation permission or attempted privilege escalation"
+          },
+          "404": {
+            "description": "Unknown project-owned key"
+          },
+          "409": {
+            "description": "Immutable key/rotation identity conflict"
+          },
+          "429": {
+            "description": "64 retained local keys maximum per project"
+          },
+          "503": {
+            "description": "Nonproduction prototype/configuration gate closed"
           }
         }
       }
@@ -667,7 +1035,8 @@
     "securitySchemes": {
       "projectToken": {
         "type": "http",
-        "scheme": "bearer"
+        "scheme": "bearer",
+        "description": "Local fixtures only: legacy local-alpha/local-beta bootstrap tokens, or rl_local.<tenant>.<key_id>.<public_fixture_secret>. Production provisioning is gated."
       }
     },
     "schemas": {
@@ -768,7 +1137,13 @@
             "type": "integer",
             "description": "Persisted initial actual due time used for retry age, separate from canonical input"
           }
-        }
+        },
+        "required": [
+          "id",
+          "input",
+          "status",
+          "generation"
+        ]
       },
       "Attempt": {
         "type": "object",
@@ -840,6 +1215,150 @@
           }
         },
         "description": "All values proposed local prototype limits. One tenant-wide default logical queue per project; no multiple-queue sharding."
+      },
+      "NewLocalKey": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key_id",
+          "token_sha256",
+          "permissions",
+          "expires_at_ms"
+        ],
+        "properties": {
+          "key_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,80}$",
+            "description": "Immutable local key ID; bootstrap_ prefix reserved"
+          },
+          "token_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "SHA-256 of complete nonproduction rl_local.<tenant>.<key_id>.<secret> token. Server never receives raw secret in this body."
+          },
+          "permissions": {
+            "type": "array",
+            "uniqueItems": true,
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "enum": [
+                "enqueue",
+                "read",
+                "cancel",
+                "redrive",
+                "configure",
+                "manage_keys"
+              ]
+            }
+          },
+          "not_before_ms": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0,
+            "minimum": 0
+          },
+          "expires_at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exclusive UTC ms cutoff, future and no more than 30 days ahead; proposed local policy"
+          }
+        }
+      },
+      "KeyView": {
+        "type": "object",
+        "properties": {
+          "key_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,80}$",
+            "description": "Immutable local key ID; bootstrap_ prefix reserved"
+          },
+          "permissions": {
+            "type": "array",
+            "uniqueItems": true,
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "enum": [
+                "enqueue",
+                "read",
+                "cancel",
+                "redrive",
+                "configure",
+                "manage_keys"
+              ]
+            }
+          },
+          "not_before_ms": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0,
+            "minimum": 0
+          },
+          "expires_at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exclusive UTC ms cutoff; legacy local bootstrap fixtures have an effectively unbounded cutoff."
+          },
+          "created_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "revoked_at_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rotated_from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "description": "No credential verifier or plaintext token is returned."
+      },
+      "TaskReceipt": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "scheduled",
+              "ready",
+              "running",
+              "retry_wait",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "generation": {
+            "type": "integer"
+          },
+          "cancel_requested": {
+            "type": "boolean"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "description": "Returned for task mutation permissions without read; excludes payload, destination and attempts.",
+        "required": [
+          "id",
+          "status",
+          "generation",
+          "cancel_requested",
+          "parent"
+        ],
+        "additionalProperties": false
       }
     }
   }
