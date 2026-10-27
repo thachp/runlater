@@ -20,6 +20,6 @@ for p in sorted(root.rglob('*.sqlite')):
 assert ledger_seen,'No fixture ledger found; set RUNLATER_STATE_DIR to the emulator persistence directory'
 print(hashlib.sha256(repr(out).encode()).hexdigest())
 `],{encoding:'utf8'});assert.equal(p.status,0,p.stderr);return p.stdout.trim()}
-const before=snapshot();for(const path of ['/v1/keys','/v1/keys/audit','/v1/queue','/v1/tasks','/v1/tasks/'+task.id,'/v1/tasks/'+task.id+'/attempts','/v1/tasks/missing']){const r=await fetch(base+path,{headers});assert.ok([200,404].includes(r.status));await r.text();}
+const before=snapshot();for(const path of ['/v1/keys','/v1/keys/audit','/v1/queue','/v1/queue/health','/v1/queue/audit','/v1/tasks','/v1/tasks/'+task.id,'/v1/tasks/'+task.id+'/attempts','/v1/tasks/'+task.id+'/inspection','/v1/tasks/missing']){const r=await fetch(base+path,{headers});assert.ok([200,404].includes(r.status));await r.text();}
 const after=snapshot();assert.equal(after,before,'HTTP queries changed durable SQL schema, ledger or alarm metadata');
 await fetch(base+'/v1/tasks/'+task.id+'/cancel',{method:'POST',headers});console.log('PASS: actual HTTP GET list/task/attempts/not-found leave durable SQL schema, ledger and alarm metadata unchanged');

@@ -2,12 +2,16 @@
 use crate::core::{Create, Fault, Ledger};
 use serde_json::{json, Value};
 pub enum Command {
+    MaintainRetention,
     ConfigureQueue { limits: crate::limits::QueueLimits },
     Enqueue { key: String, input: Create },
     Cancel { id: String },
     Redrive { id: String, key: String },
 }
 pub enum Query {
+    Health { sampled_at_ms: i64 },
+    Audit,
+    Inspection { id: String },
     QueueConfig,
     Task { id: String },
     Attempts { id: String },
@@ -34,6 +38,12 @@ impl CommandResult {
     }
 }
 pub fn command(ledger: &mut Ledger, c: Command, now: i64) -> Result<CommandResult, Fault> {
+    if let Command::MaintainRetention = c {
+        return Ok(CommandResult {
+            status: 200,
+            body: serde_json::to_value(ledger.purge(now)).map_err(|_| Fault::Invalid)?,
+        });
+    }
     if let Command::ConfigureQueue { limits } = c {
         ledger.configure(limits, now)?;
         return Ok(CommandResult {
@@ -42,7 +52,9 @@ pub fn command(ledger: &mut Ledger, c: Command, now: i64) -> Result<CommandResul
         });
     }
     let (task, created) = match c {
-        Command::ConfigureQueue { .. } => unreachable!("handled above"),
+        Command::MaintainRetention | Command::ConfigureQueue { .. } => {
+            unreachable!("handled above")
+        }
         Command::Enqueue { key, input } => ledger.create(&key, input, now)?,
         Command::Cancel { id } => (ledger.cancel(&id, now)?, false),
         Command::Redrive { id, key } => ledger.redrive(&id, &key, now)?,
@@ -54,6 +66,11 @@ pub fn command(ledger: &mut Ledger, c: Command, now: i64) -> Result<CommandResul
 }
 pub fn query(ledger: &Ledger, q: Query) -> Result<Value, Fault> {
     match q {
+        Query::Health { sampled_at_ms } => Ok(crate::operations::health(ledger, sampled_at_ms)),
+        Query::Audit => Ok(
+            json!({"events":ledger.audit,"capacity":crate::operations::AUDIT_CAP,"last_sequence":ledger.audit_sequence}),
+        ),
+        Query::Inspection { id } => Ok(crate::operations::inspection(&ledger.get(&id)?)),
         Query::QueueConfig => serde_json::to_value(&ledger.limits).map_err(|_| Fault::Invalid),
         Query::Task { id } => serde_json::to_value(ledger.get(&id)?).map_err(|_| Fault::Invalid),
         Query::Attempts { id } => {

@@ -58,3 +58,5 @@ Reviewer regression commands (with local emulator running): `node scripts/query-
 Default-queue admission and durable dispatch rate/concurrency controls are documented in [ADMISSION.md](ADMISSION.md). All source and endpoints remain local-fixture-only.
 
 Project-scoped action permissions, nonproduction key issuance/revocation/rotation and redacted lifecycle audit are now implemented in [AUTH.md](AUTH.md). Run `node scripts/key-lifecycle.mjs` against a fresh local emulator store. These tests deliberately use public fixture credentials; production key provisioning remains gated.
+
+Tenant-scoped read-only operational views and explicit retention maintenance are described in [OPERATIONS.md](OPERATIONS.md).
