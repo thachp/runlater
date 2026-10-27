@@ -139,6 +139,10 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
     }
     let path = req.path();
     if !(path == "/v1/queue"
+        || matches!(
+            path.as_str(),
+            "/v1/queue/health" | "/v1/queue/audit" | "/v1/queue/maintenance"
+        )
         || path == "/v1/tasks"
         || path.starts_with("/v1/tasks/")
         || path == "/v1/keys"
@@ -635,6 +639,11 @@ fn query_response(ledger: &Ledger, a: Api) -> Result<Response> {
     let parts: Vec<&str> = a.path.trim_matches('/').split('/').collect();
     let q = match parts.as_slice() {
         ["v1", "queue"] => Some(Query::QueueConfig),
+        ["v1", "queue", "health"] => Some(Query::Health {
+            sampled_at_ms: now(),
+        }),
+        ["v1", "queue", "audit"] => Some(Query::Audit),
+        ["v1", "tasks", id, "inspection"] => Some(Query::Inspection { id: (*id).into() }),
         ["v1", "tasks"] => {
             let params: std::collections::BTreeMap<_, _> =
                 url::form_urlencoded::parse(a.query.as_bytes())
@@ -689,6 +698,12 @@ fn parse_command(
             id: (*id).into(),
             key: a.key,
         }),
+        ("POST", ["v1", "queue", "maintenance"]) => {
+            if !a.query.is_empty() || !a.body.as_object().is_some_and(|m| m.is_empty()) {
+                return Err(Fault::Invalid);
+            }
+            Some(Command::MaintainRetention)
+        }
         ("PUT", ["v1", "queue"]) => {
             let limits: crate::limits::QueueLimits =
                 serde_json::from_value(a.body).map_err(|_| Fault::Invalid)?;

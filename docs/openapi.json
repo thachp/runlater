@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "RunLater LOCAL prototype",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "No production service. At-least-once design; no ordering or exact-time guarantee. Active idempotency plus 30 days after termination. All numeric limits proposed. Arbitrary outbound HTTPS disabled."
   },
   "servers": [
@@ -1026,6 +1026,310 @@
           },
           "503": {
             "description": "Nonproduction prototype/configuration gate closed"
+          }
+        }
+      }
+    },
+    "/v1/queue/health": {
+      "get": {
+        "operationId": "getQueueHealth",
+        "responses": {
+          "200": {
+            "description": "Read-only tenant-local ledger health snapshot; not provider Queue depth. See OPERATIONS.md.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not found in authenticated tenant"
+          },
+          "409": {
+            "description": "Idempotency conflict or invalid transition"
+          },
+          "413": {
+            "description": "Envelope too large"
+          },
+          "422": {
+            "description": "Destination disabled"
+          },
+          "429": {
+            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "active_tasks",
+                        "payload_bytes",
+                        "concurrency",
+                        "dispatch_rate"
+                      ]
+                    },
+                    "retry_after_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Prototype disabled"
+          },
+          "403": {
+            "description": "Project credential lacks required read permission"
+          }
+        },
+        "x-required-permission": "read"
+      }
+    },
+    "/v1/queue/audit": {
+      "get": {
+        "operationId": "getQueueAudit",
+        "responses": {
+          "200": {
+            "description": "Bounded payload-free tenant-local activity journal, latest 256 events.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not found in authenticated tenant"
+          },
+          "409": {
+            "description": "Idempotency conflict or invalid transition"
+          },
+          "413": {
+            "description": "Envelope too large"
+          },
+          "422": {
+            "description": "Destination disabled"
+          },
+          "429": {
+            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "active_tasks",
+                        "payload_bytes",
+                        "concurrency",
+                        "dispatch_rate"
+                      ]
+                    },
+                    "retry_after_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Prototype disabled"
+          },
+          "403": {
+            "description": "Project credential lacks required read permission"
+          }
+        },
+        "x-required-permission": "read"
+      }
+    },
+    "/v1/tasks/{id}/inspection": {
+      "get": {
+        "operationId": "inspectTask",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Payload-free task and attempt inspection; omits destination and operation key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Not found in authenticated tenant"
+          },
+          "409": {
+            "description": "Idempotency conflict or invalid transition"
+          },
+          "413": {
+            "description": "Envelope too large"
+          },
+          "422": {
+            "description": "Destination disabled"
+          },
+          "429": {
+            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "active_tasks",
+                        "payload_bytes",
+                        "concurrency",
+                        "dispatch_rate"
+                      ]
+                    },
+                    "retry_after_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Prototype disabled"
+          },
+          "403": {
+            "description": "Project credential lacks required read permission"
+          }
+        },
+        "x-required-permission": "read"
+      }
+    },
+    "/v1/queue/maintenance": {
+      "post": {
+        "operationId": "maintainRetention",
+        "description": "Trusted server time only. No query parameters accepted. Removes expired terminal rows, their idempotency records, and expired activity events; preserves active tasks and child redrive mappings.",
+        "x-required-permission": "configure",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Committed retention removal counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tasks_removed": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "enqueue_keys_removed": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "redrive_keys_removed": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "audit_events_removed": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Nonempty object, absent object, or query parameters"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Configure permission required"
           }
         }
       }

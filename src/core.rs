@@ -71,6 +71,10 @@ pub struct Dispatch {
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Ledger {
+    #[serde(default)]
+    pub audit: Vec<crate::operations::Event>,
+    #[serde(default)]
+    pub audit_sequence: u64,
     pub tasks: BTreeMap<String, Task>,
     pub dedupe: BTreeMap<String, Dedupe>,
     #[serde(default)]
@@ -196,6 +200,16 @@ impl Ledger {
             parent,
         };
         self.tasks.insert(id, task.clone());
+        self.record(
+            now,
+            if task.parent.is_some() {
+                crate::operations::EventKind::Redriven
+            } else {
+                crate::operations::EventKind::Accepted
+            },
+            Some(task.id.clone()),
+            None,
+        );
         Ok(task)
     }
     /// Additive migration from the first local snapshot format. Only historical linked
@@ -231,6 +245,7 @@ impl Ledger {
     }
     pub fn cancel(&mut self, id: &str, now: i64) -> Result<Task, Fault> {
         let t = self.tasks.get_mut(id).ok_or(Fault::NotFound)?;
+        let changed = !t.status.terminal() && !t.cancel_requested;
         if !t.status.terminal() {
             t.cancel_requested = true;
             if t.status != Status::Running {
@@ -238,7 +253,16 @@ impl Ledger {
                 t.terminal_ms = Some(now);
             }
         }
-        Ok(t.clone())
+        let task = t.clone();
+        if changed {
+            self.record(
+                now,
+                crate::operations::EventKind::CancelRequested,
+                Some(id.into()),
+                None,
+            );
+        }
+        Ok(task)
     }
     pub fn redrive(&mut self, id: &str, key: &str, now: i64) -> Result<(Task, bool), Fault> {
         if key.is_empty() || key.len() > 64 {
@@ -296,16 +320,27 @@ impl Ledger {
                 .min(limits.dispatch_burst as u64 * 1000);
         }
         self.limits = limits;
+        self.record(now, crate::operations::EventKind::Configured, None, None);
         Ok(())
     }
     pub fn reconcile(&mut self, now: i64) {
+        let mut expired = Vec::new();
         for t in self.tasks.values_mut() {
             if t.status == Status::Running && t.lease_until.is_some_and(|x| x <= now) {
                 Self::settle(t, Outcome::LeaseExpired, now);
+                expired.push(t.id.clone());
             }
             if matches!(t.status, Status::Scheduled | Status::RetryWait) && t.due_ms <= now {
                 t.status = Status::Ready;
             }
+        }
+        for id in expired {
+            self.record(
+                now,
+                crate::operations::EventKind::LeaseExpired,
+                Some(id),
+                Some(crate::operations::FailureCategory::LeaseExpiredUnknown),
+            );
         }
     }
     // The persisted eligible rows are the outbox. Republish until a claim, including uncertain sends.
@@ -359,6 +394,12 @@ impl Ledger {
         if now - t.initial_due_ms > DAY {
             t.status = Status::Failed;
             t.terminal_ms = Some(now);
+            self.record(
+                now,
+                crate::operations::EventKind::AgeExpired,
+                Some(d.id.clone()),
+                None,
+            );
             return Ok(None);
         }
         t.status = Status::Running;
@@ -371,7 +412,14 @@ impl Ledger {
             outcome: None,
             staging_diagnostic: None,
         });
-        Ok(Some(t.clone()))
+        let task = t.clone();
+        self.record(
+            now,
+            crate::operations::EventKind::Claimed,
+            Some(d.id.clone()),
+            None,
+        );
+        Ok(Some(task))
     }
     pub fn finish(
         &mut self,
@@ -386,7 +434,19 @@ impl Ledger {
             return Err(Fault::Stale);
         }
         Self::settle(t, outcome, now);
-        Ok(t.clone())
+        let task = t.clone();
+        let category = task
+            .attempts
+            .last()
+            .and_then(|a| a.outcome.as_deref())
+            .and_then(crate::operations::failure);
+        self.record(
+            now,
+            crate::operations::EventKind::Finished,
+            Some(id.into()),
+            category,
+        );
+        Ok(task)
     }
     fn settle(t: &mut Task, outcome: Outcome, now: i64) {
         let success = matches!(outcome, Outcome::Http(200..=299));
@@ -431,17 +491,58 @@ impl Ledger {
                 Status::Running => t.lease_until,
                 Status::Ready => Some(now + 1000),
                 Status::Scheduled | Status::RetryWait => Some(t.due_ms.max(now + 1)),
-                _ => t.terminal_ms.map(|x| x + RETENTION),
+                _ => t.terminal_ms.map(|x| x.saturating_add(RETENTION)),
             })
+            .chain(self.audit.iter().map(|e| e.at_ms.saturating_add(RETENTION)))
             .min()
     }
-    pub fn purge(&mut self, now: i64) {
-        self.tasks
-            .retain(|_, t| t.terminal_ms.is_none_or(|x| x + RETENTION > now));
+    pub fn record(
+        &mut self,
+        now: i64,
+        kind: crate::operations::EventKind,
+        task_id: Option<String>,
+        category: Option<crate::operations::FailureCategory>,
+    ) {
+        self.audit_sequence = self.audit_sequence.saturating_add(1);
+        self.audit.push(crate::operations::Event {
+            sequence: self.audit_sequence,
+            at_ms: now,
+            kind,
+            task_id,
+            category,
+        });
+        if self.audit.len() > crate::operations::AUDIT_CAP {
+            self.audit
+                .drain(..self.audit.len() - crate::operations::AUDIT_CAP);
+        }
+    }
+    pub fn purge(&mut self, now: i64) -> crate::operations::RetentionReport {
+        let tasks = self.tasks.len();
+        let keys = self.dedupe.len();
+        let redrive: usize = self.redrive_dedupe.values().map(|m| m.len()).sum();
+        let events = self.audit.len();
+        self.tasks.retain(|_, t| {
+            !(t.status.terminal()
+                && t.terminal_ms
+                    .is_some_and(|x| x.saturating_add(RETENTION) <= now))
+        });
         self.dedupe.retain(|_, d| self.tasks.contains_key(&d.task));
         self.redrive_dedupe.retain(|_, keys| {
             keys.retain(|_, d| self.tasks.contains_key(&d.task));
             !keys.is_empty()
         });
+        self.audit
+            .retain(|e| e.at_ms.saturating_add(RETENTION) > now);
+        let report = crate::operations::RetentionReport {
+            tasks_removed: tasks - self.tasks.len(),
+            enqueue_keys_removed: keys - self.dedupe.len(),
+            redrive_keys_removed: redrive
+                - self.redrive_dedupe.values().map(|m| m.len()).sum::<usize>(),
+            audit_events_removed: events - self.audit.len(),
+        };
+        if report.tasks_removed + report.enqueue_keys_removed + report.redrive_keys_removed > 0 {
+            self.record(now, crate::operations::EventKind::Retention, None, None);
+        }
+        report
     }
 }
