@@ -2,7 +2,7 @@
 
 The next bounded slice adds one configurable **default logical queue per tenant/project**. The same tenant-scoped SQLite DO remains authoritative for all task admission and dispatch; there is no second object or queue name that can bypass aggregate project limits. Multiple named logical queues and cross-shard fairness remain deferred.
 
-`GET /v1/queue` is a read-only query. `PUT /v1/queue` is a CQRS command that replaces all settings atomically with ledger state. Both require the existing authenticated project token. These public fixture tokens are local test data, not production credentials. Administrative key scopes and provisioning remain deferred.
+`GET /v1/queue` is a read-only query. `PUT /v1/queue` is a CQRS command that replaces all settings atomically with ledger state. Both require an authenticated project token: GET requires `read`, and PUT requires `configure`. Local action scopes and key issuance/revocation/rotation are now implemented in [AUTH.md](AUTH.md). These public fixture tokens are local test data, not production credentials; production provisioning and secure administrator enrollment remain deferred.
 
 ```json
 {
