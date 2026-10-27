@@ -10,3 +10,5 @@ rustup run 1.92.0 cargo check --locked --target wasm32-unknown-unknown
 node --test web/redirect/worker.test.mjs
 
 node --test staging/receiver.test.mjs
+
+node --test staging/campaign-authorization.test.mjs

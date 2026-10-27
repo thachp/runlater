@@ -26,7 +26,7 @@
     "lifetime_seconds": 900,
     "operator_http_requests_max": 200,
     "accepted_tasks_max": 12,
-    "staging_project": "alpha only",
+    "staging_project": "alpha",
     "synthetic_payload_bytes_max": 256,
     "queue_publish_calls_max": 128,
     "queue_transport_retries": 1,
@@ -44,20 +44,21 @@
     "authorized_incremental_usd": 20,
     "desired_unspent_reserve_usd": 5.429,
     "worst_case_certified_within_budget": false,
-    "blocker": "Budget amount approved; exact code/manifest/cleanup review and parent live release remain required. Missing aggregate invocation/SQL/CPU/cleanup enforcement must not be presented as implemented. Public unauthenticated edge requests are not hard-capped.",
+    "blocker": "Approved USD20 incremental risk is not a mathematical spending certificate. Exact code/manifest/cleanup review and parent release remain required; aggregate resource estimates are not universal hard caps.",
     "interpretation_status": "Independent research confirmed DO rounding; user approved USD20 incremental staging-test risk budget without a guaranteed account-wide cap.",
     "conservative_whole_rate_unit_reserve_usd": 14.571,
-    "reserve_is_hard_cap": false
+    "reserve_is_hard_cap": false,
+    "risk_budget_approved": true,
+    "residual_provider_billing_risk_acknowledged": true,
+    "anonymous_ingress_risk_acknowledged": true
   },
   "cleanup_implementation": "Manual foreground operator procedure only; provider-resource ledger validation/finally enforcement is not implemented. Partial failures require identity discovery and verified cleanup before completion.",
   "execution_readiness": {
-    "live_released": false,
     "implemented_bounds": {
       "operator_http_calls": "200 in execution runner including API task cleanup attempts",
       "accepted_tasks": "12 retained alpha task rows",
-      "queue_publications": "128 reservations persisted before send I/O",
-      "transport_retry": "1 configured: at most 2 deliveries per publication under that policy",
-      "queue_driven_do_calls": "At most 512: 128 publications x 2 deliveries x 2 private calls",
+      "queue_publications": "128 enforced durable reservations before send I/O; duplicates can still invoke claims",
+      "transport_retry": "max_retries=1 configured; does not guarantee at most two deliveries under at-least-once transport semantics",
       "api_driven_do_calls": "At most 200 from the bounded operator runner; denied gates make no DO calls",
       "per_invocation_cpu_ms": "50 configured; this is not a cumulative CPU counter",
       "run_deadline_seconds": 900
@@ -71,13 +72,20 @@
     "planning_estimates_not_enforced": {
       "do_invocations": 10000,
       "sql_rows_read": 1000000,
-      "sql_rows_written": 1000000
+      "sql_rows_written": 1000000,
+      "queue_operations": 512,
+      "queue_driven_do_calls": 512,
+      "note": "Conservative campaign estimates only; extra provider duplicate deliveries can add claim/DO/SQL/CPU work."
     },
     "live_release_conditions": [
-      "Parent releases reviewed exact SHA",
-      "Review verifies conservative finite DO/SQL/cumulative-CPU bounds or adds enforcement",
+      "Parent releases exact reviewed SHA and explicit phase",
+      "Finite operator/task/publication limits reviewed alongside conservative DO/SQL/CPU estimates and residual provider risk",
       "Named foreground operator owns identity-validated manual partial-failure cleanup",
-      "Stop new tests if usage or cleanup is uncertain; preserve unrelated resources"
-    ]
+      "Stop new tests and teardown promptly if estimates, usage or cleanup become uncertain; preserve unrelated resources"
+    ],
+    "parent_live_release": false,
+    "reviewed_sha": null,
+    "campaign_limits_reviewed": false,
+    "released_phases": []
   }
 }
