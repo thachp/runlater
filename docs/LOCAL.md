@@ -60,3 +60,5 @@ Default-queue admission and durable dispatch rate/concurrency controls are docum
 Project-scoped action permissions, nonproduction key issuance/revocation/rotation and redacted lifecycle audit are now implemented in [AUTH.md](AUTH.md). Run `node scripts/key-lifecycle.mjs` against a fresh local emulator store. These tests deliberately use public fixture credentials; production key provisioning remains gated.
 
 Tenant-scoped read-only operational views and explicit retention maintenance are described in [OPERATIONS.md](OPERATIONS.md).
+
+For a runnable local client, pure receiver demonstration and an executable OpenAPI parity suite, see [QUICKSTART.md](QUICKSTART.md).

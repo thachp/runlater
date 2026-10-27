@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "RunLater LOCAL prototype",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "description": "No production service. At-least-once design; no ordering or exact-time guarantee. Active idempotency plus 30 days after termination. All numeric limits proposed. Arbitrary outbound HTTPS disabled."
   },
   "servers": [
@@ -28,7 +28,8 @@
             "schema": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 128
+              "maxLength": 128,
+              "x-max-utf8-bytes": 128
             }
           }
         ],
@@ -43,23 +44,6 @@
           }
         },
         "responses": {
-          "201": {
-            "description": "Durably accepted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "oneOf": [
-                    {
-                      "$ref": "#/components/schemas/Task"
-                    },
-                    {
-                      "$ref": "#/components/schemas/TaskReceipt"
-                    }
-                  ]
-                }
-              }
-            }
-          },
           "200": {
             "description": "Same canonical input and key returns original task",
             "content": {
@@ -77,69 +61,58 @@
               }
             }
           },
-          "400": {
-            "description": "Invalid request"
-          },
-          "401": {
-            "description": "Unauthorized"
-          },
-          "404": {
-            "description": "Not found in authenticated tenant"
-          },
-          "409": {
-            "description": "Idempotency conflict or invalid transition"
-          },
-          "413": {
-            "description": "Envelope too large"
-          },
-          "422": {
-            "description": "Destination disabled"
-          },
-          "429": {
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
-              }
-            },
+          "201": {
+            "description": "Durably accepted",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Task"
                     },
-                    "reason": {
-                      "type": "string",
-                      "enum": [
-                        "active_tasks",
-                        "payload_bytes",
-                        "concurrency",
-                        "dispatch_rate"
-                      ]
-                    },
-                    "retry_after_ms": {
-                      "type": "integer",
-                      "minimum": 1
+                    {
+                      "$ref": "#/components/schemas/TaskReceipt"
                     }
-                  }
+                  ]
                 }
               }
             }
           },
-          "503": {
-            "description": "Prototype disabled"
+          "400": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
-          "415": {
-            "description": "Expected application/json for JSON request body"
+          "401": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Project credential lacks required enqueue permission"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "409": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Idempotency conflict or invalid transition"
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
+          },
+          "422": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Destination disabled"
+          },
+          "429": {
+            "$ref": "#/components/responses/LocalThrottle",
+            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "enqueue"
@@ -161,85 +134,30 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "tasks": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/Task"
-                      }
-                    },
-                    "next_after": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    }
-                  }
+                  "$ref": "#/components/schemas/TaskList"
                 }
               }
             }
           },
           "400": {
-            "description": "Invalid request"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Unauthorized"
-          },
-          "404": {
-            "description": "Not found in authenticated tenant"
-          },
-          "409": {
-            "description": "Idempotency conflict or invalid transition"
-          },
-          "413": {
-            "description": "Envelope too large"
-          },
-          "422": {
-            "description": "Destination disabled"
-          },
-          "429": {
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "reason": {
-                      "type": "string",
-                      "enum": [
-                        "active_tasks",
-                        "payload_bytes",
-                        "concurrency",
-                        "dispatch_rate"
-                      ]
-                    },
-                    "retry_after_ms": {
-                      "type": "integer",
-                      "minimum": 1
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Prototype disabled"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Project credential lacks required read permission"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "read"
@@ -254,7 +172,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^task_[0-9a-f]{16}$"
             }
           }
         ],
@@ -270,65 +189,28 @@
             }
           },
           "400": {
-            "description": "Invalid request"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Unauthorized"
-          },
-          "404": {
-            "description": "Not found in authenticated tenant"
-          },
-          "409": {
-            "description": "Idempotency conflict or invalid transition"
-          },
-          "413": {
-            "description": "Envelope too large"
-          },
-          "422": {
-            "description": "Destination disabled"
-          },
-          "429": {
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "reason": {
-                      "type": "string",
-                      "enum": [
-                        "active_tasks",
-                        "payload_bytes",
-                        "concurrency",
-                        "dispatch_rate"
-                      ]
-                    },
-                    "retry_after_ms": {
-                      "type": "integer",
-                      "minimum": 1
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Prototype disabled"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Project credential lacks required read permission"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "404": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Not found in authenticated tenant"
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "read"
@@ -343,7 +225,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^task_[0-9a-f]{16}$"
             }
           }
         ],
@@ -362,65 +245,28 @@
             }
           },
           "400": {
-            "description": "Invalid request"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Unauthorized"
-          },
-          "404": {
-            "description": "Not found in authenticated tenant"
-          },
-          "409": {
-            "description": "Idempotency conflict or invalid transition"
-          },
-          "413": {
-            "description": "Envelope too large"
-          },
-          "422": {
-            "description": "Destination disabled"
-          },
-          "429": {
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "reason": {
-                      "type": "string",
-                      "enum": [
-                        "active_tasks",
-                        "payload_bytes",
-                        "concurrency",
-                        "dispatch_rate"
-                      ]
-                    },
-                    "retry_after_ms": {
-                      "type": "integer",
-                      "minimum": 1
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Prototype disabled"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Project credential lacks required read permission"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "404": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Not found in authenticated tenant"
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "read"
@@ -435,7 +281,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^task_[0-9a-f]{16}$"
             }
           }
         ],
@@ -459,68 +306,32 @@
             }
           },
           "400": {
-            "description": "Invalid request"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Unauthorized"
-          },
-          "404": {
-            "description": "Not found in authenticated tenant"
-          },
-          "409": {
-            "description": "Idempotency conflict or invalid transition"
-          },
-          "413": {
-            "description": "Envelope too large"
-          },
-          "422": {
-            "description": "Destination disabled"
-          },
-          "429": {
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "reason": {
-                      "type": "string",
-                      "enum": [
-                        "active_tasks",
-                        "payload_bytes",
-                        "concurrency",
-                        "dispatch_rate"
-                      ]
-                    },
-                    "retry_after_ms": {
-                      "type": "integer",
-                      "minimum": 1
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Prototype disabled"
-          },
-          "415": {
-            "description": "Expected application/json for JSON request body"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Project credential lacks required cancel permission"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "404": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Not found in authenticated tenant"
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "cancel"
@@ -535,7 +346,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^task_[0-9a-f]{16}$"
             }
           },
           {
@@ -545,7 +357,8 @@
             "schema": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 64
+              "maxLength": 64,
+              "x-max-utf8-bytes": 64
             }
           }
         ],
@@ -586,68 +399,40 @@
             }
           },
           "400": {
-            "description": "Invalid request"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Unauthorized"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
+          },
+          "403": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
           },
           "404": {
+            "$ref": "#/components/responses/LocalError",
             "description": "Not found in authenticated tenant"
           },
           "409": {
+            "$ref": "#/components/responses/LocalError",
             "description": "Idempotency conflict or invalid transition"
           },
           "413": {
-            "description": "Envelope too large"
-          },
-          "422": {
-            "description": "Destination disabled"
-          },
-          "429": {
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "reason": {
-                      "type": "string",
-                      "enum": [
-                        "active_tasks",
-                        "payload_bytes",
-                        "concurrency",
-                        "dispatch_rate"
-                      ]
-                    },
-                    "retry_after_ms": {
-                      "type": "integer",
-                      "minimum": 1
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Prototype disabled"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
           },
           "415": {
-            "description": "Expected application/json for JSON request body"
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
           },
-          "403": {
-            "description": "Project credential lacks required redrive permission"
+          "429": {
+            "$ref": "#/components/responses/LocalThrottle",
+            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "redrive"
@@ -669,19 +454,24 @@
             }
           },
           "400": {
-            "description": "Invalid limit fields or range"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Unauthorized"
-          },
-          "415": {
-            "description": "Expected application/json"
-          },
-          "503": {
-            "description": "Prototype disabled or malformed authentication configuration"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Project credential lacks required read permission"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "read"
@@ -711,19 +501,28 @@
             }
           },
           "400": {
-            "description": "Invalid limit fields or range"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Unauthorized"
-          },
-          "415": {
-            "description": "Expected application/json for JSON request body"
-          },
-          "503": {
-            "description": "Prototype disabled or malformed authentication configuration"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Project credential lacks required configure permission"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "configure"
@@ -739,39 +538,30 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "keys": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/KeyView"
-                      }
-                    }
-                  }
+                  "$ref": "#/components/schemas/KeyList"
                 }
               }
             }
           },
           "400": {
-            "description": "Malformed DTO, unsupported local policy or lifetime"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Missing operation permission or attempted privilege escalation"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
           },
-          "404": {
-            "description": "Unknown project-owned key"
-          },
-          "409": {
-            "description": "Immutable key/rotation identity conflict"
-          },
-          "429": {
-            "description": "64 retained local keys maximum per project"
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
           },
           "503": {
-            "description": "Nonproduction prototype/configuration gate closed"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         }
       },
@@ -811,25 +601,36 @@
             }
           },
           "400": {
-            "description": "Malformed DTO, unsupported local policy or lifetime"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Missing operation permission or attempted privilege escalation"
-          },
-          "404": {
-            "description": "Unknown project-owned key"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
           },
           "409": {
+            "$ref": "#/components/responses/LocalError",
             "description": "Immutable key/rotation identity conflict"
           },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
+          },
           "429": {
+            "$ref": "#/components/responses/LocalThrottle",
             "description": "64 retained local keys maximum per project"
           },
           "503": {
-            "description": "Nonproduction prototype/configuration gate closed"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         }
       }
@@ -844,54 +645,30 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "events": {
-                      "type": "array",
-                      "maxItems": 256,
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "actor_key_id": {
-                            "type": "string"
-                          },
-                          "target_key_id": {
-                            "type": "string"
-                          },
-                          "action": {
-                            "type": "string"
-                          },
-                          "at_ms": {
-                            "type": "integer"
-                          }
-                        }
-                      }
-                    }
-                  }
+                  "$ref": "#/components/schemas/KeyAudit"
                 }
               }
             }
           },
           "400": {
-            "description": "Malformed DTO, unsupported local policy or lifetime"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Missing operation permission or attempted privilege escalation"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
           },
-          "404": {
-            "description": "Unknown project-owned key"
-          },
-          "409": {
-            "description": "Immutable key/rotation identity conflict"
-          },
-          "429": {
-            "description": "64 retained local keys maximum per project"
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
           },
           "503": {
-            "description": "Nonproduction prototype/configuration gate closed"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         }
       }
@@ -923,25 +700,32 @@
             }
           },
           "400": {
-            "description": "Malformed DTO, unsupported local policy or lifetime"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Missing operation permission or attempted privilege escalation"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
           },
           "404": {
+            "$ref": "#/components/responses/LocalError",
             "description": "Unknown project-owned key"
           },
-          "409": {
-            "description": "Immutable key/rotation identity conflict"
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
           },
-          "429": {
-            "description": "64 retained local keys maximum per project"
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
           },
           "503": {
-            "description": "Nonproduction prototype/configuration gate closed"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         }
       }
@@ -1007,25 +791,40 @@
             }
           },
           "400": {
-            "description": "Malformed DTO, unsupported local policy or lifetime"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Invalid, revoked, not-yet-valid or expired project credential"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Missing operation permission or attempted privilege escalation"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
           },
           "404": {
+            "$ref": "#/components/responses/LocalError",
             "description": "Unknown project-owned key"
           },
           "409": {
+            "$ref": "#/components/responses/LocalError",
             "description": "Immutable key/rotation identity conflict"
           },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
+          },
           "429": {
+            "$ref": "#/components/responses/LocalThrottle",
             "description": "64 retained local keys maximum per project"
           },
           "503": {
-            "description": "Nonproduction prototype/configuration gate closed"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         }
       }
@@ -1039,71 +838,30 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/Health"
                 }
               }
             }
           },
           "400": {
-            "description": "Invalid request"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Unauthorized"
-          },
-          "404": {
-            "description": "Not found in authenticated tenant"
-          },
-          "409": {
-            "description": "Idempotency conflict or invalid transition"
-          },
-          "413": {
-            "description": "Envelope too large"
-          },
-          "422": {
-            "description": "Destination disabled"
-          },
-          "429": {
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "reason": {
-                      "type": "string",
-                      "enum": [
-                        "active_tasks",
-                        "payload_bytes",
-                        "concurrency",
-                        "dispatch_rate"
-                      ]
-                    },
-                    "retry_after_ms": {
-                      "type": "integer",
-                      "minimum": 1
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Prototype disabled"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Project credential lacks required read permission"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "read"
@@ -1118,71 +876,30 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/QueueAudit"
                 }
               }
             }
           },
           "400": {
-            "description": "Invalid request"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Unauthorized"
-          },
-          "404": {
-            "description": "Not found in authenticated tenant"
-          },
-          "409": {
-            "description": "Idempotency conflict or invalid transition"
-          },
-          "413": {
-            "description": "Envelope too large"
-          },
-          "422": {
-            "description": "Destination disabled"
-          },
-          "429": {
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "reason": {
-                      "type": "string",
-                      "enum": [
-                        "active_tasks",
-                        "payload_bytes",
-                        "concurrency",
-                        "dispatch_rate"
-                      ]
-                    },
-                    "retry_after_ms": {
-                      "type": "integer",
-                      "minimum": 1
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Prototype disabled"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Project credential lacks required read permission"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "read"
@@ -1197,7 +914,8 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^task_[0-9a-f]{16}$"
             }
           }
         ],
@@ -1207,71 +925,34 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/Inspection"
                 }
               }
             }
           },
           "400": {
-            "description": "Invalid request"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Unauthorized"
-          },
-          "404": {
-            "description": "Not found in authenticated tenant"
-          },
-          "409": {
-            "description": "Idempotency conflict or invalid transition"
-          },
-          "413": {
-            "description": "Envelope too large"
-          },
-          "422": {
-            "description": "Destination disabled"
-          },
-          "429": {
-            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "reason": {
-                      "type": "string",
-                      "enum": [
-                        "active_tasks",
-                        "payload_bytes",
-                        "concurrency",
-                        "dispatch_rate"
-                      ]
-                    },
-                    "retry_after_ms": {
-                      "type": "integer",
-                      "minimum": 1
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Prototype disabled"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Project credential lacks required read permission"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "404": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Not found in authenticated tenant"
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
           }
         },
         "x-required-permission": "read"
@@ -1299,37 +980,66 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "tasks_removed": {
-                      "type": "integer",
-                      "minimum": 0
-                    },
-                    "enqueue_keys_removed": {
-                      "type": "integer",
-                      "minimum": 0
-                    },
-                    "redrive_keys_removed": {
-                      "type": "integer",
-                      "minimum": 0
-                    },
-                    "audit_events_removed": {
-                      "type": "integer",
-                      "minimum": 0
-                    }
-                  }
+                  "$ref": "#/components/schemas/RetentionReport"
                 }
               }
             }
           },
           "400": {
-            "description": "Nonempty object, absent object, or query parameters"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
           },
           "401": {
-            "description": "Unauthorized"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
           },
           "403": {
-            "description": "Configure permission required"
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "getRuntimeHealth",
+        "security": [],
+        "description": "Default local build health only; no tenant data. Staging builds have an additional outer gate and are not described by this local-only contract.",
+        "responses": {
+          "200": {
+            "description": "Local prototype health",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "status",
+                    "outbound"
+                  ],
+                  "properties": {
+                    "status": {
+                      "const": "prototype"
+                    },
+                    "outbound": {
+                      "const": "disabled"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1364,7 +1074,8 @@
           "body": {
             "type": "string",
             "maxLength": 16384,
-            "description": "UTF-8 byte bound is also enforced"
+            "description": "UTF-8 byte bound is also enforced",
+            "x-max-utf8-bytes": 16384
           },
           "operation_key": {
             "type": "string",
@@ -1384,7 +1095,8 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "string",
+            "pattern": "^task_[0-9a-f]{16}$"
           },
           "input": {
             "$ref": "#/components/schemas/Create"
@@ -1446,14 +1158,25 @@
           "id",
           "input",
           "status",
-          "generation"
-        ]
+          "due_ms",
+          "generation",
+          "fence",
+          "lease_until",
+          "cancel_requested",
+          "terminal_ms",
+          "attempts",
+          "parent",
+          "initial_due_ms"
+        ],
+        "additionalProperties": false
       },
       "Attempt": {
         "type": "object",
         "required": [
           "fence",
-          "started_ms"
+          "started_ms",
+          "finished_ms",
+          "outcome"
         ],
         "properties": {
           "fence": {
@@ -1473,8 +1196,12 @@
               "string",
               "null"
             ]
+          },
+          "staging_diagnostic": {
+            "$ref": "#/components/schemas/StageDiagnostic"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "QueueLimits": {
         "type": "object",
@@ -1542,7 +1269,6 @@
           },
           "permissions": {
             "type": "array",
-            "uniqueItems": true,
             "minItems": 1,
             "items": {
               "type": "string",
@@ -1554,7 +1280,8 @@
                 "configure",
                 "manage_keys"
               ]
-            }
+            },
+            "description": "Input is normalized as a set; duplicate permissions are accepted and deduplicated."
           },
           "not_before_ms": {
             "type": "integer",
@@ -1621,13 +1348,24 @@
             ]
           }
         },
-        "description": "No credential verifier or plaintext token is returned."
+        "description": "No credential verifier or plaintext token is returned.",
+        "required": [
+          "key_id",
+          "permissions",
+          "not_before_ms",
+          "expires_at_ms",
+          "created_ms",
+          "revoked_at_ms",
+          "rotated_from"
+        ],
+        "additionalProperties": false
       },
       "TaskReceipt": {
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "string",
+            "pattern": "^task_[0-9a-f]{16}$"
           },
           "status": {
             "type": "string",
@@ -1663,7 +1401,503 @@
           "parent"
         ],
         "additionalProperties": false
+      },
+      "StageDiagnostic": {
+        "oneOf": [
+          {
+            "type": "string",
+            "enum": [
+              "policy_rejected",
+              "redirect_rejected",
+              "response_headers_too_large",
+              "response_body_too_large",
+              "receipt_rejected",
+              "fetch_error",
+              "timeout",
+              "verified_receipt"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "receiver_status": {
+                "type": "integer",
+                "minimum": 100,
+                "maximum": 599
+              }
+            },
+            "required": [
+              "receiver_status"
+            ]
+          }
+        ]
+      },
+      "Inspection": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^task_[0-9a-f]{16}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "scheduled",
+              "ready",
+              "running",
+              "retry_wait",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "due_ms": {
+            "type": "integer"
+          },
+          "generation": {
+            "type": "integer"
+          },
+          "fence": {
+            "type": "integer"
+          },
+          "lease_until": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cancel_requested": {
+            "type": "boolean"
+          },
+          "terminal_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Attempt"
+            }
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "initial_due_ms": {
+            "type": "integer",
+            "description": "Persisted initial actual due time used for retry age, separate from canonical input"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "due_ms",
+          "generation",
+          "fence",
+          "lease_until",
+          "cancel_requested",
+          "terminal_ms",
+          "attempts",
+          "parent",
+          "initial_due_ms"
+        ],
+        "additionalProperties": false
+      },
+      "Health": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sampled_at_ms": {
+            "type": "integer"
+          },
+          "counts_by_state": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "scheduled": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "ready": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "running": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "retry_wait": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "succeeded": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "failed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "cancelled": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "scheduled",
+              "ready",
+              "running",
+              "retry_wait",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "eligible_backlog": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "due_retry_backlog": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "future_backlog": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "oldest_eligible_due_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "oldest_eligible_age_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "active_leases": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "expired_leases": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "missing_leases": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retained_attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "finished_attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "attempt_failures_by_category": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "enum": [
+                "timeout",
+                "lease_expired_unknown",
+                "retryable_http",
+                "permanent_http",
+                "unknown"
+              ]
+            }
+          },
+          "failed_tasks_without_attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retained_tasks": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retained_audit_events": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "sampled_at_ms",
+          "counts_by_state",
+          "eligible_backlog",
+          "due_retry_backlog",
+          "future_backlog",
+          "oldest_eligible_due_ms",
+          "oldest_eligible_age_ms",
+          "active_leases",
+          "expired_leases",
+          "missing_leases",
+          "retained_attempts",
+          "finished_attempts",
+          "attempt_failures_by_category",
+          "failed_tasks_without_attempts",
+          "retained_tasks",
+          "retained_audit_events"
+        ]
+      },
+      "QueueEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "at_ms": {
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "accepted",
+              "redriven",
+              "cancel_requested",
+              "claimed",
+              "finished",
+              "lease_expired",
+              "age_expired",
+              "configured",
+              "retention"
+            ]
+          },
+          "task_id": {
+            "type": "string",
+            "pattern": "^task_[0-9a-f]{16}$"
+          },
+          "category": {
+            "enum": [
+              "timeout",
+              "lease_expired_unknown",
+              "retryable_http",
+              "permanent_http",
+              "unknown"
+            ]
+          }
+        },
+        "required": [
+          "sequence",
+          "at_ms",
+          "kind"
+        ]
+      },
+      "QueueAudit": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "$ref": "#/components/schemas/QueueEvent"
+            }
+          },
+          "capacity": {
+            "const": 256
+          },
+          "last_sequence": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "events",
+          "capacity",
+          "last_sequence"
+        ]
+      },
+      "RetentionReport": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tasks_removed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "enqueue_keys_removed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "redrive_keys_removed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "audit_events_removed": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "tasks_removed",
+          "enqueue_keys_removed",
+          "redrive_keys_removed",
+          "audit_events_removed"
+        ]
+      },
+      "KeyAudit": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "actor_key_id": {
+                  "type": "string"
+                },
+                "target_key_id": {
+                  "type": "string"
+                },
+                "action": {
+                  "type": "string"
+                },
+                "at_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "actor_key_id",
+                "target_key_id",
+                "action",
+                "at_ms"
+              ]
+            }
+          }
+        },
+        "required": [
+          "events"
+        ]
+      },
+      "TaskList": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tasks": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "$ref": "#/components/schemas/Task"
+            }
+          },
+          "next_after": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "tasks",
+          "next_after"
+        ]
+      },
+      "KeyList": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "keys": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/components/schemas/KeyView"
+            }
+          }
+        },
+        "required": [
+          "keys"
+        ]
+      },
+      "ApiError": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "enum": [
+              "invalid_request",
+              "forbidden",
+              "destination_disabled",
+              "idempotency_conflict",
+              "not_found",
+              "tenant_capacity",
+              "stale_lease",
+              "tenant_limited"
+            ]
+          },
+          "reason": {
+            "enum": [
+              "active_tasks",
+              "payload_bytes",
+              "concurrency",
+              "dispatch_rate"
+            ]
+          },
+          "retry_after_ms": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "error"
+        ]
+      }
+    },
+    "responses": {
+      "LocalError": {
+        "description": "Local prototype error: plain UTF-8 text or structured JSON error.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiError"
+            }
+          },
+          "text/plain": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "LocalThrottle": {
+        "description": "Tenant admission/capacity limit; suggested Retry-After does not guarantee admission.",
+        "headers": {
+          "Retry-After": {
+            "description": "Integer seconds until a suggested retry; does not guarantee capacity",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiError"
+            }
+          },
+          "text/plain": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        }
       }
     }
-  }
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema"
 }

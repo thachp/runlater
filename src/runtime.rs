@@ -31,6 +31,14 @@ fn stage_run(env: &Env) -> String {
 fn now() -> i64 {
     Date::now().as_millis() as i64
 }
+// Explicit media type for the existing plain-text error contract.
+fn text_error(message: impl Into<String>, status: u16) -> Result<Response> {
+    let mut response = Response::error(message, status)?;
+    response
+        .headers_mut()
+        .set("Content-Type", "text/plain; charset=utf-8")?;
+    Ok(response)
+}
 fn fault(e: Fault) -> Result<Response> {
     if let Fault::Limited {
         reason,
@@ -69,7 +77,7 @@ async fn call(
     auth_token: Option<&str>,
 ) -> Result<Response> {
     if !tenant_valid(tenant) {
-        return Response::error("Invalid tenant", 400);
+        return text_error("Invalid tenant", 400);
     }
     let ns = env.durable_object("LEDGER")?;
     let stub = ns.id_from_name(tenant)?.get_stub()?;
@@ -97,7 +105,7 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
             .get("X-RunLater-Staging-Gate")?
             .unwrap_or_default();
         if !crate::staging::gate(&expected, &supplied, stage_expiry(&env), now()) {
-            return Response::error("Staging gate denied", 403);
+            return text_error("Staging gate denied", 403);
         }
         let header_bytes: usize = req
             .headers()
@@ -105,11 +113,11 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
             .map(|(k, v)| k.len() + v.len())
             .sum();
         if header_bytes > 2048 {
-            return Response::error("Staging headers too large", 431);
+            return text_error("Staging headers too large", 431);
         }
         if req.path() != "/health" && !crate::staging::api_route(req.method().as_ref(), &req.path())
         {
-            return Response::error("Staging route disabled", 403);
+            return text_error("Staging route disabled", 403);
         }
     }
     if req.path() == "/health" {
@@ -121,21 +129,21 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         .unwrap_or_default()
         != "true"
     {
-        return Response::error("Prototype disabled; no production configuration", 503);
+        return text_error("Prototype disabled; no production configuration", 503);
     }
     let auth = req.headers().get("Authorization")?.unwrap_or_default();
     let Some(token) = auth.strip_prefix("Bearer ") else {
-        return Response::error("Unauthorized", 401);
+        return text_error("Unauthorized", 401);
     };
     let tenant = match auth::route_credential(&env.var("API_KEY_HASHES")?.to_string(), token) {
         Ok(c) => c.tenant,
-        Err(AuthFault::Unauthorized) => return Response::error("Unauthorized", 401),
+        Err(AuthFault::Unauthorized) => return text_error("Unauthorized", 401),
         Err(AuthFault::InvalidConfiguration) => {
-            return Response::error("Invalid authentication configuration", 503)
+            return text_error("Invalid authentication configuration", 503)
         }
     };
     if staging_mode(&env) && tenant != "alpha" {
-        return Response::error("Staging tenant disabled", 403);
+        return text_error("Staging tenant disabled", 403);
     }
     let path = req.path();
     if !(path == "/v1/queue"
@@ -148,15 +156,15 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         || path == "/v1/keys"
         || path.starts_with("/v1/keys/"))
     {
-        return Response::error("Not found", 404);
+        return text_error("Not found", 404);
     }
     if matches!(req.method(), Method::Post | Method::Put) {
         if let Some(content_type) = req.headers().get("Content-Type")? {
             if content_type.split(';').next().unwrap_or("").trim() != "application/json" {
-                return Response::error("Expected application/json", 415);
+                return text_error("Expected application/json", 415);
             }
         } else if path == "/v1/tasks" || path == "/v1/queue" || path == "/v1/keys" {
-            return Response::error("Expected application/json", 415);
+            return text_error("Expected application/json", 415);
         }
     }
     // Read at most 24KiB even when Content-Length is absent or untrusted.
@@ -186,16 +194,14 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         match select(read_body, timeout).await {
             Either::Left((result, _)) => {
                 if !result? {
-                    return Response::error("Payload too large", 413);
+                    return text_error("Payload too large", 413);
                 }
             }
-            Either::Right((_done, _pending)) => {
-                return Response::error("Staging body deadline", 408)
-            }
+            Either::Right((_done, _pending)) => return text_error("Staging body deadline", 408),
         }
     } else {
         if !read_body.await? {
-            return Response::error("Payload too large", 413);
+            return text_error("Payload too large", 413);
         }
     }
     let body = if bytes.is_empty() {
@@ -203,7 +209,7 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
     } else {
         match serde_json::from_slice(&bytes) {
             Ok(b) => b,
-            Err(_) => return Response::error("Invalid JSON", 400),
+            Err(_) => return text_error("Invalid JSON", 400),
         }
     };
     let key = req.headers().get("Idempotency-Key")?.unwrap_or_default();
@@ -342,14 +348,14 @@ impl DurableObject for TaskLedger {
     async fn fetch(&self, mut req: Request) -> Result<Response> {
         let tenant = req.headers().get("x-tenant")?.unwrap_or_default();
         if tenant.is_empty() {
-            return Response::error("Missing tenant", 400);
+            return text_error("Missing tenant", 400);
         }
         if !tenant_valid(&tenant) {
-            return Response::error("Invalid tenant", 400);
+            return text_error("Invalid tenant", 400);
         }
         let path = req.path();
         if staging_mode(&self.env) && !stage_active(&self.env) {
-            return Response::error("Staging expired", 403);
+            return text_error("Staging expired", 403);
         }
         let raw: serde_json::Value = req.json().await?;
         // Parse and authenticate API requests before watchdog or business effects.
@@ -363,24 +369,24 @@ impl DurableObject for TaskLedger {
                     || tenant != "alpha"
                     || crate::staging::canonical_route(&a.method, &a.path).is_none())
             {
-                return Response::error("Staging request disabled", 403);
+                return text_error("Staging request disabled", 403);
             }
 
             let Some(required) = auth::required_permission(&a.method, &a.path) else {
-                return Response::error("Not found", 404);
+                return text_error("Not found", 404);
             };
             let header = req.headers().get("Authorization")?.unwrap_or_default();
             let Some(token) = header.strip_prefix("Bearer ") else {
-                return Response::error("Unauthorized", 401);
+                return text_error("Unauthorized", 401);
             };
             let c =
                 match auth::route_credential(&self.env.var("API_KEY_HASHES")?.to_string(), token) {
                     Ok(c) if c.tenant == tenant => c,
-                    _ => return Response::error("Unauthorized", 401),
+                    _ => return text_error("Unauthorized", 401),
                 };
             let snapshot = self.load()?;
             if !snapshot.tenant.is_empty() && snapshot.tenant != tenant {
-                return Response::error("Tenant mismatch", 403);
+                return text_error("Tenant mismatch", 403);
             }
             let keys = self.effective_keys(&snapshot, &tenant)?;
             if let Err(e) = keys.authorize(&c, required, now()) {
@@ -400,7 +406,7 @@ impl DurableObject for TaskLedger {
             if a.path.starts_with("/v1/keys") {
                 key_command = match parse_key_command(a) {
                     Ok(Some(c)) => Some(c),
-                    Ok(None) => return Response::error("Not found", 404),
+                    Ok(None) => return text_error("Not found", 404),
                     Err(e) => return fault(e),
                 };
                 None
@@ -414,7 +420,7 @@ impl DurableObject for TaskLedger {
                         }
                         Some(c)
                     }
-                    Ok(None) => return Response::error("Not found", 404),
+                    Ok(None) => return text_error("Not found", 404),
                     Err(e) => return fault(e),
                 }
             }
@@ -446,7 +452,7 @@ impl DurableObject for TaskLedger {
             None
         };
         if command.is_none() && key_command.is_none() && dispatch.is_none() && finish.is_none() {
-            return Response::error("Not found", 404);
+            return text_error("Not found", 404);
         }
         // Arm before acceptance without postponing already due work. Reload after all awaits.
         let existing = self.state.storage().get_alarm().await?;
@@ -459,7 +465,7 @@ impl DurableObject for TaskLedger {
             s.tenant = tenant.clone()
         }
         if s.tenant != tenant {
-            return Response::error("Tenant mismatch", 403);
+            return text_error("Tenant mismatch", 403);
         }
         // Storage awaits above may interleave revocation. Recheck the authoritative keyring
         // immediately before the synchronous mutation/commit section, without another await.
@@ -530,10 +536,10 @@ impl DurableObject for TaskLedger {
                 Err(e) => fault(e),
             }
         } else {
-            Response::error("Not found", 404)
+            text_error("Not found", 404)
         };
         if staging_mode(&self.env) && s.ledger.tasks.len() > crate::staging::MAX_TASKS {
-            return Response::error("Staging task budget exhausted", 429);
+            return text_error("Staging task budget exhausted", 429);
         }
         self.save(&s)?;
         self.rearm(true).await?;
@@ -662,7 +668,7 @@ fn query_response(ledger: &Ledger, a: Api) -> Result<Response> {
             Ok(v) => Response::from_json(&v),
             Err(e) => fault(e),
         },
-        None => Response::error("Not found", 404),
+        None => text_error("Not found", 404),
     }
 }
 
@@ -717,7 +723,7 @@ fn parse_command(
 
 fn access_fault(e: AccessFault) -> Result<Response> {
     match e {
-        AccessFault::Unauthorized => Response::error("Unauthorized", 401),
+        AccessFault::Unauthorized => text_error("Unauthorized", 401),
         AccessFault::Forbidden => fault(Fault::Forbidden),
     }
 }
