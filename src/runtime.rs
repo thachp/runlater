@@ -7,12 +7,27 @@ fn now() -> i64 {
     Date::now().as_millis() as i64
 }
 fn fault(e: Fault) -> Result<Response> {
+    if let Fault::Limited {
+        reason,
+        retry_after_ms,
+    } = e
+    {
+        let seconds = (retry_after_ms.max(1) as u64).div_ceil(1000);
+        let mut r = Response::from_json(
+            &json!({"error":"tenant_limited","reason":reason,"retry_after_ms":retry_after_ms}),
+        )?
+        .with_status(429);
+        r.headers_mut().set("Retry-After", &seconds.to_string())?;
+        return Ok(r);
+    }
     let (code, label) = match e {
         Fault::Invalid => (400, "invalid_request"),
+        Fault::DestinationDisabled => (422, "destination_disabled"),
         Fault::Conflict => (409, "idempotency_conflict"),
         Fault::NotFound => (404, "not_found"),
         Fault::Capacity => (429, "tenant_capacity"),
         Fault::Stale => (409, "stale_lease"),
+        Fault::Limited { .. } => unreachable!("handled above"),
     };
     let mut r = Response::from_json(&json!({"error":label}))?.with_status(code);
     if code == 429 {
@@ -21,6 +36,9 @@ fn fault(e: Fault) -> Result<Response> {
     Ok(r)
 }
 async fn call(env: &Env, tenant: &str, path: &str, body: serde_json::Value) -> Result<Response> {
+    if !tenant_valid(tenant) {
+        return Response::error("Invalid tenant", 400);
+    }
     let ns = env.durable_object("LEDGER")?;
     let stub = ns.id_from_name(tenant)?.get_stub()?;
     let mut init = RequestInit::new();
@@ -47,14 +65,25 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
     let Some(token) = auth.strip_prefix("Bearer ") else {
         return Response::error("Unauthorized", 401);
     };
-    let keys: std::collections::BTreeMap<String, String> =
-        serde_json::from_str(&env.var("API_KEY_HASHES")?.to_string())?;
-    let Some(tenant) = keys.get(&digest(token.as_bytes())) else {
-        return Response::error("Unauthorized", 401);
+    let tenant = match authenticate(&env.var("API_KEY_HASHES")?.to_string(), token) {
+        Ok(t) => t,
+        Err(AuthFault::Unauthorized) => return Response::error("Unauthorized", 401),
+        Err(AuthFault::InvalidConfiguration) => {
+            return Response::error("Invalid authentication configuration", 503)
+        }
     };
     let path = req.path();
-    if !path.starts_with("/v1/tasks") {
+    if !(path == "/v1/queue" || path == "/v1/tasks" || path.starts_with("/v1/tasks/")) {
         return Response::error("Not found", 404);
+    }
+    if matches!(req.method(), Method::Post | Method::Put) {
+        if let Some(content_type) = req.headers().get("Content-Type")? {
+            if content_type.split(';').next().unwrap_or("").trim() != "application/json" {
+                return Response::error("Expected application/json", 415);
+            }
+        } else if path == "/v1/tasks" || path == "/v1/queue" {
+            return Response::error("Expected application/json", 415);
+        }
     }
     // Read at most 24KiB even when Content-Length is absent or untrusted.
     use futures_util::StreamExt;
@@ -81,7 +110,7 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
     let query = url.query().unwrap_or("");
     call(
         &env,
-        tenant,
+        &tenant,
         "/api",
         json!({"method":req.method().to_string(),"path":path,"query":query,"key":key,"body":body}),
     )
@@ -186,16 +215,55 @@ impl DurableObject for TaskLedger {
         if tenant.is_empty() {
             return Response::error("Missing tenant", 400);
         }
+        if !tenant_valid(&tenant) {
+            return Response::error("Invalid tenant", 400);
+        }
         let path = req.path();
         let raw: serde_json::Value = req.json().await?;
-        // CQRS reads return before schema initialization, watchdog, reconciliation, or persistence.
-        if path == "/api" && raw["method"].as_str() == Some("GET") {
-            let a: Api = serde_json::from_value(raw)?;
-            let s = self.load()?;
-            if !s.tenant.is_empty() && s.tenant != tenant {
-                return Response::error("Tenant mismatch", 403);
+        // Parse routes and DTOs before any command-side durable effects.
+        let command = if path == "/api" {
+            let a: Api = serde_json::from_value(raw.clone())?;
+            if a.method == "GET" {
+                let s = self.load()?;
+                if !s.tenant.is_empty() && s.tenant != tenant {
+                    return Response::error("Tenant mismatch", 403);
+                }
+                return query_response(&s.ledger, a);
             }
-            return query_response(&s.ledger, a);
+            match parse_command(a) {
+                Ok(Some(c)) => Some(c),
+                Ok(None) => return Response::error("Not found", 404),
+                Err(e) => return fault(e),
+            }
+        } else {
+            None
+        };
+        let dispatch = if path == "/claim" {
+            let d: Dispatch = match serde_json::from_value(raw.clone()) {
+                Ok(d) => d,
+                Err(_) => return fault(Fault::Invalid),
+            };
+            if d.tenant != tenant || !task_id_valid(&d.id) || d.generation == 0 {
+                return fault(Fault::Invalid);
+            }
+            Some(d)
+        } else {
+            None
+        };
+        let finish = if path == "/finish" {
+            let f: Finish = match serde_json::from_value(raw) {
+                Ok(f) => f,
+                Err(_) => return fault(Fault::Invalid),
+            };
+            if !task_id_valid(&f.id) || f.fence == 0 || !(100..=599).contains(&f.status) {
+                return fault(Fault::Invalid);
+            }
+            Some(f)
+        } else {
+            None
+        };
+        if command.is_none() && dispatch.is_none() && finish.is_none() {
+            return Response::error("Not found", 404);
         }
         // Arm before acceptance without postponing already due work. Reload after all awaits.
         let existing = self.state.storage().get_alarm().await?;
@@ -214,57 +282,23 @@ impl DurableObject for TaskLedger {
             .migrate_legacy_redrive_keys()
             .map_err(|_| Error::RustError("Invalid legacy redrive state".into()))?;
         s.ledger.reconcile(now());
-        let result = if path == "/claim" {
-            let d: Dispatch = serde_json::from_value(raw)?;
-            if d.tenant != tenant {
-                return Response::error("Tenant mismatch", 403);
-            }
+        let result = if let Some(d) = dispatch {
             match s.ledger.claim(&d, now()) {
                 Ok(t) => Response::from_json(&t),
                 Err(e) => fault(e),
             }
-        } else if path == "/finish" {
-            let id = raw["id"].as_str().unwrap_or("");
-            let fence = raw["fence"].as_u64().unwrap_or(0);
-            let status = raw["status"].as_u64().unwrap_or(500) as u16;
-            match s.ledger.finish(id, fence, Outcome::Http(status), now()) {
+        } else if let Some(f) = finish {
+            match s
+                .ledger
+                .finish(&f.id, f.fence, Outcome::Http(f.status), now())
+            {
                 Ok(t) => Response::from_json(&t),
                 Err(e) => fault(e),
             }
-        } else if path == "/api" {
-            let a: Api = serde_json::from_value(raw)?;
-            let parts: Vec<&str> = a.path.trim_matches('/').split('/').collect();
-            use crate::application::{self, Command};
-            let command = match (a.method.as_str(), parts.as_slice()) {
-                ("POST", ["v1", "tasks"]) => {
-                    let input: Create = match serde_json::from_value(a.body) {
-                        Ok(i) => i,
-                        Err(_) => return fault(Fault::Invalid),
-                    };
-                    if !destination_allowed(&input.destination) {
-                        return Response::error(
-                            "Arbitrary outbound destinations are disabled",
-                            422,
-                        );
-                    }
-                    Some(Command::Enqueue { key: a.key, input })
-                }
-                ("POST", ["v1", "tasks", id, "cancel"]) => {
-                    Some(Command::Cancel { id: (*id).into() })
-                }
-                ("POST", ["v1", "tasks", id, "redrive"]) => Some(Command::Redrive {
-                    id: (*id).into(),
-                    key: a.key,
-                }),
-                _ => None,
-            };
-            if let Some(c) = command {
-                match application::command(&mut s.ledger, c, now()) {
-                    Ok(r) => Ok(Response::from_json(&r.body)?.with_status(r.status)),
-                    Err(e) => fault(e),
-                }
-            } else {
-                Response::error("Not found", 404)
+        } else if let Some(c) = command {
+            match crate::application::command(&mut s.ledger, c, now()) {
+                Ok(r) => Ok(Response::from_json(&r.body)?.with_status(r.status)),
+                Err(e) => fault(e),
             }
         } else {
             Response::error("Not found", 404)
@@ -284,7 +318,9 @@ pub async fn consume(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> 
         let d = message.body();
         let mut claim = call(&env, &d.tenant, "/claim", serde_json::to_value(d)?).await?;
         if claim.status_code() == 429 {
-            message.retry();
+            // A durable ready/outbox disposition and alarm were committed before this response.
+            // Admission deferral does not start an independent transport retry loop.
+            message.ack();
             continue;
         }
         if claim.status_code() != 200 {
@@ -352,6 +388,7 @@ fn query_response(ledger: &Ledger, a: Api) -> Result<Response> {
     use crate::application::{self, Query};
     let parts: Vec<&str> = a.path.trim_matches('/').split('/').collect();
     let q = match parts.as_slice() {
+        ["v1", "queue"] => Some(Query::QueueConfig),
         ["v1", "tasks"] => {
             let params: std::collections::BTreeMap<_, _> =
                 url::form_urlencoded::parse(a.query.as_bytes())
@@ -372,4 +409,40 @@ fn query_response(ledger: &Ledger, a: Api) -> Result<Response> {
         },
         None => Response::error("Not found", 404),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Finish {
+    id: String,
+    fence: u64,
+    status: u16,
+}
+fn parse_command(a: Api) -> std::result::Result<Option<crate::application::Command>, Fault> {
+    use crate::application::Command;
+    let parts: Vec<&str> = a.path.trim_matches('/').split('/').collect();
+    let c = match (a.method.as_str(), parts.as_slice()) {
+        ("POST", ["v1", "tasks"]) => {
+            let input: Create = serde_json::from_value(a.body).map_err(|_| Fault::Invalid)?;
+            if !destination_allowed(&input.destination) {
+                return Err(Fault::DestinationDisabled);
+            }
+            Some(Command::Enqueue { key: a.key, input })
+        }
+        ("POST", ["v1", "tasks", id, "cancel"]) if task_id_valid(id) => {
+            Some(Command::Cancel { id: (*id).into() })
+        }
+        ("POST", ["v1", "tasks", id, "redrive"]) if task_id_valid(id) => Some(Command::Redrive {
+            id: (*id).into(),
+            key: a.key,
+        }),
+        ("PUT", ["v1", "queue"]) => {
+            let limits: crate::limits::QueueLimits =
+                serde_json::from_value(a.body).map_err(|_| Fault::Invalid)?;
+            limits.validate()?;
+            Some(Command::ConfigureQueue { limits })
+        }
+        _ => None,
+    };
+    Ok(c)
 }

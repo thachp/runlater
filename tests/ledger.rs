@@ -113,7 +113,13 @@ fn permits_recover_and_retries_count() {
     for d in ds.iter().take(4) {
         assert!(l.claim(d, 0).unwrap().is_some());
     }
-    assert_eq!(l.claim(&ds[4], 0).unwrap_err(), Fault::Capacity);
+    assert_eq!(
+        l.claim(&ds[4], 0).unwrap_err(),
+        Fault::Limited {
+            reason: LimitReason::Concurrency,
+            retry_after_ms: LEASE
+        }
+    );
     l.reconcile(LEASE);
     assert!(l.claim(&ds[4], LEASE).unwrap().is_some());
 }

@@ -16,7 +16,7 @@ assert.equal((await settled(retry.id,'failed')).attempts.length,2);
 const redrive=await api('/v1/tasks/'+retry.id+'/redrive',{method:'POST',key:token+'d',expect:201});assert.equal(redrive.parent,retry.id);assert.equal(redrive.input.operation_key,input.operation_key);
 assert.equal((await api('/v1/tasks/'+retry.id+'/redrive',{method:'POST',key:token+'d'})).id,redrive.id);
 const scheduled=await api('/v1/tasks',{method:'POST',body:{...input,run_at_ms:Date.now()+60000},key:token+'s',expect:201});await api('/v1/tasks/'+scheduled.id+'/cancel',{method:'POST'});assert.equal((await api('/v1/tasks/'+scheduled.id)).status,'cancelled');
-const list=await api('/v1/tasks');assert.ok(list.tasks.some(x=>x.id===t.id));
+let after='',found=false;do{const list=await api('/v1/tasks'+(after?'?after='+encodeURIComponent(after):''));found ||= list.tasks.some(x=>x.id===t.id);after=list.next_after;}while(after&&!found);assert.ok(found);
 console.log('PASS: durable create/idempotency/conflict, tenant isolation, fail-closed destinations, alarm→Queue→signed fixture→result, retry, redrive operation identity, cancel, list');
 const future=await api('/v1/tasks',{method:'POST',body:{...input,run_at_ms:Date.now()+1000},key:token+'future',expect:201});assert.equal(future.status,'scheduled');assert.equal(future.attempts.length,0);await settled(future.id,'succeeded');
 const unauthorized=await fetch(base+'/v1/tasks');assert.equal(unauthorized.status,401);

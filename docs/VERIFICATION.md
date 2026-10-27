@@ -22,3 +22,9 @@ Passed four additional Rust regressions: malicious enqueue-key collision, corrup
 Parsing now completes before the durable watchdog is armed; there is no non-storage await between that watchdog and ledger load/mutate/save. The hypothesized final-rearm failure/crash boundary is not fully fault-injected by these tests; it remains part of the broader reliability gate. No independent reviewer approval is claimed for the follow-up SHA until re-review.
 
 Local scripts, rust-toolchain.toml and CI now consistently pin Rust 1.92.0; moving stable overrides were removed. Native/Wasm checks and the release Worker bundle were re-run with the named pinned toolchain.
+
+## Admission hardening slice
+
+The subsequent local slice adds tenant-wide default queue configuration, durable token-bucket rate gates, configurable expiring concurrency and active/payload admission, stricter authentication/tenant/internal DTO validation, and deterministic persisted-state recovery regressions. See ADMISSION.md for exact scope, proposed values and local commands. No multiple-queue or production concurrency/load proof is implied.
+
+Hardening verification on this Mac passed: **31 native Rust tests** (15 ledger, 11 limits/authentication, 5 recovery), Wasm compilation, release Worker bundling, 2 redirect tests, the full existing local integration suite, new real Queue dispatch pacing/admission/tenant validation integration, and unchanged-SQL query/delayed-body regressions. An initial admission-harness run correctly encountered a short retry left by the prior suite; the harness now waits for an idle local fixture tenant and follows pagination. The final sequential suite passed. Local emulator checks remain distinct from deterministic state-restart tests and from unperformed live failpoint/load proofs.

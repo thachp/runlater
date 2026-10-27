@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "RunLater LOCAL prototype",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "No production service. At-least-once design; no ordering or exact-time guarantee. Active idempotency plus 30 days after termination. All numeric limits proposed. Arbitrary outbound HTTPS disabled."
   },
   "servers": [
@@ -82,10 +82,47 @@
             "description": "Destination disabled"
           },
           "429": {
-            "description": "Tenant capacity; Retry-After: 1"
+            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "active_tasks",
+                        "payload_bytes",
+                        "concurrency",
+                        "dispatch_rate"
+                      ]
+                    },
+                    "retry_after_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              }
+            }
           },
           "503": {
             "description": "Prototype disabled"
+          },
+          "415": {
+            "description": "Expected application/json for JSON request body"
           }
         }
       },
@@ -144,7 +181,41 @@
             "description": "Destination disabled"
           },
           "429": {
-            "description": "Tenant capacity; Retry-After: 1"
+            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "active_tasks",
+                        "payload_bytes",
+                        "concurrency",
+                        "dispatch_rate"
+                      ]
+                    },
+                    "retry_after_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              }
+            }
           },
           "503": {
             "description": "Prototype disabled"
@@ -195,7 +266,41 @@
             "description": "Destination disabled"
           },
           "429": {
-            "description": "Tenant capacity; Retry-After: 1"
+            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "active_tasks",
+                        "payload_bytes",
+                        "concurrency",
+                        "dispatch_rate"
+                      ]
+                    },
+                    "retry_after_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              }
+            }
           },
           "503": {
             "description": "Prototype disabled"
@@ -249,7 +354,41 @@
             "description": "Destination disabled"
           },
           "429": {
-            "description": "Tenant capacity; Retry-After: 1"
+            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "active_tasks",
+                        "payload_bytes",
+                        "concurrency",
+                        "dispatch_rate"
+                      ]
+                    },
+                    "retry_after_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              }
+            }
           },
           "503": {
             "description": "Prototype disabled"
@@ -301,10 +440,47 @@
             "description": "Destination disabled"
           },
           "429": {
-            "description": "Tenant capacity; Retry-After: 1"
+            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "active_tasks",
+                        "payload_bytes",
+                        "concurrency",
+                        "dispatch_rate"
+                      ]
+                    },
+                    "retry_after_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              }
+            }
           },
           "503": {
             "description": "Prototype disabled"
+          },
+          "415": {
+            "description": "Expected application/json for JSON request body"
           }
         }
       }
@@ -373,10 +549,115 @@
             "description": "Destination disabled"
           },
           "429": {
-            "description": "Tenant capacity; Retry-After: 1"
+            "description": "Admission deferred. Existing idempotent results still replay. Retained payload capacity may require retention expiry or config change.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "description": "Seconds rounded up from retry_after_ms; a retry hint, not guaranteed admission"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "active_tasks",
+                        "payload_bytes",
+                        "concurrency",
+                        "dispatch_rate"
+                      ]
+                    },
+                    "retry_after_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              }
+            }
           },
           "503": {
             "description": "Prototype disabled"
+          },
+          "415": {
+            "description": "Expected application/json for JSON request body"
+          }
+        }
+      }
+    },
+    "/v1/queue": {
+      "get": {
+        "operationId": "getDefaultQueueLimits",
+        "description": "Read-only committed configuration for authenticated tenant; no alarm/reconciliation/write.",
+        "responses": {
+          "200": {
+            "description": "Tenant-wide default queue limits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueLimits"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit fields or range"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "415": {
+            "description": "Expected application/json"
+          },
+          "503": {
+            "description": "Prototype disabled or malformed authentication configuration"
+          }
+        }
+      },
+      "put": {
+        "operationId": "configureDefaultQueueLimits",
+        "description": "CQRS command replaces all limits. Lowering limits gates future work without revoking existing leases. Reconfiguration never resets rate tokens.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueLimits"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Durably committed limits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueLimits"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit fields or range"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "415": {
+            "description": "Expected application/json for JSON request body"
+          },
+          "503": {
+            "description": "Prototype disabled or malformed authentication configuration"
           }
         }
       }
@@ -515,6 +796,50 @@
             ]
           }
         }
+      },
+      "QueueLimits": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "max_active_tasks",
+          "max_payload_bytes",
+          "max_concurrent",
+          "dispatch_per_second",
+          "dispatch_burst"
+        ],
+        "properties": {
+          "max_active_tasks": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 1000
+          },
+          "max_payload_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 131072,
+            "default": 131072
+          },
+          "max_concurrent": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64,
+            "default": 4
+          },
+          "dispatch_per_second": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 20
+          },
+          "dispatch_burst": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 20
+          }
+        },
+        "description": "All values proposed local prototype limits. One tenant-wide default logical queue per project; no multiple-queue sharding."
       }
     }
   }
