@@ -199,3 +199,5 @@ This tracks both completed local foundations and remaining MVP work. Issues #2 a
 | [#14](https://github.com/thachp/runlater/issues/14) | CQRS command/query boundaries and consistency — local scope complete |
 
 A loopback-only client example, receiver protocol demonstration and executable local API contract are documented in [the local quickstart](docs/QUICKSTART.md). No account provisioning or live callbacks are required.
+
+The local prototype also supports [diagnostic dead-letter reconciliation](docs/TRANSPORT-RECOVERY.md); no production dead-letter Queue is configured.

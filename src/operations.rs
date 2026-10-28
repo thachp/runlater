@@ -7,6 +7,9 @@ pub const AUDIT_CAP: usize = 256;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
+    TransportObserved,
+    TransportReconciled,
+    AttemptBudgetExhausted,
     Accepted,
     Redriven,
     CancelRequested,
@@ -126,6 +129,7 @@ pub fn health(l: &Ledger, now: i64) -> Value {
 }
 #[derive(Default, Debug, Serialize, PartialEq, Eq)]
 pub struct RetentionReport {
+    pub transport_records_removed: usize,
     pub tasks_removed: usize,
     pub enqueue_keys_removed: usize,
     pub redrive_keys_removed: usize,

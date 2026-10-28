@@ -1082,6 +1082,237 @@
         "x-required-permission": "read",
         "description": "Pure tenant-local fixed UTC minute buckets including current partial minute; server sampled. Transport/denial observations are separate from logical attempt outcomes. No provider, billing or business-operation error-rate claim."
       }
+    },
+    "/v1/queue/dead-letters": {
+      "get": {
+        "operationId": "listDeadLetters",
+        "responses": {
+          "200": {
+            "description": "Diagnostic result; configure-only mutations return an opaque receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransportList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
+          },
+          "401": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
+          },
+          "403": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
+          }
+        },
+        "x-required-permission": "read",
+        "description": "Tenant-local diagnostic references; never payload replay or a second task ledger. See docs/TRANSPORT-RECOVERY.md.",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "pattern": "^dlq_[0-9a-f]{64}$"
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "reportDeadLetter",
+        "description": "Tenant-local diagnostic references; never payload replay or a second task ledger. See docs/TRANSPORT-RECOVERY.md.",
+        "x-required-permission": "configure",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransportReference"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Diagnostic result; configure-only mutations return an opaque receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransportReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
+          },
+          "401": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
+          },
+          "403": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
+          },
+          "201": {
+            "description": "Diagnostic result; configure-only mutations return an opaque receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransportReceipt"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/queue/dead-letters/{record_id}": {
+      "get": {
+        "operationId": "getDeadLetter",
+        "responses": {
+          "200": {
+            "description": "Diagnostic result; configure-only mutations return an opaque receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransportRecord"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
+          },
+          "401": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
+          },
+          "403": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
+          },
+          "404": {
+            "$ref": "#/components/responses/LocalError"
+          }
+        },
+        "x-required-permission": "read",
+        "description": "Tenant-local diagnostic references; never payload replay or a second task ledger. See docs/TRANSPORT-RECOVERY.md.",
+        "parameters": [
+          {
+            "name": "record_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^dlq_[0-9a-f]{64}$"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/queue/dead-letters/{record_id}/reconcile": {
+      "post": {
+        "operationId": "reconcileDeadLetter",
+        "description": "Tenant-local diagnostic references; never payload replay or a second task ledger. See docs/TRANSPORT-RECOVERY.md.",
+        "x-required-permission": "configure",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Diagnostic result; configure-only mutations return an opaque receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransportReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
+          },
+          "401": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
+          },
+          "403": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "415": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "POST/PUT has a non-JSON Content-Type; root task/key/queue mutations also reject a missing Content-Type."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
+          },
+          "404": {
+            "$ref": "#/components/responses/LocalError"
+          }
+        },
+        "parameters": [
+          {
+            "name": "record_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^dlq_[0-9a-f]{64}$"
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -1710,7 +1941,10 @@
               "lease_expired",
               "age_expired",
               "configured",
-              "retention"
+              "retention",
+              "transport_observed",
+              "transport_reconciled",
+              "attempt_budget_exhausted"
             ]
           },
           "task_id": {
@@ -1777,13 +2011,18 @@
           "audit_events_removed": {
             "type": "integer",
             "minimum": 0
+          },
+          "transport_records_removed": {
+            "type": "integer",
+            "minimum": 0
           }
         },
         "required": [
           "tasks_removed",
           "enqueue_keys_removed",
           "redrive_keys_removed",
-          "audit_events_removed"
+          "audit_events_removed",
+          "transport_records_removed"
         ]
       },
       "KeyAudit": {
@@ -2128,6 +2367,236 @@
             "$ref": "#/components/schemas/MetricSummary"
           }
         }
+      },
+      "TransportReference": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "pattern": "^task_[0-9a-f]{16}$"
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "task_id",
+          "generation"
+        ]
+      },
+      "TransportReconciliation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "at_ms": {
+            "type": "integer"
+          },
+          "actor_label": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "classification": {
+            "type": "string",
+            "enum": [
+              "missing",
+              "stale_generation",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "in_flight",
+              "lease_awaiting_reconciliation",
+              "waiting",
+              "ready_outbox",
+              "age_exhausted",
+              "attempt_budget_exhausted"
+            ]
+          },
+          "action": {
+            "enum": [
+              "outbox_confirmed",
+              "lease_preserved",
+              "schedule_preserved",
+              "no_recovery",
+              "budget_expired"
+            ]
+          }
+        },
+        "required": [
+          "at_ms",
+          "actor_label",
+          "classification",
+          "action"
+        ]
+      },
+      "TransportRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "record_id": {
+            "type": "string",
+            "pattern": "^dlq_[0-9a-f]{64}$"
+          },
+          "reference": {
+            "$ref": "#/components/schemas/TransportReference"
+          },
+          "observed_at_ms": {
+            "type": "integer"
+          },
+          "operator_reported": {
+            "type": "boolean"
+          },
+          "transport_observed": {
+            "type": "boolean"
+          },
+          "observed_classification": {
+            "type": "string",
+            "enum": [
+              "missing",
+              "stale_generation",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "in_flight",
+              "lease_awaiting_reconciliation",
+              "waiting",
+              "ready_outbox",
+              "age_exhausted",
+              "attempt_budget_exhausted"
+            ]
+          },
+          "current_classification": {
+            "type": "string",
+            "enum": [
+              "missing",
+              "stale_generation",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "in_flight",
+              "lease_awaiting_reconciliation",
+              "waiting",
+              "ready_outbox",
+              "age_exhausted",
+              "attempt_budget_exhausted"
+            ]
+          },
+          "current_status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "scheduled",
+              "ready",
+              "running",
+              "retry_wait",
+              "succeeded",
+              "failed",
+              "cancelled",
+              null
+            ]
+          },
+          "current_generation": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reconciliation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TransportReconciliation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "record_id",
+          "reference",
+          "observed_at_ms",
+          "operator_reported",
+          "transport_observed",
+          "observed_classification",
+          "current_classification",
+          "current_status",
+          "current_generation",
+          "reconciliation"
+        ]
+      },
+      "TransportReceipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dead_letter": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TransportRecord"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "record_id": {
+                    "type": "string",
+                    "pattern": "^dlq_[0-9a-f]{64}$"
+                  }
+                },
+                "required": [
+                  "record_id"
+                ]
+              }
+            ]
+          },
+          "replayed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dead_letter",
+          "replayed"
+        ]
+      },
+      "TransportList": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "records": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "$ref": "#/components/schemas/TransportRecord"
+            }
+          },
+          "next_after": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "capacity": {
+            "const": 128
+          },
+          "evicted_records": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sampled_at_ms": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "records",
+          "next_after",
+          "capacity",
+          "evicted_records",
+          "sampled_at_ms"
+        ]
       }
     },
     "responses": {

@@ -9,7 +9,8 @@
     "example:local": "node examples/quickstart.mjs",
     "test:runtime-recovery": "./scripts/test-runtime-recovery.sh",
     "test:callback-wire": "node --test examples/callback-rotation.test.mjs",
-    "test:metrics-local": "./scripts/build.sh && node scripts/metrics-integration.mjs"
+    "test:metrics-local": "./scripts/build.sh && node scripts/metrics-integration.mjs",
+    "test:transport-local": "./scripts/test-transport.sh"
   },
   "devDependencies": {
     "ajv": "8.20.0",

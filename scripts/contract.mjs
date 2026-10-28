@@ -14,7 +14,7 @@ for(const [path,methods]of Object.entries(spec.paths))for(const [method,op]of Ob
  const responses=new Map();for(const [status,rawResponse]of Object.entries(op.responses)){const response=rawResponse.$ref?spec.components.responses[rawResponse.$ref.split('/').pop()]:rawResponse;for(const [type,media]of Object.entries(response.content??{}))responses.set(status+':'+type,compile(media.schema));}
  operations.set(op.operationId,{...op,path,method,validateRequest:requestSchema&&compile(requestSchema),validators:responses});
 }
-const bindings=JSON.parse(fs.readFileSync(new URL('../wrangler.jsonc',import.meta.url))).vars;
+const bindings=JSON.parse(fs.readFileSync(new URL('../wrangler.jsonc',import.meta.url))).vars;bindings.READY_QUEUE_NAME='contract-ready';
 const mf=new Miniflare(convertV4MiniflareOptions({workers:[{name:'contract-api',modules:[{type:'ESModule',path:'build/index.js'},{type:'CompiledWasm',path:'build/index_bg.wasm'}],compatibilityDate:'2026-10-27',bindings,durableObjects:{LEDGER:{className:'TaskLedger',useSQLite:true}},queueProducers:{READY:'contract-ready'},queueConsumers:{'contract-ready':{maxBatchSize:1,maxBatchTimeout:0,maxRetries:1}},outboundService:'deny-egress'},{name:'contract-disabled',modules:[{type:'ESModule',path:'build/index.js'},{type:'CompiledWasm',path:'build/index_bg.wasm'}],compatibilityDate:'2026-10-27',bindings:{...bindings,LOCAL_FIXTURES:'false'},outboundService:'deny-egress'},{name:'deny-egress',modules:true,compatibilityDate:'2026-10-27',script:'export default {fetch(){return new Response(null,{status:403})}}'}]}));
 const covered=new Set();let calls=0;
 const dispatch=(...args)=>{assert.ok(++calls<=200,'Finite contract HTTP call budget');return mf.dispatchFetch(...args);};
@@ -35,7 +35,7 @@ try{
  // Audit every shared POST/PUT media/envelope exit, including keys and maintenance.
  for(const [id,op]of operations){
   if(!['post','put'].includes(op.method))continue;
-  const path=op.path.replace('{id}','task_0000000000000001').replace('{key_id}','contract_probe');
+  const path=op.path.replace('{id}','task_0000000000000001').replace('{key_id}','contract_probe').replace('{record_id}','dlq_'+'0'.repeat(64));
   await probe(id,{path,raw:'{}',contentType:'text/plain',status:415,invalid:true});
   await probe(id,{path,raw:'x'.repeat(25000),status:413,invalid:true});
  }
@@ -43,7 +43,7 @@ try{
  // raw loopback HTTP to exercise the same envelope reader, without changing method.
  const local=new URL(await mf.ready);assert.equal(local.hostname,'127.0.0.1');
  async function rawGet(id,status,body,contentType='application/json'){
-  const op=operations.get(id),path=op.path.replace('{id}','task_0000000000000001');
+  const op=operations.get(id),path=op.path.replace('{id}','task_0000000000000001').replace('{record_id}','dlq_'+'0'.repeat(64));
   assert.ok(++calls<=200,'Finite contract HTTP call budget');
   const result=await new Promise((resolve,reject)=>{
    const req=httpRequest(new URL(path,local),{method:'GET',headers:{Authorization:'Bearer local-alpha','Content-Type':contentType,'Content-Length':Buffer.byteLength(body)}},response=>{
@@ -59,7 +59,7 @@ try{
  for(const [id,op]of operations){
   if(id==='getRuntimeHealth')continue;
   assert.ok(++calls<=200,'Finite contract HTTP call budget');
-  const path=op.path.replace('{id}','task_0000000000000001').replace('{key_id}','contract_probe');
+  const path=op.path.replace('{id}','task_0000000000000001').replace('{key_id}','contract_probe').replace('{record_id}','dlq_'+'0'.repeat(64));
   const response=await disabled.fetch('http://127.0.0.1:8787'+path,{method:op.method.toUpperCase()});
   assert.equal(response.status,503,`Prototype gate ${id}`);
   const type=response.headers.get('Content-Type')?.split(';')[0],validate=op.validators.get('503:'+type);
@@ -94,6 +94,11 @@ try{
  const rotate={new_key:{...keySpec('contract_rotated'),permissions:['read']},revoke_old_at_ms:Date.now()+60000};
  await probe('rotateLocalProjectKey',{path:`/v1/keys/${writer.key_id}/rotate`,body:rotate,status:201});await probe('rotateLocalProjectKey',{path:`/v1/keys/${writer.key_id}/rotate`,body:rotate});
  await probe('revokeProjectKey',{path:`/v1/keys/${writer.key_id}/revoke`});await probe('createTask',{body:input,key:'revoked',token:tokenFor(writer.key_id),status:401});
+ const dl=await probe('reportDeadLetter',{body:{task_id:t.id,generation:t.generation},status:201});
+ await probe('reportDeadLetter',{body:{task_id:t.id,generation:t.generation}});
+ await probe('listDeadLetters');await probe('getDeadLetter',{path:'/v1/queue/dead-letters/'+dl.dead_letter.record_id});
+ await probe('reconcileDeadLetter',{path:'/v1/queue/dead-letters/'+dl.dead_letter.record_id+'/reconcile',body:{}});
+ await probe('reconcileDeadLetter',{path:'/v1/queue/dead-letters/'+dl.dead_letter.record_id+'/reconcile',body:{}});
  const f=await probe('createTask',{body:{...input,destination:'fixture://fail',run_at_ms:0},key:'fail',status:201});
  let failed;for(let i=0;i<40;i++){failed=await probe('getTask',{path:`/v1/tasks/${f.id}`});if(failed.status==='failed')break;await new Promise(r=>setTimeout(r,100));}assert.equal(failed.status,'failed');const observed=await probe('getQueueMetrics');assert.ok(observed.totals.counts.attempt_permanent_http>=1,'Actual Queue/finish outcome not counted');
  const redriven=await probe('redriveTask',{path:`/v1/tasks/${f.id}/redrive`,key:'redrive',status:201});assert.equal(redriven.input.operation_key,input.operation_key);assert.equal((await probe('redriveTask',{path:`/v1/tasks/${f.id}/redrive`,key:'redrive'})).id,redriven.id);

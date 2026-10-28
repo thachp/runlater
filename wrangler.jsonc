@@ -8,5 +8,5 @@
   "durable_objects": {"bindings": [{"name": "LEDGER", "class_name": "TaskLedger"}]},
   "migrations": [{"tag": "v1", "new_sqlite_classes": ["TaskLedger"]}],
   "queues": {"producers": [{"binding": "READY", "queue": "runlater-local-ready"}], "consumers": [{"queue": "runlater-local-ready", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 3}]},
-  "vars": {"LOCAL_FIXTURES": "true", "API_KEY_HASHES": "{\"a6268dd66091560795a8312546a5d5d0f8009a817ff0e3918bc52edb06851a25\": \"alpha\", \"d95caa259ef270f67ab5582059821eacbe49a29a9ee4658cba90b6bb9ac82d71\": \"beta\"}"}
+  "vars": {"READY_QUEUE_NAME": "runlater-local-ready", "LOCAL_FIXTURES": "true", "API_KEY_HASHES": "{\"a6268dd66091560795a8312546a5d5d0f8009a817ff0e3918bc52edb06851a25\": \"alpha\", \"d95caa259ef270f67ab5582059821eacbe49a29a9ee4658cba90b6bb9ac82d71\": \"beta\"}"}
 }
