@@ -1,0 +1,44 @@
+name: Release public API
+on:
+  workflow_run:
+    workflows: [Local prototype checks]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: runlater-public-api-release
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository && vars.RUNLATER_RELEASE_ENABLED == 'true'
+    environment: runlater-public-api
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - name: Reject stale release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: test "$(gh api repos/thachp/runlater/git/ref/heads/main --jq .object.sha)" = "$RELEASE_SHA"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: rustup toolchain install 1.92.0 --profile minimal --target wasm32-unknown-unknown
+      - run: cargo +1.92.0 install worker-build --version 0.8.7 --locked
+      - run: node --test scripts/api-release.test.mjs
+      - run: ./scripts/build-production.sh
+      - name: Upload guarded version and promote existing API
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          RUNLATER_RELEASE_ENABLED: ${{ vars.RUNLATER_RELEASE_ENABLED }}
+          RUNLATER_RELEASE_CONFIG: ${{ vars.RUNLATER_RELEASE_CONFIG }}
+          RUNLATER_RELEASE_APPROVAL: ${{ vars.RUNLATER_RELEASE_APPROVAL }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: node scripts/api-release.mjs
