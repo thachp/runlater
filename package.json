@@ -16,7 +16,8 @@
     "test:discovery": "node --test scripts/discovery.test.mjs",
     "test:production-identity": "./scripts/test-production-identity.sh",
     "test:signed-requests": "./scripts/test-signed-requests.sh",
-    "test:funding": "./scripts/test-funding.sh"
+    "test:funding": "./scripts/test-funding.sh",
+    "test:delivery": "./scripts/test-delivery.sh"
   },
   "devDependencies": {
     "ajv": "8.20.0",

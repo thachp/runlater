@@ -201,15 +201,17 @@ pub struct Project {
     pub ledger: Ledger,
     pub requests: Receipts,
     pub funding: crate::funding::State,
+    pub delivery: crate::delivery::State,
 }
 impl Default for Project {
     fn default() -> Self {
         Self {
-            project_state_version: 2,
+            project_state_version: 3,
             catalog: Catalog::default(),
             ledger: Ledger::default(),
             requests: Receipts::default(),
             funding: crate::funding::State::default(),
+            delivery: crate::delivery::State::default(),
         }
     }
 }
@@ -230,14 +232,38 @@ impl Project {
                     return Err(Error::Invalid);
                 }
                 Ok(Self {
-                    project_state_version: 2,
+                    project_state_version: 3,
                     catalog: old.catalog,
                     ledger: old.ledger,
                     requests: old.requests,
                     funding: crate::funding::State::default(),
+                    delivery: crate::delivery::State::default(),
                 })
             }
-            Some(2) => serde_json::from_value(value).map_err(|_| Error::Invalid),
+            Some(2) => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct V2 {
+                    project_state_version: u8,
+                    catalog: Catalog,
+                    ledger: Ledger,
+                    requests: Receipts,
+                    funding: crate::funding::State,
+                }
+                let old: V2 = serde_json::from_value(value).map_err(|_| Error::Invalid)?;
+                if old.project_state_version != 2 {
+                    return Err(Error::Invalid);
+                }
+                Ok(Self {
+                    project_state_version: 3,
+                    catalog: old.catalog,
+                    ledger: old.ledger,
+                    requests: old.requests,
+                    funding: old.funding,
+                    delivery: crate::delivery::State::default(),
+                })
+            }
+            Some(3) => serde_json::from_value(value).map_err(|_| Error::Invalid),
             Some(_) => Err(Error::Invalid),
             None if value.get("project_state_version").is_some() => Err(Error::Invalid),
             None => Ok(Self {

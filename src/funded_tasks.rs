@@ -90,6 +90,8 @@ impl Project {
         let t = snapshot.ledger.get(id)?;
         let mut v = snapshot.task_result(e, &t, false, false, now)?;
         v["sampled_at_ms"] = now.into();
+        v["delivery"] = serde_json::to_value(snapshot.delivery.attempts.get(id))
+            .map_err(|_| identity::Error::Invalid)?;
         Ok(v)
     }
     /// `admission` is trusted application context, never an HTTP field. Production always passes None in this slice.
