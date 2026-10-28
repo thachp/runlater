@@ -127,7 +127,7 @@ pub(super) async fn front(mut req: Request, env: Env) -> Result<Response> {
     let path = req.path();
     if req.method() == Method::Get && path == "/health" {
         return json_response(
-            &json!({"mode":"public_free_beta","configured":true,"receiver":"workers.dev_only","payments":false}),
+            &json!({"mode":"public_free_beta","configured":true,"receiver":"workers.dev_only","payments":false,"version_id":env.object_var::<Value>("RELEASE_VERSION").ok().and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_owned))}),
             200,
         );
     }

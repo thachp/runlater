@@ -32,7 +32,7 @@ print(json.dumps(out,sort_keys=True))`,root],{encoding:'utf8'});
 }
 async function start(extra={}) {
  await mf?.dispose();
- mf=new Miniflare(convertV4MiniflareOptions({resourcePersistencePath:root,workers:[{name:'invitation-production',modules:[{type:'ESModule',path:'build/index.js'},{type:'CompiledWasm',path:'build/index_bg.wasm'}],compatibilityDate:'2026-10-27',compatibilityFlags:['global_fetch_strictly_public'],ratelimits:{BETA_IP_RATE:{namespace_id:'1001',simple:{limit:60,period:60}},BETA_REG_IP_RATE:{namespace_id:'1002',simple:{limit:6,period:60}}},bindings:{...base,...extra},durableObjects:{ADMISSION:{className:'AdmissionRegistry',useSQLite:true},PROJECTS:{className:'InvitationProject',useSQLite:true}},queueProducers:{BETA_READY:'runlater-public-ready'},queueConsumers:{'runlater-public-ready':{maxBatchSize:1,maxBatchTimeout:0,maxRetries:1}},outboundService:receiver},{name:'deny-egress',modules:true,compatibilityDate:'2026-10-27',script:'export default {fetch(){return new Response(null,{status:403})}}'}]}));
+ mf=new Miniflare(convertV4MiniflareOptions({resourcePersistencePath:root,workers:[{name:'invitation-production',modules:[{type:'ESModule',path:'build/index.js'},{type:'CompiledWasm',path:'build/index_bg.wasm'}],compatibilityDate:'2026-10-27',compatibilityFlags:['global_fetch_strictly_public'],ratelimits:{BETA_IP_RATE:{namespace_id:'1001',simple:{limit:60,period:60}},BETA_REG_IP_RATE:{namespace_id:'1002',simple:{limit:6,period:60}}},bindings:{...base,RELEASE_VERSION:{id:'01234567-0123-0123-0123-0123456789ab'},...extra},durableObjects:{ADMISSION:{className:'AdmissionRegistry',useSQLite:true},PROJECTS:{className:'InvitationProject',useSQLite:true}},queueProducers:{BETA_READY:'runlater-public-ready'},queueConsumers:{'runlater-public-ready':{maxBatchSize:1,maxBatchTimeout:0,maxRetries:1}},outboundService:receiver},{name:'deny-egress',modules:true,compatibilityDate:'2026-10-27',script:'export default {fetch(){return new Response(null,{status:403})}}'}]}));
  await mf.ready;
 }
 async function api(route,{body,headers={},method='POST',status=200,origin='https://api.runlater.io'}={}) {
@@ -49,7 +49,7 @@ function signed(project,route,body,{method='POST',idempotency='production-unavai
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 try {
  await start();
- assert.equal((await api('/health',{method:'GET'})).mode,'public_free_beta');
+ const health=await api('/health',{method:'GET'});assert.equal(health.mode,'public_free_beta');assert.equal(health.version_id,'01234567-0123-0123-0123-0123456789ab');
  assert.equal((await api('/v1/beta',{method:'GET'})).remaining_projects,10);
  assert.deepEqual(JSON.parse(projectSnapshot()),[]);
  const c=await api('/v1/registration/challenge',{body:{public_key:pub}});

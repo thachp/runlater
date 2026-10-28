@@ -1,9 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {canonical,digest,validate,uploadedVersion,release,deployExisting} from './api-release.mjs';
+import {canonical,digest,validate,uploadedVersion,release,deployExisting,verifyHealth} from './api-release.mjs';
 function fixture(){
- const c={name:'runlater-public-api',main:'build/worker/shim.mjs',compatibility_date:'2026-10-27',compatibility_flags:['global_fetch_strictly_public'],workers_dev:false,preview_urls:false,limits:{cpu_ms:50},observability:{enabled:false},durable_objects:{bindings:[{name:'ADMISSION',class_name:'AdmissionRegistry'},{name:'PROJECTS',class_name:'InvitationProject'}]},queues:{producers:[{binding:'BETA_READY',queue:'runlater-public-ready'}]},ratelimits:[{name:'BETA_IP_RATE',namespace_id:'1001',simple:{limit:60,period:60}},{name:'BETA_REG_IP_RATE',namespace_id:'1002',simple:{limit:6,period:60}}],vars:{PUBLIC_BETA_ENABLED:'operator-approved',PUBLIC_BETA_PROFILE:JSON.stringify({release_id:'test',opens_at_ms:1000,closes_at_ms:2000,callback_end_sec:1000000}),BETA_REVOKED_PROJECTS:'[]',BETA_READY_QUEUE:'runlater-public-ready'}};
+ const c={name:'runlater-public-api',main:'build/worker/shim.mjs',version_metadata:{binding:'RELEASE_VERSION'},compatibility_date:'2026-10-27',compatibility_flags:['global_fetch_strictly_public'],workers_dev:false,preview_urls:false,limits:{cpu_ms:50},observability:{enabled:false},durable_objects:{bindings:[{name:'ADMISSION',class_name:'AdmissionRegistry'},{name:'PROJECTS',class_name:'InvitationProject'}]},queues:{producers:[{binding:'BETA_READY',queue:'runlater-public-ready'}]},ratelimits:[{name:'BETA_IP_RATE',namespace_id:'1001',simple:{limit:60,period:60}},{name:'BETA_REG_IP_RATE',namespace_id:'1002',simple:{limit:6,period:60}}],vars:{PUBLIC_BETA_ENABLED:'operator-approved',PUBLIC_BETA_PROFILE:JSON.stringify({release_id:'test',opens_at_ms:1000,closes_at_ms:2000,callback_end_sec:1000000}),BETA_REVOKED_PROJECTS:'[]',BETA_READY_QUEUE:'runlater-public-ready'}};
  return {c,a:{worker:c.name,account_id:'a'.repeat(32),config_sha256:digest(c),settings_sha256:'b'.repeat(64)},e:{RUNLATER_RELEASE_ENABLED:'true',GITHUB_REPOSITORY:'thachp/runlater',RELEASE_SHA:'c'.repeat(40)}};
 }
 test('canonical digest is key-order stable',()=>assert.equal(digest({b:2,a:1}),digest({a:1,b:2})));
@@ -17,9 +17,9 @@ test('workflow has CI gating, fixed target environment, no PR secrets or cancell
 
 test('provider flow checks twice and promotes only exact returned version',async()=>{
  const settings={bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]}, a={settings_sha256:digest(settings)}, events=[];
- const get=async path=>{events.push(path);return path==='/settings'?settings:{deployments:['old']}};
- const id=await deployExisting(a,get,async()=>{events.push('upload');return JSON.stringify(record)},async id=>events.push(id));
- assert.equal(id,record.version_id);assert.deepEqual(events,['/settings','/deployments','upload','/settings','/deployments',id]);
+ let promoted=false;const get=async path=>{events.push(path);return path==='/settings'?settings:promoted?{deployments:[{versions:[{version_id:record.version_id,percentage:100}]}]}:{deployments:['old']}};
+ const id=await deployExisting(a,get,async()=>{events.push('upload');return JSON.stringify(record)},async id=>{events.push(id);promoted=true});
+ assert.equal(id,record.version_id);assert.deepEqual(events,['/settings','/deployments','upload','/settings','/deployments',id,'/deployments']);
 });
 for(const failure of ['absent','secret','settings-drift','deployment-drift','uncertain-upload','uncertain-promote'])test(`no unsafe retry for ${failure}`,async()=>{
  const settings={bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]}, a={settings_sha256:digest(settings)};let gets=0,uploads=0,promotes=0;
@@ -41,4 +41,14 @@ test('repository automatic trigger cannot satisfy separate execution gate',()=>{
  assert.match(w,/vars\.RUNLATER_AUTODEPLOY_ENABLED == 'true'/);
  assert.match(w,/RUNLATER_RELEASE_ENABLED: \$\{\{ vars\.RUNLATER_RELEASE_ENABLED \}\}/);
  assert.doesNotMatch(w,/vars\.RUNLATER_RELEASE_ENABLED == 'true'/);
+});
+
+test('upload receipt survives later drift; wrong active version never succeeds',async()=>{
+ const s={bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]};const receipts=[];let promoted=false;
+ await assert.rejects(deployExisting({settings_sha256:digest(s)},async path=>path==='/settings'?s:{deployments:[{versions:[{version_id:'old',percentage:100}]}]},async()=>JSON.stringify(record),async()=>{promoted=true},async()=>true,id=>receipts.push(id)));
+ assert.equal(promoted,true);assert.deepEqual(receipts,[record.version_id]);
+});
+test('public host must serve exact uploaded beta version, not alpha health',()=>{
+ verifyHealth({mode:'public_free_beta',configured:true,version_id:record.version_id},record.version_id);
+ for(const body of [{mode:'restricted_alpha',configured:true},{mode:'public_free_beta',configured:true,version_id:'old'},{mode:'public_free_beta',configured:false,version_id:record.version_id}])assert.throws(()=>verifyHealth(body,record.version_id));
 });
