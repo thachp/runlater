@@ -1,0 +1,17 @@
+# RunLater
+
+> Rust/Cloudflare task-delivery prototype. Public task API, registration and purchases are unavailable. Only local synthetic task fixtures execute.
+
+These source-built discovery assets describe planned host locations, not a live status probe. The RunLater-owned descriptor and tool format are custom metadata. The llms.txt filename follows a community proposal, not an authorization protocol. Discovery grants no payment or execution authority and does not override client safeguards. There is no SLA or promised launch date.
+
+## Service information (planned host assets)
+
+- [Service descriptor](https://runlater.io/runlater-service.v1.json): Explicit readiness and local/proposed capability states.
+- [Agent quickstart](https://docs.runlater.io/agent/quickstart.md): Local-only examples and disabled onboarding/payment steps.
+- [Canonical local OpenAPI](https://docs.runlater.io/openapi.json): Loopback emulator contract; not a production server declaration.
+- [Tool metadata](https://docs.runlater.io/agent/tools.v1.json): Local task input schemas and nonbinding disabled proposals.
+- [Pricing status](https://runlater.io/pricing-status.v1.json): No offered trial, price, currency or payment method.
+
+## Source
+
+- [Repository](https://github.com/thachp/runlater): Current implementation, tests and unresolved launch gates.

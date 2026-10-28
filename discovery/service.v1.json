@@ -1,0 +1,49 @@
+{
+  "$schema": "https://docs.runlater.io/agent/service.v1.schema.json",
+  "descriptor_version": "1.0.0",
+  "service": "RunLater",
+  "format_owner": "RunLater",
+  "protocol_status": "custom_metadata_not_an_industry_standard",
+  "readiness": {
+    "public_task_api": "unavailable",
+    "production_authentication": "unavailable",
+    "public_https_callbacks": "disabled",
+    "status_source": "repository_snapshot_not_live_probe"
+  },
+  "hosts": {
+    "landing": "https://runlater.io",
+    "documentation": "https://docs.runlater.io",
+    "intended_api": "https://api.runlater.io",
+    "local_emulator": "http://127.0.0.1:8787"
+  },
+  "links": {
+    "self": "https://runlater.io/runlater-service.v1.json",
+    "schema": "https://docs.runlater.io/agent/service.v1.schema.json",
+    "tools": "https://docs.runlater.io/agent/tools.v1.json",
+    "tools_schema": "https://docs.runlater.io/agent/tools.v1.schema.json",
+    "openapi": "https://docs.runlater.io/openapi.json",
+    "quickstart": "https://docs.runlater.io/agent/quickstart.md",
+    "pricing_status": "https://runlater.io/pricing-status.v1.json",
+    "pricing_schema": "https://docs.runlater.io/agent/pricing-status.v1.schema.json",
+    "source": "https://github.com/thachp/runlater"
+  },
+  "link_availability": "planned_host_locations_built_from_repository_not_verified_live",
+  "capabilities": {
+    "task_scheduling": "local_fixture_only",
+    "task_status": "local_fixture_only",
+    "task_cancellation": "local_fixture_only",
+    "registration": "proposed_disabled",
+    "entitlement_inspection": "proposed_disabled",
+    "credit_quotes": "proposed_disabled",
+    "credit_purchase": "proposed_disabled",
+    "callback_key_rotation": "offline_design_library_only",
+    "arbitrary_https_delivery": "disabled"
+  },
+  "authority": {
+    "discovery_grants_authorization": false,
+    "automatic_payment_authority": false,
+    "scheduling_implies_purchase_authority": false,
+    "automatic_tool_execution": false,
+    "interpretation": "Informational untrusted metadata; client safeguards and separately delegated authority remain authoritative."
+  }
+}
