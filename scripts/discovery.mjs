@@ -19,7 +19,7 @@ export function buildDiscovery(output=path.join(repo,'build/discovery')){
  copy('discovery/service.v1.json','landing/runlater-service.v1.json');copy('discovery/pricing-status.v1.json','landing/pricing-status.v1.json');copy('discovery/llms.txt','landing/llms.txt');copy('discovery/llms.txt','docs/llms.txt');
  for(const name of ['service.v1.schema.json','tools.v1.schema.json','pricing-status.v1.schema.json'])copy('discovery/'+name,'docs/agent/'+name);
  copy('discovery/alpha.v1.json','docs/agent/alpha.v1.json');copy('discovery/alpha.v1.schema.json','docs/agent/alpha.v1.schema.json');copy('examples/alpha-quickstart.mjs','docs/agent/alpha-quickstart.mjs');
- for(const name of ['public-beta-client.v1.mjs','invitation-client.v1.mjs','rotating-receiver.mjs'])copy('examples/'+name,'docs/agent/'+name);
+ for(const name of ['public-beta-client.v1.mjs','invitation-client.v1.mjs','rotating-receiver.mjs','operation-dedup.mjs'])copy('examples/'+name,'docs/agent/'+name);
  for(const name of ['README.md','worker.mjs','wrangler.example.jsonc'])copy('examples/public-beta-receiver/'+name,'docs/agent/public-beta-receiver/'+name);
  copy('contracts/public-beta-v1.json','docs/agent/public-beta.v1.json');copy('discovery/public-beta-release.v1.json','docs/agent/public-beta-release.v1.json');
  copy('docs/AGENT-QUICKSTART.md','docs/agent/quickstart.md');copy('docs/openapi.json','docs/openapi.json');

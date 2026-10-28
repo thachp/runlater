@@ -23,8 +23,10 @@ cd runlater
 mkdir -p private
 chmod 700 private
 # Generate and retain your own key locally; never print or upload its private bytes.
-(umask 077; openssl genpkey -algorithm Ed25519 -out private/bot.pem)
+node --input-type=module -e 'import {generateKeyPairSync} from "node:crypto"; import {writeFileSync} from "node:fs"; const {privateKey}=generateKeyPairSync("ed25519"); writeFileSync("private/bot.pem", privateKey.export({type:"pkcs8",format:"pem"}), {flag:"wx",mode:0o600});'
 ```
+
+The repository ignores `/private/`. Keep all keys, receipts, callback material and proofs there; never force-add them to Git. Key creation is exclusive: rerunning it refuses to replace an existing key. Retain the original key for recovery.
 
 Save the following as a local module in the repository. Running it deliberately registers your bot under the fixed free-beta terms and consumes one project slot; it makes no purchase:
 

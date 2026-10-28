@@ -4,3 +4,6 @@
 /.wrangler/
 .dev.vars*
 .env*
+
+# Quickstart owner keys, receipts, callback material and proofs.
+/private/
