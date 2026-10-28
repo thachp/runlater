@@ -9,6 +9,7 @@ pub enum Command {
     Redrive { id: String, key: String },
 }
 pub enum Query {
+    Metrics { sampled_at_ms: i64 },
     Health { sampled_at_ms: i64 },
     Audit,
     Inspection { id: String },
@@ -66,6 +67,7 @@ pub fn command(ledger: &mut Ledger, c: Command, now: i64) -> Result<CommandResul
 }
 pub fn query(ledger: &Ledger, q: Query) -> Result<Value, Fault> {
     match q {
+        Query::Metrics { sampled_at_ms } => Ok(ledger.metrics.view(sampled_at_ms)),
         Query::Health { sampled_at_ms } => Ok(crate::operations::health(ledger, sampled_at_ms)),
         Query::Audit => Ok(
             json!({"events":ledger.audit,"capacity":crate::operations::AUDIT_CAP,"last_sequence":ledger.audit_sequence}),
