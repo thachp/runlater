@@ -23,8 +23,8 @@ After separately reviewed activation, an owner would configure these bindings th
 |---|---|
 | `RECEIVER_ENABLED` | Explicit `owner-configured`; source config defaults to `disabled`. |
 | `RECEIVER_URL` | The exact owner-controlled workers.dev HTTPS callback URL. |
-| `RECEIVER_PROJECT_ID` | The project returned by public key-possession registration. Actual registration DTO is pending. |
-| `CALLBACK_POLICY` | Existing callback-v2 `Keyring` metadata for exactly that tenant/policy/key history. Obtain its fields from the finalized key-retrieval contract. |
+| `RECEIVER_PROJECT_ID` | The project returned by public key-possession registration. Validated public-beta enrollment receipt; see `contracts/public-beta-v1.json`. |
+| `CALLBACK_POLICY` | Existing callback-v2 `Keyring` metadata for exactly that tenant/policy/key history. The current key-retrieval DTO omits validity times: obtain this nonsecret metadata from the reviewed release policy, never infer it from the client clock. |
 | `CALLBACK_KEYS` | Secret JSON key-ID → 32-byte lowercase-hex material map. Only the scoped per-project callback material belongs here; never a service master key. Fixture-prefixed IDs and repeated-byte placeholders are refused; these checks cannot establish key secrecy. |
 | `OWNERSHIP_PROOF` | Secret JSON `{id,response,expires_at_ms}` from destination preparation, privately installed before verification. It contains the nonce. |
 | `INBOX` | The receiver's own SQLite-backed `ReceiverInbox` namespace. |
@@ -33,7 +33,7 @@ Keep files containing key/proof data owner-only and outside Git. Never paste the
 
 ## Static ownership response; never reflection
 
-Have the handler and private owner configuration channel ready **before** preparing a proof. The current destination protocol has a 60-second TTL and three lifetime issuances per endpoint version. Secret installation/rollout may consume that window; do not promise deployment will finish within it or burn retries automatically. Public-beta challenge timing/recovery must be confirmed by the API owner before a client guide is wired.
+Have the handler and private owner configuration channel ready **before** preparing a proof. The current destination protocol has a five-minute TTL and three lifetime issuances per endpoint version. Secret installation/rollout may consume that window; do not promise deployment will finish within it or burn retries automatically. Do not retry preparation automatically; a failed/expired proof consumes an issuance.
 
 The installed response is exactly:
 
@@ -69,6 +69,6 @@ After authenticated traffic observes a policy revision/material identity, SQLite
 
 `npm run test:public-beta-receiver` exercises the real Worker in local workerd with disposable SQLite, generated ephemeral material and denied outbound traffic. It covers static proof matching/reflection rejection, invalid context/timestamps, HMAC/body substitution, concurrent duplicate/counter atomicity, digest conflicts, actual local disposal/restart, observed policy rollback/material substitution and bounded storage. Existing callback vector tests prove the shared verifier still agrees with Rust. These tests do not prove live workers.dev routing, DNS/TLS, provider limits or a deployed beta.
 
-Public signup/client wire implementation waits for the main owner's exact DTOs. See [the client/docs handoff plan](../../docs/PUBLIC-BETA-CLIENT-PLAN.md). Nothing here changes the published alpha, billing, credentials or availability.
+The separate [public-beta client/quickstart](../../docs/PUBLIC-BETA-QUICKSTART-v1.md) follows the actual source DTOs. Nothing here changes the published alpha, billing, credentials or availability.
 
 References consulted: [Cloudflare SQLite transactions](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/), [Node crypto support](https://developers.cloudflare.com/workers/runtime-apis/nodejs/crypto/), [Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/).

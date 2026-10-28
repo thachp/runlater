@@ -20,7 +20,7 @@ function fixture() {
   const policy = {version: 'v2', tenant: project, policy_id: 'public_callbacks', revision: 1,
     keys: {server_one: {key_id: 'server_one', introduced_revision: 1, active_from_sec: 0,
       sign_until_sec: end, verify_until_sec: end + 300, revoked_at_sec: null}}, rotations: {}};
-  const response = 'RunLater destination proof v1\n' + JSON.stringify([1, project, 'owned', 1, url, 1, Date.now() + 60000, randomBytes(32).toString('hex')]);
+  const response = 'RunLater destination proof v1\n' + JSON.stringify([1, project, 'owned', 1, url, 1, Date.now() + 300000, randomBytes(32).toString('hex')]);
   const proof = {id: sha(response), response, expires_at_ms: JSON.parse(response.split('\n')[1])[6]};
   const verifyBody = 'RunLater destination verification v1\n' + JSON.stringify([project, 'owned', 1, proof.id, proof.expires_at_ms]);
   const bindings = () => ({RECEIVER_ENABLED: 'owner-configured', RECEIVER_PROJECT_ID: project,
