@@ -20,7 +20,7 @@ Old buckets are excluded logically on reads and pruned on the next observed comm
 | claim_paused | An otherwise eligible reference is deferred by the durable pause gate before spending tokens or starting a lease |
 | paused_age_expired | Paused nonrunning work exceeds its original delivery-age budget; no attempt is started |
 | claim_rate_denied / claim_concurrency_denied | An otherwise eligible reference is deferred by durable dispatch limits; repeated transport references may repeat these counts |
-| claim_age_expired | Work becomes terminal before starting an attempt because its delivery age budget expired |
+| claim_age_expired | Nonpaused work becomes terminal before starting an attempt because its delivery age budget expired, during claim or background reconciliation |
 | attempt_started | A new lease/fence/attempt is actually committed |
 | attempt_succeeded / attempt_timeout / attempt_retryable_http / attempt_permanent_http / attempt_lease_expired_unknown / attempt_unknown_failure | A valid finish or lease reconciliation settles one logical attempt. Stale/duplicate results cannot record another outcome |
 | stale_results_ignored | A finish for a retained task cannot own the current live fence/lease/state; transport observation, not a failed business attempt |

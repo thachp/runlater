@@ -1,0 +1,63 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "runlater-alpha-api",
+  "main": "../../build/worker/shim.mjs",
+  "compatibility_date": "2026-10-27",
+  "workers_dev": false,
+  "preview_urls": false,
+  "limits": {
+    "cpu_ms": 50
+  },
+  "observability": {
+    "enabled": false
+  },
+  "routes": [
+    {
+      "pattern": "api.runlater.io",
+      "custom_domain": true
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "IDENTITIES",
+        "class_name": "ProjectIdentity"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "alpha-v1",
+      "new_sqlite_classes": [
+        "ProjectIdentity"
+      ]
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "ALPHA_READY",
+        "queue": "runlater-alpha-ready"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "runlater-alpha-ready",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 1
+      }
+    ]
+  },
+  "vars": {
+    "ALPHA_ENROLLMENT": "disabled",
+    "ALPHA_DELIVERY_ENABLED": "disabled",
+    "ALPHA_READY_QUEUE": "runlater-alpha-ready",
+    "ALPHA_PROJECT_POLICIES": "[]",
+    "ALPHA_DELIVERY_POLICIES": "[]"
+  },
+  "build": {
+    "command": "./scripts/build-production.sh",
+    "cwd": "../.."
+  }
+}

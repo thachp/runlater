@@ -206,8 +206,10 @@ The local prototype also supports [diagnostic dead-letter reconciliation](docs/T
 
 [Agent discovery source](docs/AGENT-DISCOVERY.md) describes local task tools and explicitly disabled onboarding/funding proposals. Static artifact generation does not deploy a service or authorize execution/payment.
 
-A separate [production identity source profile](docs/PRODUCTION-IDENTITY.md) provides offline-tested operator-approved possession enrollment. It is not activated and cannot accept tasks, issue production credentials or simulate delivery.
+A separate [production identity source profile](docs/PRODUCTION-IDENTITY.md) provides offline-tested operator-approved possession enrollment. It is not activated; public customer enrollment and production credential issuance remain unavailable.
 
 The production source profile also has [signed reads and configuration](docs/SIGNED-REQUESTS.md), with atomic command receipts and pure replayable reads. Unfunded task admission remains disabled.
 
-Finite operator-alpha task funding is a [source-only model](docs/FUNDING.md), tested with disposable local SQLite. Production fresh task admission remains disabled until destination registration, signing and actual delivery are integrated and reviewed.
+Finite operator-alpha task funding is a [source-only model](docs/FUNDING.md), tested with disposable local SQLite. Default production fresh admission remains closed; the restricted opt-in path below requires reviewed policies, fresh approved material and real delivery proof before activation.
+
+The subsequent [restricted registered-delivery source](docs/REGISTERED-DELIVERY.md) wires production-mode alarms, Queue and v2 signatures for one owned synthetic receiver behind explicit operator configuration. It is offline-tested and not activated; arbitrary destinations and public customer enrollment remain unavailable.

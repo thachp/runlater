@@ -307,6 +307,56 @@ impl Keyring {
         *self = next;
         Ok(view)
     }
+    pub fn key_ids(&self) -> impl Iterator<Item = &str> {
+        self.keys.keys().map(String::as_str)
+    }
+    pub fn policy_id(&self) -> &str {
+        &self.policy_id
+    }
+    pub fn tenant(&self) -> &str {
+        &self.tenant
+    }
+    /// Accept operator metadata without allowing rollback, key removal or resurrection.
+    pub fn update(&mut self, next: &Self) -> Result<(), Fault> {
+        self.validate()?;
+        next.validate()?;
+        if self.tenant != next.tenant
+            || self.policy_id != next.policy_id
+            || next.revision < self.revision
+        {
+            return Err(Fault::Conflict);
+        }
+        if next.revision == self.revision {
+            return if self == next {
+                Ok(())
+            } else {
+                Err(Fault::Conflict)
+            };
+        }
+        for (id, old) in &self.keys {
+            let new = next.keys.get(id).ok_or(Fault::Conflict)?;
+            if new.introduced_revision != old.introduced_revision
+                || new.active_from_sec != old.active_from_sec
+                || new.sign_until_sec > old.sign_until_sec
+                || new.verify_until_sec > old.verify_until_sec
+                || old.revoked_at_sec.is_some() && new.revoked_at_sec != old.revoked_at_sec
+            {
+                return Err(Fault::Conflict);
+            }
+        }
+        if next.keys.iter().any(|(id, key)| {
+            !self.keys.contains_key(id) && key.introduced_revision <= self.revision
+        }) {
+            return Err(Fault::Conflict);
+        }
+        for (id, old) in &self.rotations {
+            if next.rotations.get(id) != Some(old) {
+                return Err(Fault::Conflict);
+            }
+        }
+        *self = next.clone();
+        Ok(())
+    }
     pub fn sign(
         &self,
         snapshot: &Snapshot,
@@ -435,6 +485,13 @@ impl Snapshot {
                 .body_sha256
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
+    pub(crate) fn accepts(&self, e: &Envelope, body: &[u8]) -> bool {
+        self.valid(body)
+            && e.version == self.version
+            && e.policy_id == self.policy_id
+            && e.task_id == format!("{}:{}", self.tenant, self.task_id)
+            && e.operation_key == self.operation_key
     }
     fn valid(&self, body: &[u8]) -> bool {
         self.valid_metadata() && body.len() <= 16384 && self.body_sha256 == digest(body)

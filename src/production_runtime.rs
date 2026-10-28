@@ -1,4 +1,7 @@
-//! Production-only boundary. Enrollment is operator-approved; task acceptance/delivery remains disabled.
+#[cfg(feature = "production")]
+#[path = "production_delivery.rs"]
+mod delivery_runtime;
+// Production boundary. Optional restricted-alpha delivery requires explicit server configuration.
 use crate::{
     identity::{self, Policy},
     signed::{Envelope, Project},
@@ -11,6 +14,19 @@ use worker::{
 };
 fn now() -> i64 {
     Date::now().as_millis() as i64
+}
+fn availability(env: &Env) -> &'static str {
+    #[cfg(feature = "production")]
+    if env
+        .var("ALPHA_DELIVERY_ENABLED")
+        .map(|v| v.to_string())
+        .unwrap_or_default()
+        == "operator-approved"
+    {
+        return "restricted_alpha_opt_in";
+    }
+    let _ = env;
+    "unavailable"
 }
 fn response(code: &str, status: u16) -> Result<Response> {
     let mut r = Response::from_json(&json!({"error":{"code":code},"task_accepted":false}))?
@@ -312,7 +328,7 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
             "production"
         };
         return Response::from_json(
-            &json!({"mode":mode,"identity":"signed_read_config_only","task_api":"unavailable","outbound":"disabled"}),
+            &json!({"mode":mode,"identity":"signed_read_config_only","task_api":availability(&env),"outbound":if availability(&env)=="unavailable"{"disabled"}else{"restricted_exact_receiver"}}),
         );
     }
     if (path == "/v1/queue" && matches!(req.method(), Method::Get | Method::Put))
@@ -500,6 +516,65 @@ impl DurableObject for ProjectIdentity {
                 Err(e) => task_error(e),
             };
         }
+        #[cfg(feature = "production")]
+        if req.path() == "/verify-callback" {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Verify {
+                headers: Vec<(String, String)>,
+                body_hex: String,
+            }
+            let Some(raw_input) = bytes(&mut req, 4096).await? else {
+                return response("invalid_callback", 400);
+            };
+            let v: serde_json::Value = match serde_json::from_slice(&raw_input) {
+                Ok(v) => v,
+                Err(_) => return response("invalid_callback", 400),
+            };
+            let v: Verify = match serde_json::from_value(v) {
+                Ok(v) => v,
+                Err(_) => return response("invalid_callback", 400),
+            };
+            if v.headers.len() > 8 || v.body_hex.len() > 2048 {
+                return response("invalid_callback", 400);
+            }
+            let raw = match hex::decode(v.body_hex) {
+                Ok(b) => b,
+                Err(_) => return response("invalid_callback", 400),
+            };
+            let Some((p, material)) = delivery_runtime::configuration(&self.env, &project)? else {
+                return response("delivery_not_ready", 503);
+            };
+            let mut stored = self.load()?;
+            delivery_runtime::apply(&mut stored, &p, &material, now())?;
+            self.save(&stored)?;
+            return if stored
+                .delivery
+                .verify(&v.headers, &raw, &material, now())
+                .is_ok()
+            {
+                let attempt = crate::callback::Envelope::from_headers(&v.headers)
+                    .ok()
+                    .and_then(|e| e.task_id.split_once(':').map(|(_, id)| id.to_string()))
+                    .and_then(|id| stored.ledger.get(&id).ok())
+                    .map(|t| t.attempts.len())
+                    .unwrap_or_default();
+                Response::from_json(&json!({"verified":true,"attempt":attempt}))
+            } else {
+                response("callback_forbidden", 403)
+            };
+        }
+        #[cfg(feature = "production")]
+        if req.path() == "/deliver" {
+            let Some(value) = body(&mut req).await? else {
+                return response("invalid_dispatch", 400);
+            };
+            let d = match serde_json::from_value(value) {
+                Ok(d) => d,
+                Err(_) => return response("invalid_dispatch", 400),
+            };
+            return self.deliver_reference(&project, d).await;
+        }
         if req.path() == "/signed" {
             if req.method() != Method::Post {
                 return response("method_not_supported", 405);
@@ -528,7 +603,17 @@ impl DurableObject for ProjectIdentity {
                 None
             };
             #[cfg(feature = "production")]
-            let admission: Option<crate::funding::Policy> = None;
+            let mut delivery = if input.envelope.method == "GET" {
+                None
+            } else {
+                delivery_runtime::configuration(&self.env, &project)
+                    .ok()
+                    .flatten()
+            };
+            #[cfg(feature = "production")]
+            if input.envelope.method != "GET" {
+                self.state.storage().set_alarm(1000).await?;
+            }
             let mut stored = self.load()?;
             if crate::funded_tasks::route(&input.envelope.method, &input.envelope.path).is_some() {
                 if input.envelope.method == "GET" {
@@ -547,6 +632,51 @@ impl DurableObject for ProjectIdentity {
                     return signed_error(e);
                 }
                 self.save(&stored)?;
+                #[cfg(feature = "production")]
+                if let Some((p, material)) = &delivery {
+                    if delivery_runtime::apply(&mut stored, p, material, now()).is_err() {
+                        delivery = None;
+                    } else {
+                        self.save(&stored)?;
+                    }
+                }
+                #[cfg(feature = "production")]
+                let result = match stored.task_command(
+                    policy,
+                    None,
+                    &input.envelope,
+                    &input.signature,
+                    &raw_body,
+                    now(),
+                ) {
+                    Err(crate::funded_tasks::Error::AdmissionUnavailable) => {
+                        if let Some((p, material)) = &delivery {
+                            stored
+                                .delivery_command(
+                                    policy,
+                                    p,
+                                    material,
+                                    &input.envelope,
+                                    &input.signature,
+                                    &raw_body,
+                                    now(),
+                                )
+                                .map_err(|e| match e {
+                                    crate::delivery::Error::Task(e) => e,
+                                    crate::delivery::Error::Invalid => {
+                                        crate::funded_tasks::Error::Ledger(
+                                            crate::core::Fault::Invalid,
+                                        )
+                                    }
+                                    _ => crate::funded_tasks::Error::AdmissionUnavailable,
+                                })
+                        } else {
+                            Err(crate::funded_tasks::Error::AdmissionUnavailable)
+                        }
+                    }
+                    result => result,
+                };
+                #[cfg(feature = "funding-tests")]
                 let result = stored.task_command(
                     policy,
                     admission.as_ref(),
@@ -556,6 +686,8 @@ impl DurableObject for ProjectIdentity {
                     now(),
                 );
                 self.save(&stored)?;
+                #[cfg(feature = "production")]
+                self.delivery_rearm().await?;
                 return match result {
                     Ok(v) => Ok(
                         Response::from_json(&v)?.with_status(if v["created"] == true {
@@ -586,7 +718,16 @@ impl DurableObject for ProjectIdentity {
             self.save(&stored)?;
             let result =
                 stored.command(policy, &input.envelope, &input.signature, &raw_body, now());
+            #[cfg(feature = "production")]
+            {
+                stored
+                    .funded_maintenance(now())
+                    .map_err(|_| Error::RustError("Funding maintenance rejected".into()))?;
+                stored.delivery.prune(&stored.ledger);
+            }
             self.save(&stored)?;
+            #[cfg(feature = "production")]
+            self.delivery_rearm().await?;
             return match result {
                 Ok(v) => Response::from_json(&v),
                 Err(e) => signed_error(e),
@@ -595,17 +736,41 @@ impl DurableObject for ProjectIdentity {
         let Some(value) = body(&mut req).await? else {
             return response("invalid_or_oversized_identity_body", 400);
         };
-        // All awaits precede authoritative load, policy application, proof/consume and one atomic SQL upsert.
+        #[cfg(feature = "production")]
+        let delivery = if req.path() == "/v1/identity/sync" {
+            match delivery_runtime::configuration(&self.env, &project) {
+                Ok(v) => v,
+                Err(_) => return response("delivery_configuration_unavailable", 503),
+            }
+        } else {
+            None
+        };
+        #[cfg(feature = "production")]
+        if delivery.is_some() {
+            self.state.storage().set_alarm(1000).await?;
+        }
+        // All awaits precede authoritative load and policy/effect persistence.
         let mut stored = self.load()?;
+        #[cfg(feature = "production")]
+        if let Some((p, material)) = &delivery {
+            if delivery_runtime::apply(&mut stored, p, material, now()).is_err() {
+                return response("delivery_policy_rejected", 503);
+            }
+        }
+
         if let Err(e) = stored.catalog.apply_policy(policy, now()) {
             return reject(e);
         }
         // Configuration revocation is durable even if later proof processing fails.
         self.save(&stored)?;
+        #[cfg(feature = "production")]
+        let delivery_policy_applied = delivery.is_some();
+        #[cfg(feature = "funding-tests")]
+        let delivery_policy_applied = false;
         let catalog = &mut stored.catalog;
         let result = match req.path().as_str() {
             "/v1/identity/sync" => match serde_json::from_value::<SyncPolicy>(value) {
-                Ok(v) if v.project_id == project => Response::from_json(&json!({"configured_policy_applied":true,"task_api":"unavailable"})),
+                Ok(v) if v.project_id == project => Response::from_json(&json!({"configured_policy_applied":true,"delivery_policy_applied":delivery_policy_applied,"funding_policy_applied":delivery_policy_applied,"task_api":availability(&self.env)})),
                 _ => response("invalid_identity_request",400),
             },
             "/v1/identity/challenges" => match serde_json::from_value::<Issue>(value) {
@@ -624,7 +789,7 @@ impl DurableObject for ProjectIdentity {
             },
             "/v1/identity/enroll" => match serde_json::from_value::<Enroll>(value) {
                 Ok(v) if v.project_id==project => match catalog.enroll(&project,&v.challenge_id,&v.signature,now()) {
-                    Ok(identity)=>Ok(Response::from_json(&json!({"identity":identity,"credential_issued":false,"task_api":"unavailable","entitlement_granted":false}))?.with_status(201)),
+                    Ok(identity)=>Ok(Response::from_json(&json!({"identity":identity,"credential_issued":false,"task_api":availability(&self.env),"entitlement_granted":false}))?.with_status(201)),
                     Err(e)=>reject(e),
                 },
                 _=>response("invalid_identity_request",400),
@@ -632,6 +797,20 @@ impl DurableObject for ProjectIdentity {
             _=>response("not_found",404),
         };
         self.save(&stored)?;
+        #[cfg(feature = "production")]
+        if delivery.is_some() {
+            self.delivery_rearm().await?;
+        }
         result
+    }
+    #[cfg(feature = "production")]
+    async fn alarm(&self) -> Result<Response> {
+        match self.delivery_pump().await {
+            Ok(()) => Response::ok("disposed"),
+            Err(_) => {
+                self.state.storage().set_alarm(1000).await?;
+                Err(Error::RustError("Delivery pump retry armed".into()))
+            }
+        }
     }
 }
