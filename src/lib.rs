@@ -28,3 +28,5 @@ pub mod callback;
 pub mod metrics;
 
 pub mod transport;
+
+pub mod signed;

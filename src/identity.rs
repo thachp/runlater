@@ -296,13 +296,7 @@ impl Catalog {
             return Err(Error::Conflict);
         }
         let canonical = c.bytes()?;
-        let valid = decode::<32>(&c.public_key)
-            .and_then(|b| VerifyingKey::from_bytes(&b).ok())
-            .zip(decode::<64>(signature))
-            .is_some_and(|(key, sig)| {
-                key.verify_strict(&canonical, &Signature::from_bytes(&sig))
-                    .is_ok()
-            });
+        let valid = verify_ed25519(&c.public_key, &canonical, signature);
         if !valid {
             if let Some(p) = self.challenges.get_mut(id) {
                 p.failed_proofs = p.failed_proofs.saturating_add(1);
@@ -320,6 +314,24 @@ impl Catalog {
         self.identities
             .insert(c.public_key.clone(), identity.clone());
         Ok(identity)
+    }
+    pub fn identity_view(
+        &self,
+        project: &str,
+        key: &str,
+        now: i64,
+    ) -> Result<serde_json::Value, Error> {
+        self.authorize(project, key, Permission::Read, now)?;
+        let identity = self.identities.get(key).ok_or(Error::Forbidden)?;
+        let approval = self.approval(key, now.max(self.clock_ms))?;
+        let permissions: BTreeSet<_> = identity
+            .permissions
+            .intersection(&approval.permissions)
+            .copied()
+            .collect();
+        Ok(
+            serde_json::json!({"project_id":project,"public_key":key,"permissions":permissions,"expires_at_ms":identity.expires_at_ms.min(approval.expires_at_ms)}),
+        )
     }
     /// Identity lookup only; callers must separately authenticate request possession. No task route uses this yet.
     pub fn authorize(
@@ -352,4 +364,15 @@ pub fn forbidden_binding(name: &str) -> bool {
             name,
             "API_KEY_HASHES" | "LEDGER" | "READY" | "TRANSPORT_DLQ_NAME"
         )
+}
+
+pub fn verify_ed25519(public_key: &str, message: &[u8], signature: &str) -> bool {
+    decode::<32>(public_key)
+        .and_then(|b| VerifyingKey::from_bytes(&b).ok())
+        .filter(|k| !k.is_weak())
+        .zip(decode::<64>(signature))
+        .is_some_and(|(key, sig)| {
+            key.verify_strict(message, &Signature::from_bytes(&sig))
+                .is_ok()
+        })
 }
