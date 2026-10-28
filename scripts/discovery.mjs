@@ -23,6 +23,7 @@ export function buildDiscovery(output=path.join(repo,'build/discovery')){
  for(const name of ['README.md','worker.mjs','wrangler.example.jsonc'])copy('examples/public-beta-receiver/'+name,'docs/agent/public-beta-receiver/'+name);
  copy('contracts/public-beta-v1.json','docs/agent/public-beta.v1.json');copy('discovery/public-beta-release.v1.json','docs/agent/public-beta-release.v1.json');
  copy('docs/AGENT-QUICKSTART.md','docs/agent/quickstart.md');copy('docs/openapi.json','docs/openapi.json');
+ const receiverReadme=path.join(output,'docs/agent/public-beta-receiver/README.md');fs.writeFileSync(receiverReadme,fs.readFileSync(receiverReadme,'utf8').replace('../../docs/PUBLIC-BETA-QUICKSTART-v1.md','https://docs.runlater.io/agent/quickstart.md'));
  for(const role of ['landing','docs']){copy('web/hosting/headers',role+'/_headers');copy('web/hosting/robots.txt',role+'/robots.txt');}
  const bytes=fs.readFileSync(path.join(repo,'docs/openapi.json'));const bundle=tools(JSON.parse(bytes),bytes);fs.writeFileSync(path.join(output,'docs/agent/tools.v1.json'),JSON.stringify(bundle,null,2)+'\n');return {output,bundle};
 }
