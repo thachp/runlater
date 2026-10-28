@@ -7,3 +7,5 @@
 
 # Quickstart owner keys, receipts, callback material and proofs.
 /private/
+# Generated private release profile (never commit provider state)
+.runlater-release.generated.json
