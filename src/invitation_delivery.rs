@@ -354,7 +354,16 @@ impl Enrollment {
             *self = next;
             return Ok(None);
         }
-        let claimed = next.project.funded_claim(d, now)?;
+        let claimed = match next.project.funded_claim(d, now) {
+            Ok(task) => task,
+            Err(error @ funded_tasks::Error::Ledger(crate::core::Fault::Limited { .. })) => {
+                // A handled denial commits observations, reconciliation and settlement in funded_claim.
+                // Preserve that aggregate so the runtime's 429 save does not write the old snapshot.
+                *self = next;
+                return Err(error.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
         let Some(task) = claimed else {
             *self = next;
             return Ok(None);

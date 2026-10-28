@@ -18,6 +18,7 @@ pub enum Permission {
     ManageDestinations,
 }
 impl Permission {
+    /// The six legacy local-key permissions. Invitation-only scopes require explicit enrollment terms.
     pub fn all() -> BTreeSet<Self> {
         [
             Self::Enqueue,
@@ -26,7 +27,6 @@ impl Permission {
             Self::Redrive,
             Self::Configure,
             Self::ManageKeys,
-            Self::ManageDestinations,
         ]
         .into_iter()
         .collect()

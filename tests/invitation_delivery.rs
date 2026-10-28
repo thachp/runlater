@@ -314,3 +314,139 @@ fn accepted_reservation_survives_identity_and_grant_expiry_and_exhausted_publica
     );
     assert!(e.project.delivery_next_wake(deadline + 1).unwrap() > deadline + 1);
 }
+
+fn handled_denial_persists(rate: bool) {
+    let (mut e, p, policy, ring) = fixture(true);
+    command(
+        &mut e,
+        &p,
+        "/v1/destinations/create",
+        json!({"endpoint_id":"receiver","version":1,"url":"https://receiver.example.test/callback"}),
+        'b',
+        &policy,
+    );
+    verify(&mut e, &p, &policy);
+    let mut ids = Vec::new();
+    for (index, nonce) in ['e', 'f', '0', '1'].into_iter().enumerate() {
+        let (a, s, b) = signed(
+            &p,
+            "/v1/tasks",
+            &json!({"destination":"registered:receiver","body":"synthetic","operation_key":format!("denial_{index}")}),
+            nonce,
+        );
+        let v = e
+            .registered_task_command(&a, &s, &b, &policy, &ring, &FixtureMaterial, 13)
+            .unwrap();
+        ids.push(v["result"]["id"].as_str().unwrap().to_string());
+    }
+    let refs = e.registered_outbox(&p, 13).unwrap();
+    let candidate = refs.iter().find(|d| d.id == ids[1]).unwrap();
+    let at = if rate {
+        e.project.ledger.limits.dispatch_per_second = 1;
+        e.project.ledger.limits.dispatch_burst = 1;
+        e.project.ledger.bucket = Some(runlater::limits::Bucket::new(&e.project.ledger.limits, 14));
+        e.registered_claim(
+            refs.iter().find(|d| d.id == ids[0]).unwrap(),
+            &policy,
+            14,
+            &FixtureMaterial,
+        )
+        .unwrap()
+        .unwrap();
+        14
+    } else {
+        e.registered_claim(
+            refs.iter().find(|d| d.id == ids[2]).unwrap(),
+            &policy,
+            14,
+            &FixtureMaterial,
+        )
+        .unwrap()
+        .unwrap();
+        e.registered_claim(
+            refs.iter().find(|d| d.id == ids[0]).unwrap(),
+            &policy,
+            15,
+            &FixtureMaterial,
+        )
+        .unwrap()
+        .unwrap();
+        e.project.ledger.limits.max_concurrent = 1;
+        14 + runlater::core::LEASE
+    };
+    // Seed a terminal ledger disposition pending maintenance settlement; denial must preserve its refund.
+    e.project.ledger.cancel(&ids[3], at).unwrap();
+    let mut direct = e.project.clone();
+    assert!(matches!(
+        direct.funded_claim(candidate, at),
+        Err(runlater::funded_tasks::Error::Ledger(
+            runlater::core::Fault::Limited { .. }
+        ))
+    ));
+    assert!(matches!(
+        e.registered_claim(candidate, &policy, at, &FixtureMaterial),
+        Err(runlater::invitation_delivery::Error::Task(
+            runlater::funded_tasks::Error::Ledger(runlater::core::Fault::Limited { .. })
+        ))
+    ));
+    assert_eq!(
+        serde_json::to_value(&e.project).unwrap(),
+        serde_json::to_value(&direct).unwrap()
+    );
+    let restarted: Enrollment = serde_json::from_slice(&serde_json::to_vec(&e).unwrap()).unwrap();
+    assert_eq!(
+        serde_json::to_value(&restarted).unwrap(),
+        serde_json::to_value(&e).unwrap()
+    );
+    let counts = restarted.project.ledger.metrics.view(at)["totals"]["counts"].clone();
+    assert_eq!(
+        counts[if rate {
+            "claim_rate_denied"
+        } else {
+            "claim_concurrency_denied"
+        }],
+        1
+    );
+    assert!(restarted
+        .project
+        .funding
+        .reservation(&ids[3])
+        .unwrap()
+        .settlement
+        .is_some());
+    assert_eq!(
+        serde_json::to_value(&restarted.project.funding).unwrap()["grants"]
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()["available"],
+        5
+    );
+    if !rate {
+        assert_eq!(counts["attempt_lease_expired_unknown"], 1);
+        assert_eq!(
+            restarted.project.ledger.get(&ids[2]).unwrap().status,
+            runlater::core::Status::RetryWait
+        );
+    }
+    assert_eq!(
+        restarted
+            .project
+            .ledger
+            .get(&ids[1])
+            .unwrap()
+            .attempts
+            .len(),
+        0
+    );
+}
+#[test]
+fn rate_denial_preserves_metrics_and_terminal_settlement_across_snapshot_restart() {
+    handled_denial_persists(true)
+}
+#[test]
+fn concurrency_denial_preserves_lease_reconciliation_metrics_and_settlement_across_snapshot_restart(
+) {
+    handled_denial_persists(false)
+}
