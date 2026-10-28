@@ -22,7 +22,8 @@
     "build:web": "npm run build:discovery",
     "preview:web": "node scripts/preview-web.mjs",
     "test:web-local": "node scripts/test-web-local.mjs",
-    "test:invitations": "./scripts/test-invitations.sh"
+    "test:invitations": "./scripts/test-invitations.sh",
+    "test:invitation-production": "./scripts/test-invitation-production.sh"
   },
   "devDependencies": {
     "ajv": "8.20.0",
