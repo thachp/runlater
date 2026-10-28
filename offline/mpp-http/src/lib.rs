@@ -1,6 +1,7 @@
 //! Offline draft-profile codec. No HTTP client, secrets, payment verification, or runtime routes.
 //! Parsed credentials/receipts are untrusted; an unexecuted plan never entitles service.
 mod json;
+pub mod stripe;
 use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
     Engine,
@@ -8,9 +9,10 @@ use base64::{
 use chrono::{DateTime, SecondsFormat, Utc};
 use runlater_offline_credit_purchases::{Intent, SAFE};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fmt};
+pub use stripe::UnexecutedStripeRequest;
 
 pub const AUTH_DRAFT: &str = "draft-httpauth-payment-01";
 pub const STRIPE_DRAFT: &str = "draft-stripe-charge-00";
@@ -484,7 +486,7 @@ impl IssuedChallenge {
     pub fn challenge(&self) -> &Challenge {
         &self.challenge
     }
-    /// Stateful quote checks only: neither credential authorization nor settled payment.
+    /// Convenience composition of protocol binding and the separately pinned REST encoder.
     pub fn prepare(
         &self,
         current_intent: &Intent,
@@ -493,6 +495,18 @@ impl IssuedChallenge {
         body: &[u8],
         now: i64,
     ) -> Result<UnexecutedStripeRequest, Error> {
+        stripe::encode(&self.decode_credential(current_intent, project, headers, body, now)?)
+    }
+    /// Stateful quote checks only: neither credential authorization nor settled payment.
+    /// Provider API versions and REST field names are deliberately absent here.
+    pub fn decode_credential(
+        &self,
+        current_intent: &Intent,
+        project: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+        now: i64,
+    ) -> Result<BoundStripeCredential, Error> {
         if project != self.intent.project_id || current_intent != &self.intent {
             return Err(Error::Binding);
         }
@@ -572,11 +586,11 @@ impl IssuedChallenge {
         );
         let mut metadata = request.method_details.metadata;
         metadata.insert("challenge_id".into(), self.challenge.id.clone());
-        let body = json!({"amount":self.intent.amount_minor,"currency":self.intent.currency,
-            "shared_payment_granted_token":credential.payload.spt,"confirm":true,
-            "automatic_payment_methods":{"enabled":true,"allow_redirects":"never"},"metadata":metadata});
-        Ok(UnexecutedStripeRequest {
-            body,
+        Ok(BoundStripeCredential {
+            amount_minor: self.intent.amount_minor,
+            currency: self.intent.currency.clone(),
+            spt: credential.payload.spt,
+            metadata,
             idempotency_key,
         })
     }
@@ -590,33 +604,23 @@ pub fn body_digest(body: &[u8]) -> Result<String, Error> {
         STANDARD.encode(Sha256::digest(body))
     ))
 }
-/// A descriptive request body, deliberately lacking execution or entitlement capability.
+/// Protocol-bound but still unverified credential. Private fields prevent construction
+/// from a caller-supplied success document. No provider API contract or entitlement.
 /// ```compile_fail
-/// use runlater_offline_mpp_http::UnexecutedStripeRequest;
+/// use runlater_offline_mpp_http::BoundStripeCredential;
 /// use runlater_offline_credit_purchases::VerifiedEvent;
-/// fn fabricate(plan: UnexecutedStripeRequest) -> VerifiedEvent { plan.into() }
+/// fn fabricate(credential: BoundStripeCredential) -> VerifiedEvent { credential.into() }
 /// ```
-pub struct UnexecutedStripeRequest {
-    body: Value,
+pub struct BoundStripeCredential {
+    amount_minor: u64,
+    currency: String,
+    spt: String,
+    metadata: BTreeMap<String, String>,
     idempotency_key: String,
 }
-impl UnexecutedStripeRequest {
-    pub fn operation(&self) -> &'static str {
-        "POST /v1/payment_intents"
-    }
-    pub fn body_for_inspection(&self) -> &Value {
-        &self.body
-    }
-    pub fn idempotency_key(&self) -> &str {
-        &self.idempotency_key
-    }
-    pub fn activation_enabled(&self) -> bool {
-        false
-    }
-}
-impl fmt::Debug for UnexecutedStripeRequest {
+impl fmt::Debug for BoundStripeCredential {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("UnexecutedStripeRequest(<redacted>, activation=false)")
+        f.write_str("BoundStripeCredential(<redacted>, unverified)")
     }
 }
 

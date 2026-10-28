@@ -1,0 +1,103 @@
+{
+  "fixture_only": true,
+  "retrieved_at": "2026-10-28",
+  "api_version": "2026-09-30.preview",
+  "method": "POST",
+  "url": "https://api.stripe.com/v1/payment_intents",
+  "content_type": "application/x-www-form-urlencoded",
+  "max_amount_minor": 99999999,
+  "sources": [
+    {
+      "url": "https://paymentauth.org/draft-stripe-charge-00.html",
+      "section": "9",
+      "contract": "MPP pseudo-SDK example; not the REST contract. Protocol version unchanged."
+    },
+    {
+      "url": "https://docs.stripe.com/agentic-commerce/concepts/shared-payment-tokens?agent-seller=seller",
+      "contract": "Seller uses nested payment_method_data.shared_payment_granted_token on a PaymentIntent."
+    },
+    {
+      "url": "https://docs.stripe.com/agentic-commerce/protocols/ucp/stripe-payments-handler#charge-a-card-token",
+      "contract": "Underlying SPT PaymentIntent example selects nested form field and 2026-09-30.preview. This crate does not implement UCP."
+    },
+    {
+      "url": "https://docs.stripe.com/api/payment_intents/create",
+      "contract": "Positive amount of at most eight digits; confirm=true; automatic payment methods and metadata. Currency eligibility/minimums remain unverified."
+    }
+  ],
+  "compatibility": "Documented preview request only. No provider execution, top-level alias rejection proof, merchant eligibility, preview access or successful settlement claimed.",
+  "variants": [
+    {
+      "expected_semantics": {
+        "amount": 100,
+        "currency": "xxx",
+        "confirm": true,
+        "automatic_payment_methods": {
+          "enabled": true,
+          "allow_redirects": "never"
+        },
+        "metadata": {
+          "project_id": "fictional_project_a",
+          "purchase_id": "fictional_purchase_a",
+          "quote_digest": "b94e30cff6666bf94c24921bf3a4529910f6b1070d660fdd603cd9213c484e47",
+          "challenge_id": "offline_fixture_challenge_a"
+        },
+        "payment_method_data": {
+          "shared_payment_granted_token": "spt_OFFLINE_NOT_A_PAYMENT_TOKEN"
+        }
+      },
+      "expected_form_body": "amount=100&currency=xxx&payment_method_data%5Bshared_payment_granted_token%5D=spt_OFFLINE_NOT_A_PAYMENT_TOKEN&confirm=true&automatic_payment_methods%5Benabled%5D=true&automatic_payment_methods%5Ballow_redirects%5D=never&metadata%5Bchallenge_id%5D=offline_fixture_challenge_a&metadata%5Bproject_id%5D=fictional_project_a&metadata%5Bpurchase_id%5D=fictional_purchase_a&metadata%5Bquote_digest%5D=b94e30cff6666bf94c24921bf3a4529910f6b1070d660fdd603cd9213c484e47"
+    },
+    {
+      "expected_semantics": {
+        "amount": 100,
+        "currency": "xxx",
+        "confirm": true,
+        "automatic_payment_methods": {
+          "enabled": true,
+          "allow_redirects": "never"
+        },
+        "metadata": {
+          "project_id": "fictional_project_a",
+          "purchase_id": "fictional_purchase_a",
+          "quote_digest": "b94e30cff6666bf94c24921bf3a4529910f6b1070d660fdd603cd9213c484e47",
+          "challenge_id": "offline_fixture_challenge_a"
+        },
+        "payment_method_data": {
+          "shared_payment_granted_token": "spt_OFFLINE_NOT_A_PAYMENT_TOKEN"
+        }
+      },
+      "expected_form_body": "amount=100&currency=xxx&payment_method_data%5Bshared_payment_granted_token%5D=spt_OFFLINE_NOT_A_PAYMENT_TOKEN&confirm=true&automatic_payment_methods%5Benabled%5D=true&automatic_payment_methods%5Ballow_redirects%5D=never&metadata%5Bchallenge_id%5D=offline_fixture_challenge_a&metadata%5Bproject_id%5D=fictional_project_a&metadata%5Bpurchase_id%5D=fictional_purchase_a&metadata%5Bquote_digest%5D=b94e30cff6666bf94c24921bf3a4529910f6b1070d660fdd603cd9213c484e47"
+    }
+  ],
+  "escaping": {
+    "spt": "spt_OFFLINE &x=+/%~?#[]*._-",
+    "project_id": "fictional project & x=+/~%",
+    "metadata": {
+      "project_id": "fictional project & x=+/~%",
+      "purchase_id": "fictional_purchase_a",
+      "quote_digest": "7b3e71314606dc093b21b26050f6bcfd4ef9824131d47610fc860f3c26d217a3",
+      "challenge_id": "offline_fixture_challenge_a"
+    },
+    "expected_form_body": "amount=100&currency=xxx&payment_method_data%5Bshared_payment_granted_token%5D=spt_OFFLINE+%26x%3D%2B%2F%25%7E%3F%23%5B%5D*._-&confirm=true&automatic_payment_methods%5Benabled%5D=true&automatic_payment_methods%5Ballow_redirects%5D=never&metadata%5Bchallenge_id%5D=offline_fixture_challenge_a&metadata%5Bproject_id%5D=fictional+project+%26+x%3D%2B%2F%7E%25&metadata%5Bpurchase_id%5D=fictional_purchase_a&metadata%5Bquote_digest%5D=7b3e71314606dc093b21b26050f6bcfd4ef9824131d47610fc860f3c26d217a3",
+    "quote": {
+      "id": "fictional_purchase_a",
+      "project_id": "fictional project & x=+/~%",
+      "purchaser": "fictional_buyer_a",
+      "idempotency_key": "fictional_key_a",
+      "policy_version": 7,
+      "offer_id": "fictional_offer",
+      "packs": 1,
+      "amount_minor": 100,
+      "currency": "xxx",
+      "grant": {
+        "grant_id": "fictional_purchase_a",
+        "total_attempt_units": 10,
+        "admission_expires_at_ms": 1800000600000
+      },
+      "issued_at_ms": 1800000000000,
+      "expires_at_ms": 1800000060000
+    }
+  },
+  "generator": "Python urllib.parse.urlencode(fields, safe=\"*\").replace(\"~\", \"%7E\"); metadata keys sorted, fixed leading field order."
+}

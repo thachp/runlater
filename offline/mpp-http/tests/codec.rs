@@ -9,6 +9,9 @@ use std::collections::BTreeMap;
 fn fixtures() -> Value {
     serde_json::from_str(include_str!("../fixtures/stripe-charge-fiction.json")).unwrap()
 }
+fn rest_fixtures() -> Value {
+    serde_json::from_str(include_str!("../fixtures/stripe-rest-contract.json")).unwrap()
+}
 fn quote() -> Intent {
     serde_json::from_value(fixtures()["quote"].clone()).unwrap()
 }
@@ -78,6 +81,18 @@ fn pinned_drafts_match_current_retrieved_fixture_manifest() {
     assert!(fixtures()["fixture_only"].as_bool().unwrap());
 }
 #[test]
+fn stripe_rest_descriptor_nests_the_spt_independently_of_the_mpp_draft() {
+    let p = plan(false);
+    assert_eq!(
+        p.body_for_inspection()["payment_method_data"]["shared_payment_granted_token"],
+        "spt_OFFLINE_NOT_A_PAYMENT_TOKEN"
+    );
+    assert!(p
+        .body_for_inspection()
+        .get("shared_payment_granted_token")
+        .is_none());
+}
+#[test]
 fn independent_python_golden_challenges_credentials_and_unexecuted_plans() {
     for alternate in [false, true] {
         let f = fixtures();
@@ -97,8 +112,28 @@ fn independent_python_golden_challenges_credentials_and_unexecuted_plans() {
             *issued.challenge()
         );
         let p = plan(alternate);
-        assert_eq!(p.body_for_inspection(), &v["expected_plan"]);
+        // The protocol draft's SDK illustration is not the REST wire contract.
+        assert!(v["draft_sdk_example"]
+            .get("shared_payment_granted_token")
+            .is_some());
+        let rest = rest_fixtures();
+        let golden = &rest["variants"][usize::from(alternate)];
+        assert_eq!(p.body_for_inspection(), &golden["expected_semantics"]);
+        assert_eq!(p.form_body_for_inspection(), golden["expected_form_body"]);
+        assert_eq!(p.api_version(), rest["api_version"]);
+        assert_eq!(p.content_type(), rest["content_type"]);
+        assert_eq!(p.url(), rest["url"]);
+        assert_eq!(p.api_version(), stripe::API_VERSION);
+        assert_eq!(p.content_type(), stripe::CONTENT_TYPE);
         assert_eq!(p.idempotency_key(), v["expected_idempotency_key"]);
+        assert_eq!(
+            p.headers_for_inspection(),
+            [
+                ("Stripe-Version", stripe::API_VERSION),
+                ("Content-Type", stripe::CONTENT_TYPE),
+                ("Idempotency-Key", p.idempotency_key()),
+            ]
+        );
         assert_eq!(p.operation(), "POST /v1/payment_intents");
         assert!(!p.activation_enabled());
         for key in [
@@ -109,6 +144,102 @@ fn independent_python_golden_challenges_credentials_and_unexecuted_plans() {
             "application_fee_amount",
         ] {
             assert!(p.body_for_inspection().get(key).is_none());
+        }
+    }
+}
+#[test]
+fn protocol_decoding_and_provider_encoding_are_separate_and_repeatable() {
+    let bound = issued(true)
+        .decode_credential(
+            &quote(),
+            &quote().project_id,
+            &headers(&wire(true), true),
+            body().as_bytes(),
+            now(),
+        )
+        .unwrap();
+    assert_eq!(
+        format!("{bound:?}"),
+        "BoundStripeCredential(<redacted>, unverified)"
+    );
+    let a = stripe::encode(&bound).unwrap();
+    let b = stripe::encode(&bound).unwrap();
+    assert_eq!(a.form_body_for_inspection(), b.form_body_for_inspection());
+    assert_eq!(a.idempotency_key(), plan(true).idempotency_key());
+    assert!(!a.activation_enabled());
+}
+#[test]
+fn form_values_cannot_inject_parameters_and_preserve_sensitive_ascii_bytes() {
+    let f = rest_fixtures();
+    let q: Intent = serde_json::from_value(f["escaping"]["quote"].clone()).unwrap();
+    let issuer = IssuedChallenge::offline(
+        &q,
+        context(),
+        "offline_fixture_challenge_a",
+        body().as_bytes(),
+        CredentialField::Authorization,
+    )
+    .unwrap();
+    let mut value = fixtures()["variants"][0]["credential"].clone();
+    value["challenge"] = serde_json::to_value(issuer.challenge()).unwrap();
+    value["payload"]["spt"] = f["escaping"]["spt"].clone();
+    let wire = credential(&value);
+    let p = issuer
+        .prepare(
+            &q,
+            &q.project_id,
+            &headers(&wire, false),
+            body().as_bytes(),
+            now(),
+        )
+        .unwrap();
+    assert_eq!(
+        p.form_body_for_inspection(),
+        f["escaping"]["expected_form_body"]
+    );
+    assert_eq!(p.form_body_for_inspection().split('&').count(), 10);
+    assert!(!p.form_body_for_inspection().contains("&x="));
+    assert!(!format!("{p:?}").contains("spt_"));
+}
+#[test]
+fn provider_amount_limit_does_not_redefine_the_protocol_or_credit_model() {
+    assert_eq!(
+        rest_fixtures()["max_amount_minor"],
+        stripe::MAX_AMOUNT_MINOR
+    );
+    for (amount, accepted) in [
+        (1, true),
+        (stripe::MAX_AMOUNT_MINOR, true),
+        (stripe::MAX_AMOUNT_MINOR + 1, false),
+        (credit::SAFE, false),
+    ] {
+        let mut q = quote();
+        q.amount_minor = amount;
+        let issuer = IssuedChallenge::offline(
+            &q,
+            context(),
+            "offline_fixture_bounds",
+            body().as_bytes(),
+            CredentialField::Authorization,
+        )
+        .unwrap();
+        let mut c = fixtures()["variants"][0]["credential"].clone();
+        c["challenge"] = serde_json::to_value(issuer.challenge()).unwrap();
+        let wire = credential(&c);
+        let h = headers(&wire, false);
+        let bound = issuer
+            .decode_credential(&q, &q.project_id, &h, body().as_bytes(), now())
+            .unwrap();
+        let result = stripe::encode(&bound);
+        assert_eq!(result.is_ok(), accepted);
+        assert_eq!(
+            issuer
+                .prepare(&q, &q.project_id, &h, body().as_bytes(), now())
+                .is_ok(),
+            accepted
+        );
+        if !accepted {
+            assert_eq!(result.unwrap_err(), Error::Bounds);
         }
     }
 }
