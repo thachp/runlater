@@ -1,8 +1,8 @@
-# Public-beta receiver example — inactive source
+# Public-beta receiver example — owner configured
 
 This small Cloudflare Worker demonstrates the existing destination-proof and callback-v2 protocols for one owner-configured project. It does not register a public project, deploy a Worker, enable the beta, retrieve a key or contact RunLater. The example configuration disables workers.dev, preview URLs and request logging; all values needed to accept a request are absent by default.
 
-The intended first receiver shape is an **exact** `https://worker.account.workers.dev/callback` URL. The API owner is implementing a separate global strict-public-host policy plus ownership verification. A hostname suffix is not an arbitrary-host SSRF/DNS-rebinding proof. This example grants no host approval and does not support custom domains, IPs, alternate ports, query/fragment or redirects. It must pass the reviewed API admission policy before use.
+The intended first receiver shape is an **exact** `https://worker.account.workers.dev/callback` URL. The public beta applies global strictly-public Fetch isolation plus ownership verification to this restricted managed-host shape. A hostname suffix is not an arbitrary-host SSRF/DNS-rebinding proof. This example grants no host approval and does not support custom domains, IPs, alternate ports, query/fragment or redirects. It must pass the reviewed API admission policy before use.
 
 ## Reuse and behavior
 
@@ -69,6 +69,6 @@ After authenticated traffic observes a policy revision/material identity, SQLite
 
 `npm run test:public-beta-receiver` exercises the real Worker in local workerd with disposable SQLite, generated ephemeral material and denied outbound traffic. It covers static proof matching/reflection rejection, invalid context/timestamps, HMAC/body substitution, concurrent duplicate/counter atomicity, digest conflicts, actual local disposal/restart, observed policy rollback/material substitution and bounded storage. Existing callback vector tests prove the shared verifier still agrees with Rust. These tests do not prove live workers.dev routing, DNS/TLS, provider limits or a deployed beta.
 
-The separate [public-beta client/quickstart](../../docs/PUBLIC-BETA-QUICKSTART-v1.md) follows the actual source DTOs. Nothing here changes the published alpha, billing, credentials or availability.
+The separate [public-beta client/quickstart](../../docs/PUBLIC-BETA-QUICKSTART-v1.md) follows the actual hosted-beta DTOs. The public beta is live; this example is still disabled until you deploy and privately configure your own receiver. It does not activate payments or issue credentials.
 
 References consulted: [Cloudflare SQLite transactions](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/), [Node crypto support](https://developers.cloudflare.com/workers/runtime-apis/nodejs/crypto/), [Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/).

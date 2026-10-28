@@ -239,7 +239,7 @@ test('bounded transport rejects redirects/errors/invalid JSON/UTF8/chunks/size/d
     await assert.rejects(client.challenge(), e => e instanceof PublicBetaClientError && !String(e).includes(privateText)); assert.equal(calls, 1);
   }
 });
-test('public source contract/guide checks do not enable hosted alpha, default live transport or payments', () => {
+test('public beta contract/guide preserve explicit transport, fixed limits and disabled payments', () => {
   assert.equal(contract.origin, ORIGIN); assert.equal(contract.registration.purpose, 'public_beta_registration');
   assert.equal(contract.registration.proof_prefix, 'RunLater public registration proof v1\n');
   assert.equal(contract.callback_key.path, '/v1/callback-key'); assert.equal(contract.callback_key.permission, 'manage_destinations');
@@ -249,7 +249,7 @@ test('public source contract/guide checks do not enable hosted alpha, default li
   assert.throws(() => new PublicBetaClientV1(), /explicit_transport_required/);
   assert.throws(() => new PublicBetaClientV1({privateKey: generateKeyPairSync('ed25519').privateKey, fetchImpl() {}}), /reviewed_release_id_required/);
   for (const file of ['docs/PUBLIC-BETA-QUICKSTART-v1.md']) {
-    const text = fs.readFileSync(path.join(root, file), 'utf8'); assert.match(text, /not activated/);
+    const text = fs.readFileSync(path.join(root, file), 'utf8'); assert.match(text, /limited public beta/); assert.equal(contract.availability, 'deployed_public_free_beta');
     for (const [, target] of text.matchAll(/\]\(([^)]+)\)/g)) if (!target.startsWith('https://'))
       assert.ok(fs.existsSync(path.resolve(root, path.dirname(file), target)), target);
   }

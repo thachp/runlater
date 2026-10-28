@@ -325,7 +325,7 @@
       ]
     },
     "hosted_contract": {
-      "const": "https://docs.runlater.io/agent/alpha.v1.json"
+      "const": "https://docs.runlater.io/agent/public-beta.v1.json"
     }
   },
   "required": [

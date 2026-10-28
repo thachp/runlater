@@ -1,4 +1,6 @@
-# Public-beta client v1 — source only, not activated
+# Public-beta client v1 — limited public beta
+
+The hosted beta passed signup, ownership verification and two signed HTTPS callbacks. See the [published walkthrough](https://docs.runlater.io/agent/quickstart.md) and [exact release metadata](https://docs.runlater.io/agent/public-beta-release.v1.json).
 
 Use the [actual public-beta contract](../contracts/public-beta-v1.json), [source runtime guide](PUBLIC-BETA.md), [client](../examples/public-beta-client.v1.mjs) and [receiver](../examples/public-beta-receiver/README.md). This guide does not publish a beta, switch the API domain, provision a receiver or contact a hosted service. The published alpha and invitation client remain separate. There is no invitation, payment or automatic recharge in this flow.
 
@@ -8,9 +10,9 @@ The first cohort has ten lifetime projects globally. Each project gets seven day
 
 Use Node 22+ and your own Ed25519 private key in an owner-only file/private directory. The existing `loadOwnerKey`, `readOwnerText` and exclusive `writeOwnerJson` helpers reject public-readable files, symlinks and overwrites on supported POSIX systems. Never put private keys, proof nonces, HMAC material or signatures in source, shell arguments, public vars, chat or logs.
 
-Supply `fetchImpl` explicitly. Importing the module makes no request; there is no default live transport. Offline checks inject mocks/local workerd. A live transport requires separately reviewed activation. The client pins `https://api.runlater.io`, rejects redirects, applies a five-second whole-response deadline and 32-KiB/32-chunk response limits, bounds JSON requests, redacts errors and makes one request per action. It runs no polling, retry or payment loop.
+Supply `fetchImpl` explicitly. Importing the module makes no request; there is no default live transport. Offline checks inject mocks/local workerd. The current beta is activated; selecting a live transport still requires your own explicit execution authority. The client pins `https://api.runlater.io`, rejects redirects, applies a five-second whole-response deadline and 32-KiB/32-chunk response limits, bounds JSON requests, redacts errors and makes one request per action. It runs no polling, retry or payment loop.
 
-Two **nonsecret reviewed release inputs** are currently required: release ID and callback `Keyring` metadata. `/v1/beta` exposes capacity/limits but no release ID. `/v1/callback-key` returns scoped key material/policy ID/window but not activation/sign/verification times. Before presenting a complete self-service live setup, the activation owner must publish the exact immutable nonsecret release policy. Do not infer times from the clock, invent response fields or copy another release. The local compiled fixture uses its actual explicit profile.
+Two **nonsecret reviewed release inputs** are currently required: release ID and callback `Keyring` metadata. `/v1/beta` exposes capacity/limits but no release ID. `/v1/callback-key` returns scoped key material/policy ID/window but not activation/sign/verification times. The exact immutable nonsecret policy is now published at /agent/public-beta-release.v1.json on docs.runlater.io. Do not infer times from the clock, invent response fields or copy another release. The local compiled fixture uses its actual explicit profile.
 
 ## Register and recover the original grant
 
@@ -88,4 +90,4 @@ Callbacks are at least once. SQLite dedup and the example's local counter share 
 
 `npm run test:public-beta-client-v1` checks native Rust canonical bytes, full-context substitutions, uncertain-response recovery, signed routes, proof bounds and transport failures against protocol mocks. `npm run test:public-beta-client-local` builds the actual production API and runs the client/receiver in local workerd/SQLite with private fixture binding updates, real ownership verification and exact-body callback authentication/dedup. That fixture channel is not a public receiver endpoint or a live deployment recipe.
 
-Reviewed policy publication, practical owner secret rollout, controlled provider proof and separately authorized activation remain necessary before claiming a live quickstart. This source changes no published alpha/discovery assets, live routes, credentials, grants, DNS or hosting. See [the handoff](PUBLIC-BETA-CLIENT-PLAN.md).
+Policy metadata and controlled provider proof are published for this beta. Your own receiver deployment and private secret/proof installation remain necessary before task acceptance. This guide publishes the live-beta policy snapshot and does not change API credentials, grants, DNS or delivery configuration. See [the handoff](PUBLIC-BETA-CLIENT-PLAN.md).

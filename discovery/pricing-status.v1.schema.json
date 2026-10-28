@@ -9,16 +9,16 @@
       "const": "https://docs.runlater.io/agent/pricing-status.v1.schema.json"
     },
     "version": {
-      "const": "1.0.0"
+      "const": "1.1.0"
     },
     "status": {
-      "const": "not_offered"
+      "const": "free_beta_only"
     },
     "trial_duration": {
-      "const": null
+      "const": "P7D"
     },
     "trial_task_allowance": {
-      "const": null
+      "const": 16
     },
     "credit_price": {
       "const": null
@@ -37,6 +37,15 @@
     },
     "description": {
       "type": "string"
+    },
+    "trial_attempt_units": {
+      "const": 100
+    },
+    "units_reserved_per_task": {
+      "const": 5
+    },
+    "lifetime_project_capacity": {
+      "const": 10
     }
   },
   "required": [
@@ -50,6 +59,9 @@
     "payment_methods",
     "automatic_top_up",
     "live_purchases_enabled",
-    "description"
+    "description",
+    "trial_attempt_units",
+    "units_reserved_per_task",
+    "lifetime_project_capacity"
   ]
 }

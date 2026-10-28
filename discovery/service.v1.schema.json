@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://docs.runlater.io/agent/service.v1.schema.json",
-  "title": "RunLater-owned discovery v1.1; published restricted alpha",
+  "title": "RunLater-owned discovery v1.2; public free beta",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -9,7 +9,7 @@
       "const": "https://docs.runlater.io/agent/service.v1.schema.json"
     },
     "descriptor_version": {
-      "const": "1.1.0"
+      "const": "1.2.0"
     },
     "service": {
       "const": "RunLater"
@@ -25,13 +25,13 @@
       "additionalProperties": false,
       "properties": {
         "public_task_api": {
-          "const": "restricted_operator_alpha"
+          "const": "public_free_beta"
         },
         "production_authentication": {
-          "const": "operator_approved_ed25519"
+          "const": "self_service_ed25519_possession"
         },
         "public_https_callbacks": {
-          "const": "owned_synthetic_receiver_only"
+          "const": "ownership_verified_workers_dev_only"
         },
         "status_source": {
           "const": "published_configuration_snapshot_not_live_probe"
@@ -104,6 +104,18 @@
         },
         "hosted_alpha_schema": {
           "const": "https://docs.runlater.io/agent/alpha.v1.schema.json"
+        },
+        "hosted_beta_contract": {
+          "const": "https://docs.runlater.io/agent/public-beta.v1.json"
+        },
+        "public_beta_client": {
+          "const": "https://docs.runlater.io/agent/public-beta-client.v1.mjs"
+        },
+        "receiver_example": {
+          "const": "https://docs.runlater.io/agent/public-beta-receiver/README.md"
+        },
+        "release_metadata": {
+          "const": "https://docs.runlater.io/agent/public-beta-release.v1.json"
         }
       },
       "required": [
@@ -117,7 +129,11 @@
         "pricing_schema",
         "source",
         "hosted_alpha_contract",
-        "hosted_alpha_schema"
+        "hosted_alpha_schema",
+        "hosted_beta_contract",
+        "public_beta_client",
+        "receiver_example",
+        "release_metadata"
       ]
     },
     "link_availability": {
@@ -128,16 +144,16 @@
       "additionalProperties": false,
       "properties": {
         "task_scheduling": {
-          "const": "restricted_operator_alpha"
+          "const": "public_free_beta"
         },
         "task_status": {
-          "const": "restricted_operator_alpha"
+          "const": "public_free_beta"
         },
         "task_cancellation": {
-          "const": "restricted_operator_alpha"
+          "const": "public_free_beta"
         },
         "registration": {
-          "const": "operator_approved_possession_only"
+          "const": "public_possession_proof"
         },
         "entitlement_inspection": {
           "const": "proposed_disabled"
@@ -149,13 +165,13 @@
           "const": "proposed_disabled"
         },
         "callback_key_rotation": {
-          "const": "integrated_restricted_alpha"
+          "const": "not_exposed_in_public_beta"
         },
         "arbitrary_https_delivery": {
           "const": "disabled"
         },
         "public_self_service": {
-          "const": "disabled"
+          "const": "available_limited_cohort"
         }
       },
       "required": [
