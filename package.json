@@ -7,7 +7,8 @@
     "test:examples": "node --test examples/local-examples.test.mjs",
     "test:contract": "./scripts/build.sh && node scripts/contract.mjs",
     "example:local": "node examples/quickstart.mjs",
-    "test:runtime-recovery": "./scripts/test-runtime-recovery.sh"
+    "test:runtime-recovery": "./scripts/test-runtime-recovery.sh",
+    "test:callback-wire": "node --test examples/callback-rotation.test.mjs"
   },
   "devDependencies": {
     "ajv": "8.20.0",
