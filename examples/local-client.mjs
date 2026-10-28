@@ -22,6 +22,10 @@ export class LocalRunLater {
  list(after=''){return this.request('/v1/tasks'+(after?'?after='+encodeURIComponent(taskId(after)):''));}
  cancel(id){return this.request('/v1/tasks/'+taskId(id)+'/cancel',{method:'POST'});}
  redrive(id,idempotencyKey){return this.request('/v1/tasks/'+taskId(id)+'/redrive',{method:'POST',idempotencyKey});}
+ deadLetters(after=''){return this.request('/v1/queue/dead-letters'+(after?'?after='+encodeURIComponent(after):''));}
+ deadLetter(id){return this.request('/v1/queue/dead-letters/'+encodeURIComponent(id));}
+ reportDeadLetter(reference){return this.request('/v1/queue/dead-letters',{method:'POST',body:reference});}
+ reconcileDeadLetter(id){return this.request('/v1/queue/dead-letters/'+encodeURIComponent(id)+'/reconcile',{method:'POST',body:{}});}
  metrics(){return this.request('/v1/queue/metrics');}
  health(){return this.request('/v1/queue/health');}
  audit(){return this.request('/v1/queue/audit');}

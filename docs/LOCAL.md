@@ -62,3 +62,5 @@ Project-scoped action permissions, nonproduction key issuance/revocation/rotatio
 Tenant-scoped read-only operational views and explicit retention maintenance are described in [OPERATIONS.md](OPERATIONS.md).
 
 For a runnable local client, pure receiver demonstration and an executable OpenAPI parity suite, see [QUICKSTART.md](QUICKSTART.md).
+
+Transport reconciliation: `npm run test:transport-local` exercises disposable local Queue exhaustion and SQLite recovery. See [transport recovery](TRANSPORT-RECOVERY.md) for scoped endpoints, retention and evidence limits.

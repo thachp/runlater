@@ -193,6 +193,8 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
             path.as_str(),
             "/v1/queue/health" | "/v1/queue/metrics" | "/v1/queue/audit" | "/v1/queue/maintenance"
         )
+        || path == "/v1/queue/dead-letters"
+        || path.starts_with("/v1/queue/dead-letters/")
         || path == "/v1/tasks"
         || path.starts_with("/v1/tasks/")
         || path == "/v1/keys"
@@ -487,12 +489,12 @@ impl DurableObject for TaskLedger {
         } else {
             None
         };
-        let dispatch = if path == "/claim" {
+        let dispatch = if path == "/claim" || path == "/dead-letter" {
             let d: Dispatch = match serde_json::from_value(raw.clone()) {
                 Ok(d) => d,
                 Err(_) => return fault(Fault::Invalid),
             };
-            if d.tenant != tenant || !task_id_valid(&d.id) || d.generation == 0 {
+            if d.tenant != tenant || !crate::transport::valid_dispatch(&d) {
                 return fault(Fault::Invalid);
             }
             Some(d)
@@ -544,13 +546,27 @@ impl DurableObject for TaskLedger {
         s.ledger
             .migrate_legacy_redrive_keys()
             .map_err(|_| Error::RustError("Invalid legacy redrive state".into()))?;
-        s.ledger.reconcile(now());
+        if path != "/dead-letter"
+            && !matches!(
+                command,
+                Some(crate::application::Command::ReportTransport { .. })
+            )
+        {
+            s.ledger.reconcile(now());
+        }
         #[cfg(feature = "runtime-tests")]
         let enqueuing = matches!(&command, Some(crate::application::Command::Enqueue { .. }));
         let result = if let Some(d) = dispatch {
-            match s.ledger.claim(&d, now()) {
-                Ok(t) => Response::from_json(&t),
-                Err(e) => fault(e),
+            if path == "/dead-letter" {
+                match s.ledger.receive_dead_letter(&tenant, &d, now()) {
+                    Ok((view, _, _)) => Response::from_json(&view),
+                    Err(e) => fault(e),
+                }
+            } else {
+                match s.ledger.claim(&d, now()) {
+                    Ok(t) => Response::from_json(&t),
+                    Err(e) => fault(e),
+                }
             }
         } else if let Some(f) = finish {
             match s
@@ -586,7 +602,16 @@ impl DurableObject for TaskLedger {
                 Err(e) => fault(e),
             }
         } else if let Some(c) = command {
-            match crate::application::command(&mut s.ledger, c, now()) {
+            match crate::application::command_in_tenant(
+                &mut s.ledger,
+                c,
+                now(),
+                &tenant,
+                &actor
+                    .as_ref()
+                    .ok_or_else(|| Error::RustError("Missing actor".into()))?
+                    .key_id,
+            ) {
                 Ok(r) => Ok(Response::from_json(
                     &r.scoped_body(
                         actor
@@ -626,21 +651,57 @@ impl DurableObject for TaskLedger {
     }
 }
 #[event(queue)]
-pub async fn consume(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> Result<()> {
+pub async fn consume(
+    batch: MessageBatch<serde_json::Value>,
+    env: Env,
+    _ctx: Context,
+) -> Result<()> {
+    let ready = env
+        .var("READY_QUEUE_NAME")
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    let dead = env
+        .var("TRANSPORT_DLQ_NAME")
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    let role = crate::transport::queue_role(&batch.queue(), &ready, &dead)
+        .ok_or_else(|| Error::RustError("Unrecognized transport queue role".into()))?;
     for message in batch.messages()? {
         if staging_mode(&env) && !stage_active(&env) {
             message.ack();
             continue;
         }
-        let d = message.body();
+        let d: Dispatch = match serde_json::from_value(message.body().clone()) {
+            Ok(d) if crate::transport::valid_dispatch(&d) => d,
+            _ => {
+                message.ack();
+                continue;
+            }
+        };
         if staging_mode(&env) && d.tenant != "alpha" {
             message.ack();
             continue;
         }
+        if role == crate::transport::QueueRole::DeadLetter {
+            let response = call(
+                &env,
+                &d.tenant,
+                "/dead-letter",
+                serde_json::to_value(&d)?,
+                None,
+            )
+            .await?;
+            if matches!(response.status_code(), 200 | 400 | 403 | 404) {
+                message.ack();
+            } else {
+                message.retry();
+            }
+            continue;
+        }
         #[cfg(feature = "runtime-tests")]
-        test_point(&env, "before_claim", serde_json::to_value(d)?).await?;
-        let mut claim = call(&env, &d.tenant, "/claim", serde_json::to_value(d)?, None).await?;
-        if claim.status_code() == 429 {
+        test_point(&env, "before_claim", serde_json::to_value(&d)?).await?;
+        let mut claim = call(&env, &d.tenant, "/claim", serde_json::to_value(&d)?, None).await?;
+        if matches!(claim.status_code(), 400 | 403 | 404 | 429) {
             // A durable ready/outbox disposition and alarm were committed before this response.
             // Admission deferral does not start an independent transport retry loop.
             message.ack();
@@ -712,6 +773,13 @@ pub async fn consume(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> 
         )
         .await?;
         if done.status_code() == 200 || done.status_code() == 409 {
+            #[cfg(feature = "runtime-tests")]
+            test_point(
+                &env,
+                "after_finish",
+                json!({"id":task.id,"status":done.status_code()}),
+            )
+            .await?;
             message.ack()
         } else {
             message.retry()
@@ -725,6 +793,20 @@ fn query_response(ledger: &Ledger, a: Api) -> Result<Response> {
     let parts: Vec<&str> = a.path.trim_matches('/').split('/').collect();
     let q = match parts.as_slice() {
         ["v1", "queue"] => Some(Query::QueueConfig),
+        ["v1", "queue", "dead-letters"] => {
+            let params: std::collections::BTreeMap<_, _> =
+                url::form_urlencoded::parse(a.query.as_bytes())
+                    .into_owned()
+                    .collect();
+            Some(Query::TransportList {
+                after: params.get("after").cloned().unwrap_or_default(),
+                sampled_at_ms: now(),
+            })
+        }
+        ["v1", "queue", "dead-letters", id] => Some(Query::TransportRecord {
+            id: (*id).into(),
+            sampled_at_ms: now(),
+        }),
         ["v1", "queue", "metrics"] => Some(Query::Metrics {
             sampled_at_ms: now(),
         }),
@@ -771,6 +853,26 @@ fn parse_command(
     use crate::application::Command;
     let parts: Vec<&str> = a.path.trim_matches('/').split('/').collect();
     let c = match (a.method.as_str(), parts.as_slice()) {
+        ("POST", ["v1", "queue", "dead-letters"]) => {
+            if !a.query.is_empty() {
+                return Err(Fault::Invalid);
+            }
+            let reference: crate::transport::Reference =
+                serde_json::from_value(a.body).map_err(|_| Fault::Invalid)?;
+            if !reference.valid() {
+                return Err(Fault::Invalid);
+            }
+            Some(Command::ReportTransport { reference })
+        }
+        ("POST", ["v1", "queue", "dead-letters", id, "reconcile"]) => {
+            if !crate::transport::valid_id(id)
+                || !a.query.is_empty()
+                || !a.body.as_object().is_some_and(|m| m.is_empty())
+            {
+                return Err(Fault::Invalid);
+            }
+            Some(Command::ReconcileTransport { id: (*id).into() })
+        }
         ("POST", ["v1", "tasks"]) => {
             let input: Create = serde_json::from_value(a.body).map_err(|_| Fault::Invalid)?;
             if !destination_allowed(&input.destination)

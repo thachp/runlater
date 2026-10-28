@@ -8,7 +8,7 @@ const shared={STAGING_RUN_ID:run,STAGING_EXPIRES_MS:String(Date.now()+120000),ST
 for (const [mode,expected] of [['valid','verified_receipt'],['policy','policy_rejected'],['content_type',{receiver_status:415}],['signature',{receiver_status:401}],['body',{receiver_status:400}],['redirect','redirect_rejected'],['headers','response_headers_too_large'],['size','response_body_too_large'],['receipt','receipt_rejected'],['timeout','timeout']]) {
 const mf=new Miniflare(convertV4MiniflareOptions({workers:[{
  name:'api',modules:[{type:'ESModule',path:'build/index.js'},{type:'CompiledWasm',path:'build/index_bg.wasm'}],compatibilityDate:'2026-10-27',
- bindings:{...shared,LOCAL_FIXTURES:'true',API_KEY_HASHES:JSON.parse(fs.readFileSync('wrangler.jsonc')).vars.API_KEY_HASHES,STAGING_DELIVERY_ENABLED:mode==='policy'?'false':'true',STAGING_RECEIVER_HOST:host,STAGING_RECEIVER_URL:`https://${host}/callback`},
+ bindings:{...shared,READY_QUEUE_NAME:'wire-ready',LOCAL_FIXTURES:'true',API_KEY_HASHES:JSON.parse(fs.readFileSync('wrangler.jsonc')).vars.API_KEY_HASHES,STAGING_DELIVERY_ENABLED:mode==='policy'?'false':'true',STAGING_RECEIVER_HOST:host,STAGING_RECEIVER_URL:`https://${host}/callback`},
  durableObjects:{LEDGER:{className:'TaskLedger',useSQLite:true}},queueProducers:{READY:'wire-ready'},queueConsumers:{'wire-ready':{maxBatchSize:1,maxBatchTimeout:0,maxRetries:1}},outboundService:'receiver',
 },{name:'receiver',modules:[{type:'ESModule',path:'staging/wire-receiver-test.mjs',contents:`
 import {handle} from './receiver.mjs';
@@ -26,7 +26,7 @@ export default {async fetch(request,env){
  if(mode==='size')return new Response('x'.repeat(1025),{status:200});
  if(mode==='receipt')return new Response(null,{status:204});
  return response;
-}};`},{type:'ESModule',path:'staging/receiver.mjs'}],compatibilityDate:'2026-10-27',compatibilityFlags:['nodejs_compat'],bindings:{...shared,TEST_MODE:mode}}]}));
+}};`},{type:'ESModule',path:'staging/receiver.mjs'}],compatibilityDate:'2026-10-27',compatibilityFlags:['nodejs_compat'],bindings:{...shared,READY_QUEUE_NAME:'wire-ready',TEST_MODE:mode}}]}));
 try{
  const headers={Authorization:'Bearer local-alpha','Content-Type':'application/json','X-RunLater-Staging-Gate':shared.STAGING_INGRESS,'Idempotency-Key':'wire'};
  const body={destination:'staging://receiver',body:JSON.stringify({run,case:'receiver',synthetic:true}),operation_key:`run_${run}_receiver`};

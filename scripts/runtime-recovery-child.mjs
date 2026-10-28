@@ -4,7 +4,7 @@ const store=path.resolve(process.argv[2]),mode=process.argv[3]??'enabled';
 if(!process.send||!path.basename(path.dirname(store)).startsWith('runlater-runtime-recovery-')||fs.readFileSync(path.join(path.dirname(store),'.owner'),'utf8')!=='runlater-runtime-recovery-test')throw Error('Owned disposable test store and parent IPC required');
 const pending=new Map();let pointId=0;
 const control=async request=>{const {point,metadata}=await request.json();const id=++pointId;return new Promise(resolve=>{pending.set(id,resolve);process.send({kind:'point',id,point,metadata});});};
-const bindings=JSON.parse(fs.readFileSync(new URL('../wrangler.jsonc',import.meta.url))).vars;
+const bindings=JSON.parse(fs.readFileSync(new URL('../wrangler.jsonc',import.meta.url))).vars;bindings.READY_QUEUE_NAME='recovery-ready';
 const mf=new Miniflare(convertV4MiniflareOptions({resourcePersistencePath:store,workers:[{name:'recovery-api',modules:[{type:'ESModule',path:'build/index.js'},{type:'CompiledWasm',path:'build/index_bg.wasm'}],compatibilityDate:'2026-10-27',bindings:{...bindings,TEST_RUNTIME_ENABLED:mode==='disabled'?'false':'true'},serviceBindings:mode==='unbound'?{}:{TEST_CONTROL:control},durableObjects:{LEDGER:{className:'TaskLedger',useSQLite:true}},queueProducers:{READY:'recovery-ready'},queueConsumers:{'recovery-ready':{maxBatchSize:1,maxBatchTimeout:0,maxRetries:1}},outboundService:'deny-egress'},{name:'deny-egress',modules:true,compatibilityDate:'2026-10-27',script:'export default {fetch(){return new Response(null,{status:403})}}'}]}));
 process.on('message',async m=>{
  try{

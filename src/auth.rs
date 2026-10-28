@@ -414,6 +414,8 @@ pub fn required_permission(method: &str, path: &str) -> Option<Permission> {
         | ("GET", ["v1", "tasks", _])
         | ("GET", ["v1", "tasks", _, "attempts"])
         | ("GET", ["v1", "tasks", _, "inspection"])
+        | ("GET", ["v1", "queue", "dead-letters"])
+        | ("GET", ["v1", "queue", "dead-letters", _])
         | ("GET", ["v1", "queue", "metrics"])
         | ("GET", ["v1", "queue", "health"])
         | ("GET", ["v1", "queue", "audit"])
@@ -421,6 +423,8 @@ pub fn required_permission(method: &str, path: &str) -> Option<Permission> {
         ("POST", ["v1", "tasks"]) => Some(Permission::Enqueue),
         ("POST", ["v1", "tasks", _, "cancel"]) => Some(Permission::Cancel),
         ("POST", ["v1", "tasks", _, "redrive"]) => Some(Permission::Redrive),
+        ("POST", ["v1", "queue", "dead-letters"])
+        | ("POST", ["v1", "queue", "dead-letters", _, "reconcile"]) => Some(Permission::Configure),
         ("POST", ["v1", "queue", "maintenance"]) => Some(Permission::Configure),
         ("PUT", ["v1", "queue"]) => Some(Permission::Configure),
         ("GET", ["v1", "keys"])

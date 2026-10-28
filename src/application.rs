@@ -2,13 +2,31 @@
 use crate::core::{Create, Fault, Ledger};
 use serde_json::{json, Value};
 pub enum Command {
+    ReportTransport {
+        reference: crate::transport::Reference,
+    },
+    ReconcileTransport {
+        id: String,
+    },
     MaintainRetention,
-    ConfigureQueue { limits: crate::limits::QueueLimits },
-    Enqueue { key: String, input: Create },
-    Cancel { id: String },
-    Redrive { id: String, key: String },
+    ConfigureQueue {
+        limits: crate::limits::QueueLimits,
+    },
+    Enqueue {
+        key: String,
+        input: Create,
+    },
+    Cancel {
+        id: String,
+    },
+    Redrive {
+        id: String,
+        key: String,
+    },
 }
 pub enum Query {
+    TransportList { after: String, sampled_at_ms: i64 },
+    TransportRecord { id: String, sampled_at_ms: i64 },
     Metrics { sampled_at_ms: i64 },
     Health { sampled_at_ms: i64 },
     Audit,
@@ -26,6 +44,9 @@ impl CommandResult {
     /// Mutation permissions do not grant access to persisted payloads or attempt history.
     /// Legacy full-scope fixtures retain their original response contract.
     pub fn scoped_body(&self, can_read: bool) -> Value {
+        if !can_read && self.body.get("dead_letter").is_some() {
+            return json!({"dead_letter":{"record_id":self.body["dead_letter"]["record_id"]},"replayed":self.body["replayed"]});
+        }
         if can_read || self.body.get("id").is_none() {
             return self.body.clone();
         }
@@ -53,6 +74,9 @@ pub fn command(ledger: &mut Ledger, c: Command, now: i64) -> Result<CommandResul
         });
     }
     let (task, created) = match c {
+        Command::ReportTransport { .. } | Command::ReconcileTransport { .. } => {
+            return Err(Fault::Forbidden)
+        }
         Command::MaintainRetention | Command::ConfigureQueue { .. } => {
             unreachable!("handled above")
         }
@@ -65,8 +89,38 @@ pub fn command(ledger: &mut Ledger, c: Command, now: i64) -> Result<CommandResul
         body: serde_json::to_value(task).map_err(|_| Fault::Invalid)?,
     })
 }
+pub fn command_in_tenant(
+    ledger: &mut Ledger,
+    c: Command,
+    now: i64,
+    tenant: &str,
+    actor: &str,
+) -> Result<CommandResult, Fault> {
+    match c {
+        Command::ReportTransport { reference } => {
+            let (record, created, replayed) = ledger.report_transport(tenant, reference, now)?;
+            Ok(CommandResult {
+                status: if created { 201 } else { 200 },
+                body: json!({"dead_letter":record,"replayed":replayed}),
+            })
+        }
+        Command::ReconcileTransport { id } => {
+            let (record, replayed) = ledger.reconcile_transport(tenant, &id, actor, now)?;
+            Ok(CommandResult {
+                status: 200,
+                body: json!({"dead_letter":record,"replayed":replayed}),
+            })
+        }
+        other => command(ledger, other, now),
+    }
+}
 pub fn query(ledger: &Ledger, q: Query) -> Result<Value, Fault> {
     match q {
+        Query::TransportList {
+            after,
+            sampled_at_ms,
+        } => ledger.transport_records(&after, sampled_at_ms),
+        Query::TransportRecord { id, sampled_at_ms } => ledger.transport_record(&id, sampled_at_ms),
         Query::Metrics { sampled_at_ms } => Ok(ledger.metrics.view(sampled_at_ms)),
         Query::Health { sampled_at_ms } => Ok(crate::operations::health(ledger, sampled_at_ms)),
         Query::Audit => Ok(

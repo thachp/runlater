@@ -73,6 +73,8 @@ pub struct Dispatch {
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Ledger {
     #[serde(default)]
+    pub dead_letters: crate::transport::State,
+    #[serde(default)]
     pub metrics: crate::metrics::Metrics,
     #[serde(default)]
     pub audit: Vec<crate::operations::Event>,
@@ -381,6 +383,19 @@ impl Ledger {
             self.metrics.observe(Metric::ClaimIgnored, now);
             return Ok(None);
         }
+        if candidate.attempts.len() >= MAX_ATTEMPTS as usize {
+            let task = self.tasks.get_mut(&d.id).ok_or(Fault::NotFound)?;
+            task.status = Status::Failed;
+            task.terminal_ms = Some(now);
+            self.metrics.observe(Metric::ClaimIgnored, now);
+            self.record(
+                now,
+                crate::operations::EventKind::AttemptBudgetExhausted,
+                Some(d.id.clone()),
+                None,
+            );
+            return Ok(None);
+        }
         // Expired age is terminal even when no dispatch capacity is available.
         if now - candidate.initial_due_ms <= DAY {
             let running: Vec<_> = self
@@ -529,6 +544,7 @@ impl Ledger {
                 _ => t.terminal_ms.map(|x| x.saturating_add(RETENTION)),
             })
             .chain(self.audit.iter().map(|e| e.at_ms.saturating_add(RETENTION)))
+            .chain(self.dead_letters.next_wake())
             .min()
     }
     pub fn record(
@@ -568,14 +584,21 @@ impl Ledger {
         });
         self.audit
             .retain(|e| e.at_ms.saturating_add(RETENTION) > now);
+        let transport_records_removed = self.dead_letters.purge(now);
         let report = crate::operations::RetentionReport {
+            transport_records_removed,
             tasks_removed: tasks - self.tasks.len(),
             enqueue_keys_removed: keys - self.dedupe.len(),
             redrive_keys_removed: redrive
                 - self.redrive_dedupe.values().map(|m| m.len()).sum::<usize>(),
             audit_events_removed: events - self.audit.len(),
         };
-        if report.tasks_removed + report.enqueue_keys_removed + report.redrive_keys_removed > 0 {
+        if report.tasks_removed
+            + report.enqueue_keys_removed
+            + report.redrive_keys_removed
+            + report.transport_records_removed
+            > 0
+        {
             self.record(now, crate::operations::EventKind::Retention, None, None);
         }
         report
