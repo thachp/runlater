@@ -18,11 +18,12 @@
   "campaign_limits": {"foreground_seconds": 120, "start_cleanup_by_seconds": 90, "tasks": 4, "operator_http_calls": 100, "intercepted_or_receiver_callbacks_observed_stop_at": 20, "max_worker_cpu_ms": 50, "queue_batch_size": 1, "queue_configured_max_retries": 1},
   "durable_source_limits": {"accepted_tasks_per_project_lifetime": 16, "publication_reservations_per_project_lifetime": 128, "logical_attempts_per_task": 5, "request_body_bytes": 1024, "response_body_bytes": 1024, "response_header_bytes": 2048, "callback_deadline_ms": 3000},
   "conservative_campaign_estimates_not_universal_caps": {"do_calls": 500, "sqlite_reads": 1000, "sqlite_writes": 1000, "worker_requests": 1000, "worker_cpu_seconds": 50, "do_duration_gb_seconds": 15.36, "whole_rate_unit_reserve_usd": 14.571},
-  "residual_risks": ["provider billing unit rounding and prior monthly usage", "anonymous public ingress not globally capped", "transport duplicates not capped by configured max_retries", "estimates do not certify provider costs"],
+  "residual_risks": ["provider billing unit rounding and prior monthly usage", "anonymous public ingress not globally capped", "transport duplicates not capped by configured max_retries", "estimates do not certify provider costs", "valid callback replay can repeat verification DO calls"],
   "tests": ["signed enrolled acceptance and reservation", "scheduled alarm/Queue v2 success and rotation cutover", "HTTP503 retry then success", "redirect rejection", "bounded timeout then cancel if time permits"],
   "skip_policy": "four tasks total; choose retry or redirect/timeout subsets to stay within four tasks, skip remaining tests before cleanup deadline",
   "cleanup_required": true,
   "cleanup_identity_rule": "capture returned script names, Queue ID, namespace ID, domain IDs and preexisting inventory in private resource ledger; delete only exact created identities; uncertain creates require inventory reconciliation before retry",
   "cleanup_order": ["stop producer/consumer and ingress", "revoke configured synthetic identities, grant and callback keys while services are controlled", "remove created custom domains/records by returned ID", "delete created Workers and Queue by captured identity", "delete fresh SQLite namespace by captured ID", "verify scripts/domains/Queue/namespace absent and original inventory preserved", "delete private ephemeral material"],
+  "receiver_namespace_capability": "full fresh namespace capability used only for verification by the trusted synthetic receiver; never verify-only or shared with customer receivers",
   "not_authorized": ["plan upgrade", "merchant/payment setup", "billing scope expansion", "arbitrary callbacks", "other domains or resources"]
 }

@@ -310,9 +310,14 @@ impl Ledger {
         if record.reconciliation.is_some() {
             return Ok((self.transport_view(id, now)?, true));
         }
+        let before = classify(self, &record.reference, now);
         self.reconcile(now);
-        let classification = classify(self, &record.reference, now);
+        let mut classification = classify(self, &record.reference, now);
         let action = match classification {
+            Classification::Failed if before == Classification::AgeExhausted => {
+                classification = Classification::AgeExhausted;
+                Action::BudgetExpired
+            }
             Classification::ReadyOutbox => Action::OutboxConfirmed,
             Classification::InFlight | Classification::LeaseAwaitingReconciliation => {
                 Action::LeasePreserved

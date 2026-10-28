@@ -357,14 +357,12 @@ impl Ledger {
             if matches!(t.status, Status::Scheduled | Status::RetryWait) && t.due_ms <= now {
                 t.status = Status::Ready;
             }
-            // Pausing never extends the accepted task's delivery-age budget.
-            // Running effects settle through their ordinary fenced result/lease path.
-            if self.limits.paused
-                && matches!(
-                    t.status,
-                    Status::Scheduled | Status::Ready | Status::RetryWait
-                )
-                && now.saturating_sub(t.initial_due_ms) > DAY
+            // Delivery age expires even if transport cannot publish/claim again.
+            // Running effects retain their ordinary fenced result/lease path.
+            if matches!(
+                t.status,
+                Status::Scheduled | Status::Ready | Status::RetryWait
+            ) && now.saturating_sub(t.initial_due_ms) > DAY
             {
                 t.status = Status::Failed;
                 t.terminal_ms = Some(now);
@@ -372,7 +370,14 @@ impl Ledger {
             }
         }
         for id in aged {
-            self.metrics.observe(Metric::PausedAgeExpired, now);
+            self.metrics.observe(
+                if self.limits.paused {
+                    Metric::PausedAgeExpired
+                } else {
+                    Metric::ClaimAgeExpired
+                },
+                now,
+            );
             self.record(
                 now,
                 crate::operations::EventKind::AgeExpired,

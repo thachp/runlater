@@ -88,32 +88,17 @@ pub(super) fn apply(stored: &mut Project, p: &Policy, material: &Secrets, at: i6
 impl ProjectIdentity {
     pub(super) async fn delivery_rearm(&self) -> Result<()> {
         let s = self.load()?;
-        let wake = if s.delivery.publication_exhausted() {
-            s.ledger
-                .tasks
-                .values()
-                .filter_map(|t| match t.status {
-                    crate::core::Status::Running => t.lease_until,
-                    _ if t.status.terminal() => t
-                        .terminal_ms
-                        .map(|at| at.saturating_add(crate::core::RETENTION)),
-                    _ => Some(
-                        t.initial_due_ms
-                            .saturating_add(crate::core::DAY)
-                            .saturating_add(1),
-                    ),
-                })
-                .chain(
-                    s.ledger
-                        .audit
-                        .iter()
-                        .map(|e| e.at_ms.saturating_add(crate::core::RETENTION)),
-                )
-                .min()
-        } else {
-            s.ledger.next_wake(now())
-        };
+        let wake = s.delivery_next_wake(now());
         if let Some(at) = wake {
+            self.state.storage().set_alarm((at - now()).max(1)).await?;
+        } else {
+            self.state.storage().delete_alarm().await?;
+        }
+        Ok(())
+    }
+    async fn unavailable_rearm(&self) -> Result<()> {
+        let s = self.load()?;
+        if let Some(at) = s.delivery_unavailable_wake(now()) {
             self.state.storage().set_alarm((at - now()).max(1)).await?;
         } else {
             self.state.storage().delete_alarm().await?;
@@ -134,20 +119,12 @@ impl ProjectIdentity {
         let configured = configuration(&self.env, &project);
         let Some((p, material)) = configured.unwrap_or(None) else {
             self.save(&s)?;
-            if s.ledger.next_wake(now()).is_some() {
-                self.state.storage().set_alarm(60000).await?;
-            } else {
-                self.delivery_rearm().await?;
-            }
+            self.unavailable_rearm().await?;
             return Ok(());
         };
         if apply(&mut s, &p, &material, now()).is_err() {
             self.save(&s)?;
-            if s.ledger.next_wake(now()).is_some() {
-                self.state.storage().set_alarm(60000).await?;
-            } else {
-                self.delivery_rearm().await?;
-            }
+            self.unavailable_rearm().await?;
             return Ok(());
         }
         let mut refs = s.ledger.outbox(&project, now());

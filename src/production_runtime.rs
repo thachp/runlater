@@ -603,14 +603,15 @@ impl DurableObject for ProjectIdentity {
                 None
             };
             #[cfg(feature = "production")]
-            let admission: Option<crate::funding::Policy> = None;
-            #[cfg(feature = "production")]
-            let delivery = match delivery_runtime::configuration(&self.env, &project) {
-                Ok(v) => v,
-                Err(_) => return response("delivery_configuration_unavailable", 503),
+            let mut delivery = if input.envelope.method == "GET" {
+                None
+            } else {
+                delivery_runtime::configuration(&self.env, &project)
+                    .ok()
+                    .flatten()
             };
             #[cfg(feature = "production")]
-            if delivery.is_some() && input.envelope.method != "GET" {
+            if input.envelope.method != "GET" {
                 self.state.storage().set_alarm(1000).await?;
             }
             let mut stored = self.load()?;
@@ -634,38 +635,46 @@ impl DurableObject for ProjectIdentity {
                 #[cfg(feature = "production")]
                 if let Some((p, material)) = &delivery {
                     if delivery_runtime::apply(&mut stored, p, material, now()).is_err() {
-                        return response("delivery_policy_rejected", 503);
+                        delivery = None;
+                    } else {
+                        self.save(&stored)?;
                     }
-                    self.save(&stored)?;
                 }
                 #[cfg(feature = "production")]
-                let result = if let Some((p, material)) = &delivery {
-                    stored
-                        .delivery_command(
-                            policy,
-                            p,
-                            material,
-                            &input.envelope,
-                            &input.signature,
-                            &raw_body,
-                            now(),
-                        )
-                        .map_err(|e| match e {
-                            crate::delivery::Error::Task(e) => e,
-                            crate::delivery::Error::Invalid => {
-                                crate::funded_tasks::Error::Ledger(crate::core::Fault::Invalid)
-                            }
-                            _ => crate::funded_tasks::Error::AdmissionUnavailable,
-                        })
-                } else {
-                    stored.task_command(
-                        policy,
-                        admission.as_ref(),
-                        &input.envelope,
-                        &input.signature,
-                        &raw_body,
-                        now(),
-                    )
+                let result = match stored.task_command(
+                    policy,
+                    None,
+                    &input.envelope,
+                    &input.signature,
+                    &raw_body,
+                    now(),
+                ) {
+                    Err(crate::funded_tasks::Error::AdmissionUnavailable) => {
+                        if let Some((p, material)) = &delivery {
+                            stored
+                                .delivery_command(
+                                    policy,
+                                    p,
+                                    material,
+                                    &input.envelope,
+                                    &input.signature,
+                                    &raw_body,
+                                    now(),
+                                )
+                                .map_err(|e| match e {
+                                    crate::delivery::Error::Task(e) => e,
+                                    crate::delivery::Error::Invalid => {
+                                        crate::funded_tasks::Error::Ledger(
+                                            crate::core::Fault::Invalid,
+                                        )
+                                    }
+                                    _ => crate::funded_tasks::Error::AdmissionUnavailable,
+                                })
+                        } else {
+                            Err(crate::funded_tasks::Error::AdmissionUnavailable)
+                        }
+                    }
+                    result => result,
                 };
                 #[cfg(feature = "funding-tests")]
                 let result = stored.task_command(
@@ -678,9 +687,7 @@ impl DurableObject for ProjectIdentity {
                 );
                 self.save(&stored)?;
                 #[cfg(feature = "production")]
-                if delivery.is_some() {
-                    self.delivery_rearm().await?;
-                }
+                self.delivery_rearm().await?;
                 return match result {
                     Ok(v) => Ok(
                         Response::from_json(&v)?.with_status(if v["created"] == true {
@@ -712,7 +719,7 @@ impl DurableObject for ProjectIdentity {
             let result =
                 stored.command(policy, &input.envelope, &input.signature, &raw_body, now());
             #[cfg(feature = "production")]
-            if delivery.is_some() {
+            {
                 stored
                     .funded_maintenance(now())
                     .map_err(|_| Error::RustError("Funding maintenance rejected".into()))?;
@@ -720,9 +727,7 @@ impl DurableObject for ProjectIdentity {
             }
             self.save(&stored)?;
             #[cfg(feature = "production")]
-            if delivery.is_some() {
-                self.delivery_rearm().await?;
-            }
+            self.delivery_rearm().await?;
             return match result {
                 Ok(v) => Response::from_json(&v),
                 Err(e) => signed_error(e),

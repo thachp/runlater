@@ -315,3 +315,46 @@ fn cancelled_tasks_cannot_refill_lifetime_admission_cap() {
         .is_err());
     assert_eq!(business(&p), before);
 }
+#[test]
+fn unpaused_exhausted_publication_age_settles_before_future_rearm() {
+    let mut p = state();
+    let mut cfg = delivery_policy();
+    cfg.grant = policy(5, 3 * DAY);
+    let a = accept(&mut p, &cfg, "aged", 3, 1);
+    let id = a["result"]["id"].as_str().unwrap();
+    let mut refs = vec![reference(&p, id); 128];
+    p.delivery.reserve_publications(&mut refs);
+    assert!(!p.ledger.limits.paused);
+    assert!(p.delivery.publication_exhausted());
+    let boundary = 3 + DAY;
+    p.funded_maintenance(boundary).unwrap();
+    assert_eq!(p.ledger.get(id).unwrap().status, Status::Ready);
+    assert_eq!(p.delivery_next_wake(boundary), Some(boundary + 1));
+    p.funded_maintenance(boundary + 1).unwrap();
+    let t = p.ledger.get(id).unwrap();
+    assert_eq!(t.status, Status::Failed);
+    assert!(t.attempts.is_empty());
+    let receipt = p
+        .funding
+        .reservation(id)
+        .unwrap()
+        .settlement
+        .clone()
+        .unwrap();
+    assert_eq!(receipt.unused_units, 5);
+    assert_eq!(p.funding.grant("grant_a").unwrap().reserved, 0);
+    assert_eq!(p.funding.grant("grant_a").unwrap().available, 5);
+    assert!(p.delivery_next_wake(boundary + 1).unwrap() > boundary + 1);
+    assert!(p.delivery_unavailable_wake(boundary + 1).unwrap() > boundary + 60000);
+    let mut p = Project::decode(serde_json::to_value(&p).unwrap()).unwrap();
+    p.funded_maintenance(boundary + 2).unwrap();
+    assert_eq!(
+        p.funding.reservation(id).unwrap().settlement.as_ref(),
+        Some(&receipt)
+    );
+    assert!(p.ledger.outbox("alpha", boundary + 2).is_empty());
+    assert_eq!(
+        p.ledger.metrics.view(boundary + 2)["totals"]["counts"]["claim_age_expired"],
+        1
+    );
+}

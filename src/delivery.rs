@@ -243,6 +243,67 @@ impl State {
     }
 }
 impl Project {
+    /// Pure wake projection, shared with the actual alarm re-arm path.
+    pub fn delivery_next_wake(&self, at: i64) -> Option<i64> {
+        if self.delivery.publication_exhausted() {
+            self.ledger
+                .tasks
+                .values()
+                .filter_map(|t| match t.status {
+                    crate::core::Status::Running => t.lease_until,
+                    _ if t.status.terminal() => t
+                        .terminal_ms
+                        .map(|at| at.saturating_add(crate::core::RETENTION)),
+                    _ => Some(
+                        t.initial_due_ms
+                            .saturating_add(crate::core::DAY)
+                            .saturating_add(1),
+                    ),
+                })
+                .chain(
+                    self.ledger
+                        .audit
+                        .iter()
+                        .map(|e| e.at_ms.saturating_add(crate::core::RETENTION)),
+                )
+                .min()
+        } else {
+            self.ledger.next_wake(at)
+        }
+    }
+
+    /// No dispatch while policy is unavailable; retry only due active work, not terminal history.
+    pub fn delivery_unavailable_wake(&self, now: i64) -> Option<i64> {
+        if self.delivery.publication_exhausted() {
+            return self.delivery_next_wake(now);
+        }
+        self.ledger
+            .tasks
+            .values()
+            .filter_map(|t| match t.status {
+                crate::core::Status::Running => t.lease_until,
+                _ if t.status.terminal() => t
+                    .terminal_ms
+                    .map(|at| at.saturating_add(crate::core::RETENTION)),
+                _ => Some(
+                    t.initial_due_ms
+                        .saturating_add(crate::core::DAY)
+                        .saturating_add(1)
+                        .min(if t.due_ms > now {
+                            t.due_ms
+                        } else {
+                            now.saturating_add(60000)
+                        }),
+                ),
+            })
+            .chain(
+                self.ledger
+                    .audit
+                    .iter()
+                    .map(|e| e.at_ms.saturating_add(crate::core::RETENTION)),
+            )
+            .min()
+    }
     pub fn delivery_command(
         &mut self,
         identity: &identity::Policy,
