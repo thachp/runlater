@@ -28,7 +28,7 @@ const oracle = challenge => JSON.parse(execFileSync(path.join(root, 'target/debu
   {input: JSON.stringify(challenge), encoding: 'utf8'})); // stdin contains only public metadata, never token/private key
 const publicObject = raw => createPublicKey({key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(raw, 'hex')]), type: 'spki', format: 'der'});
 
-function mock({mutateOffer, mutateReceipt, mutateProof, loseCompletion = false, timeoutMs = 5000} = {}) {
+function mock({mutateOffer, mutateReceipt, mutateRecovery, mutateProof, loseCompletion = false, timeoutMs = 5000} = {}) {
   const pair = generateKeyPairSync('ed25519'), publicKey = pair.publicKey.export({type: 'spki', format: 'der'}).subarray(-32).toString('hex');
   const token = randomBytes(32).toString('hex'), id = hash(token), project = 'p_' + id.slice(0, 60);
   const ticket = {id, project_id: project, grant_id: 'g_' + id.slice(0, 60), terms: structuredClone(agreed),
@@ -70,7 +70,7 @@ function mock({mutateOffer, mutateReceipt, mutateProof, loseCompletion = false, 
       assert.equal(body.project_id, project); assert.equal(body.public_key, publicKey);
       const wire = 'RunLater invitation recovery v1\n' + JSON.stringify([1, ORIGIN, project, publicKey, body.nonce, body.issued_at_ms, body.expires_at_ms]);
       assert.ok(verify(null, Buffer.from(wire), pair.publicKey, Buffer.from(body.signature, 'hex')));
-      return receipt ? Response.json(receipt) : httpError(403);
+      return receipt ? Response.json(mutateRecovery ? mutateRecovery(structuredClone(receipt)) : receipt) : httpError(403);
     }
     signature(init.headers, init.method, route, init.body ?? '');
     if (route.startsWith('/v1/destinations/')) {
@@ -121,7 +121,7 @@ function mock({mutateOffer, mutateReceipt, mutateProof, loseCompletion = false, 
     return Response.json({result: task.task});
   };
   const client = new InvitationClientV1({privateKey: pair.privateKey, fetchImpl, clock: () => now, timeoutMs});
-  return {client, token, offer, project, pair, requests, proofRequests, tasks,
+  return {client, token, offer, project, pair, requests, proofRequests, tasks, fetchImpl,
     install: proof => installed.set(proof.id, proof.response), reflect: proof => installed.set(proof.id, 'reflected request')};
 }
 async function enrolled(f) { const offer = await f.client.challenge(f.token); return f.client.complete(f.token, offer, agreed); }
@@ -193,6 +193,35 @@ test('substituted receipt cannot install another project or silently change agre
     await assert.rejects(f.client.complete(f.token,offer,agreed),InvitationClientError);
     assert.equal(f.client.project,null);
   }
+});
+function substituteTicketSuffix(receipt) {
+  const original=receipt.ticket_id;
+  receipt.ticket_id=original.slice(0,60)+(original.slice(-4)==='ffff'?'0000':'ffff');
+  assert.notEqual(receipt.ticket_id,original);
+  assert.equal(receipt.project_id,'p_'+receipt.ticket_id.slice(0,60));
+  assert.equal(receipt.grant_id,'g_'+receipt.ticket_id.slice(0,60));
+  return receipt;
+}
+test('suffix-only completion receipt substitution is rejected before installing project context', async () => {
+  const f=mock({mutateReceipt:substituteTicketSuffix}),offer=await f.client.challenge(f.token);
+  await assert.rejects(f.client.complete(f.token,offer,agreed),InvitationClientError);
+  assert.equal(f.client.project,null);
+});
+test('recovery checks the full known ticket after completion, response loss and trusted receipt reload', async () => {
+  for(const loseCompletion of [false,true]) {
+    const f=mock({loseCompletion,mutateRecovery:substituteTicketSuffix}),offer=await f.client.challenge(f.token);
+    if(loseCompletion)await assert.rejects(f.client.complete(f.token,offer,agreed),/transport_uncertain/);
+    else await f.client.complete(f.token,offer,agreed);
+    await assert.rejects(f.client.recover(f.project),InvitationClientError);
+    assert.equal(f.client.project,loseCompletion?null:f.project);
+    const restored=new InvitationClientV1({privateKey:f.pair.privateKey,fetchImpl:f.fetchImpl,
+      project:f.project,ticketId:offer.challenge.ticket.id,clock:()=>now});
+    await assert.rejects(restored.recover(f.project),InvitationClientError);
+  }
+  const good=mock();const receipt=await enrolled(good);
+  const restored=new InvitationClientV1({privateKey:good.pair.privateKey,fetchImpl:good.fetchImpl,
+    project:receipt.project_id,ticketId:receipt.ticket_id,clock:()=>now});
+  assert.deepEqual(await restored.recover(good.project),receipt);
 });
 test('prepared proof is checked against exact tenant, endpoint, version, URL, expiry and digest before owner setup', async () => {
   for(const change of [t=>{t[1]='other';},t=>{t[2]='other';},t=>{t[3]=2;},t=>{t[4]=url+'/other';},t=>{t[6]=now;}]) {

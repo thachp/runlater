@@ -74,8 +74,8 @@ export function writeOwnerJson(file, value) {
 }
 
 export class InvitationClientV1 {
-  #key; #fetch; #clock; #nonce; #timeout; #project;
-  constructor({privateKey, fetchImpl, project = null, clock = Date.now,
+  #key; #fetch; #clock; #nonce; #timeout; #project; #ticketId;
+  constructor({privateKey, fetchImpl, project = null, ticketId = null, clock = Date.now,
     nonce = () => randomBytes(32).toString('hex'), timeoutMs = 5000} = {}) {
     requireValue(typeof fetchImpl === 'function', 'explicit_transport_required');
     requireValue(typeof clock === 'function' && typeof nonce === 'function'
@@ -84,6 +84,9 @@ export class InvitationClientV1 {
     catch { throw new InvitationClientError('ed25519_private_key_required'); }
     requireValue(this.#key.type === 'private' && this.#key.asymmetricKeyType === 'ed25519', 'ed25519_private_key_required');
     requireValue(project === null || identifier(project), 'invalid_project');
+    requireValue(ticketId === null || hex64(ticketId)
+      && (project === null || project === 'p_' + ticketId.slice(0, 60)), 'invalid_ticket');
+    this.#ticketId = ticketId;
     this.#project = project; this.#fetch = fetchImpl; this.#clock = clock; this.#nonce = nonce; this.#timeout = timeoutMs;
     this.publicKey = createPublicKey(this.#key).export({type: 'spki', format: 'der'}).subarray(-32).toString('hex');
     Object.defineProperty(this, 'publicKey', {writable: false, configurable: false});
@@ -146,7 +149,8 @@ export class InvitationClientV1 {
     requireValue(c.version === 1 && c.origin === ORIGIN && c.purpose === 'invitation_enrollment'
       && c.public_key === this.publicKey && hex64(c.nonce) && t.id === id
       && t.project_id === 'p_' + id.slice(0, 60) && t.grant_id === 'g_' + id.slice(0, 60)
-      && (!this.#project || this.#project === t.project_id) && t.revoked === false
+      && (!this.#project || this.#project === t.project_id)
+      && (!this.#ticketId || this.#ticketId === id) && t.revoked === false
       && integer(t.policy_revision) && t.policy_revision > 0 && integer(t.issued_at_ms)
       && integer(t.expires_at_ms) && t.issued_at_ms <= now && t.expires_at_ms > now
       && t.expires_at_ms - t.issued_at_ms <= 86400000
@@ -164,11 +168,12 @@ export class InvitationClientV1 {
   async challenge(token) {
     requireValue(hex64(token), 'invalid_invitation');
     const offer = await this.#request('/registration/challenge', {body: {token, public_key: this.publicKey}});
-    this.#offer(token, offer); return offer;
+    const {ticket} = this.#offer(token, offer); this.#ticketId = ticket.id; return offer;
   }
-  #receipt(receipt, project, expectedTerms = null) {
+  #receipt(receipt, project, expectedTerms = null, expectedTicketId = this.#ticketId) {
     requireValue(exact(receipt, ['ticket_id', 'project_id', 'public_key', 'grant_id', 'enrolled_at_ms', 'expires_at_ms', 'attempt_units', 'permissions']));
-    requireValue(hex64(receipt.ticket_id) && receipt.project_id === project && receipt.public_key === this.publicKey
+    requireValue(hex64(receipt.ticket_id) && (!expectedTicketId || receipt.ticket_id === expectedTicketId)
+      && receipt.project_id === project && receipt.public_key === this.publicKey
       && project === 'p_' + receipt.ticket_id.slice(0, 60) && receipt.grant_id === 'g_' + receipt.ticket_id.slice(0, 60)
       && integer(receipt.enrolled_at_ms) && receipt.enrolled_at_ms <= this.#now()
       && integer(receipt.expires_at_ms) && receipt.expires_at_ms > this.#now()
@@ -177,17 +182,20 @@ export class InvitationClientV1 {
     const actual = terms({attempt_units: receipt.attempt_units,
       identity_ms: receipt.expires_at_ms - receipt.enrolled_at_ms, permissions: receipt.permissions});
     if (expectedTerms) requireValue(same(actual, expectedTerms), 'unexpected_terms');
-    this.#project = project; return receipt;
+    this.#ticketId = receipt.ticket_id; this.#project = project; return receipt;
   }
   async complete(token, offer, expectedTerms) {
     const {wire, ticket} = this.#offer(token, offer), approved = terms(expectedTerms);
     requireValue(same(ticket.terms, approved), 'unexpected_terms');
+    // Retain the complete signed identity even if the completion response is lost.
+    this.#ticketId = ticket.id;
     const receipt = await this.#request('/registration/complete', {body: {token,
       challenge_id: offer.challenge_id, signature: sign(null, Buffer.from(wire), this.#key).toString('hex')}});
-    return this.#receipt(receipt, ticket.project_id, approved);
+    return this.#receipt(receipt, ticket.project_id, approved, ticket.id);
   }
   async recover(project) {
-    requireValue(identifier(project) && (!this.#project || project === this.#project), 'invalid_project');
+    requireValue(identifier(project) && (!this.#project || project === this.#project)
+      && (!this.#ticketId || project === 'p_' + this.#ticketId.slice(0, 60)), 'invalid_project');
     const at = this.#now(), nonce = this.#random();
     const wire = 'RunLater invitation recovery v1\n' + JSON.stringify([1, ORIGIN, project, this.publicKey, nonce, at, at + 60000]);
     const receipt = await this.#request('/registration/recover', {body: {project_id: project,
