@@ -16,6 +16,8 @@ use std::collections::BTreeMap;
 #[serde(deny_unknown_fields)]
 pub struct State {
     schema_version: u8,
+    #[serde(default)]
+    beta_admissions: u32,
     destinations: Option<destinations::State>,
     versions: BTreeMap<String, u32>,
     selections: BTreeMap<String, destinations::Acceptance>,
@@ -27,6 +29,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             schema_version: 1,
+            beta_admissions: 0,
             destinations: None,
             versions: BTreeMap::new(),
             selections: BTreeMap::new(),
@@ -38,6 +41,7 @@ impl Default for State {
 }
 #[derive(Debug)]
 pub enum Error {
+    BetaCapacity,
     Auth(identity::Error),
     Task(funded_tasks::Error),
     Destination(destinations::Error),
@@ -77,7 +81,8 @@ pub struct DestinationCommand {
 }
 impl State {
     pub(crate) fn validate(&self, project: Option<&str>) -> Result<(), Error> {
-        if self.schema_version != 1
+        if self.beta_admissions > 16
+            || self.schema_version != 1
             || self.versions.len() > 64
             || self.selections.len() > 128
             || self.snapshots.len() > 128
@@ -266,6 +271,33 @@ impl Enrollment {
             .registry(project)?
             .complete(project, c, response, policy, now)?))
     }
+    pub fn registered_beta_task_command(
+        &mut self,
+        e: &Envelope,
+        signature: &str,
+        body: &[u8],
+        policy: &EgressPolicy,
+        keys: &Keyring,
+        material: &impl Material,
+        now: i64,
+    ) -> Result<Value, Error> {
+        let mut next = self.clone();
+        let v = next.registered_task_command(e, signature, body, policy, keys, material, now)?;
+        if v["created"] == true {
+            let id = v["result"]["id"].as_str().ok_or(Error::Unavailable)?;
+            let t = next
+                .project
+                .ledger
+                .get(id)
+                .map_err(funded_tasks::Error::from)?;
+            if t.due_ms > next.beta_expiry().ok_or(Error::Unavailable)? {
+                return Err(crate::destinations::Error::Invalid.into());
+            }
+            next.outbound.beta_admissions += 1;
+        }
+        *self = next;
+        Ok(v)
+    }
     pub fn registered_task_command(
         &mut self,
         e: &Envelope,
@@ -279,6 +311,12 @@ impl Enrollment {
         let mut next = self.clone();
         let value = next.signed_task_command(e, signature, body, true, now)?;
         if value["created"] == true {
+            // Public lifetime capacity is checked after authenticated idempotent replay,
+            // before the destination's independent acceptance cap can shadow its permanent error.
+            // Invitation aggregates leave beta_admissions at zero.
+            if next.outbound.beta_admissions >= 16 {
+                return Err(Error::BetaCapacity);
+            }
             next.outbound.sync_keys(&e.project_id, keys, material)?;
             let id = value["result"]["id"].as_str().ok_or(Error::Unavailable)?;
             let task = next

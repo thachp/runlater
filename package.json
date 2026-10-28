@@ -27,6 +27,7 @@
     "test:invitation-production": "./scripts/test-invitation-production.sh",
     "test:invitation-delivery": "./scripts/test-invitation-delivery.sh",
     "test:invitation-client-v1": "node --test examples/invitation-client.v1.test.mjs",
+    "test:public-beta": "./scripts/test-public-beta.sh",
     "test:public-beta-receiver": "npm run test:callback-wire"
   },
   "devDependencies": {

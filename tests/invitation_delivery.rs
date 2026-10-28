@@ -90,6 +90,7 @@ fn fixture(manage: bool) -> (Enrollment, String, EgressPolicy, Keyring) {
         e,
         t.project_id,
         EgressPolicy {
+            managed_workers_dev: false,
             approved_hosts: ["receiver.example.test".into()].into_iter().collect(),
         },
         ring,

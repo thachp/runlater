@@ -13,6 +13,8 @@ struct Config {
     egress: EgressPolicy,
 }
 pub(super) struct Configuration {
+    pub public_beta: bool,
+    self_host: Option<String>,
     pub keys: Keyring,
     pub egress: EgressPolicy,
     material: BTreeMap<String, Vec<u8>>,
@@ -22,7 +24,75 @@ impl Material for Configuration {
         self.material.get(id).map(Vec::as_slice)
     }
 }
+fn queue_binding(env: &Env) -> &'static str {
+    if public_runtime::mode(env) {
+        "BETA_READY"
+    } else {
+        "INVITATION_READY"
+    }
+}
+impl Configuration {
+    fn target(
+        &self,
+        raw: &str,
+    ) -> std::result::Result<crate::destinations::Target, crate::destinations::Error> {
+        let target = self.egress.target(raw)?;
+        let host = url::Url::parse(raw)
+            .map_err(|_| crate::destinations::Error::Invalid)?
+            .host_str()
+            .unwrap_or_default()
+            .to_owned();
+        if self.self_host.as_deref() == Some(&host)
+            || host == "runlater.io"
+            || host.ends_with(".runlater.io")
+        {
+            return Err(crate::destinations::Error::Forbidden);
+        }
+        Ok(target)
+    }
+}
 fn configuration(env: &Env, project: &str) -> Result<Option<Configuration>> {
+    if public_runtime::mode(env) {
+        if !public_runtime::configured(env) {
+            return Ok(None);
+        }
+        env.queue("BETA_READY")?;
+        if env.var("BETA_READY_QUEUE")?.to_string() != "runlater-public-ready" {
+            return Err(Error::RustError("Invalid beta queue".into()));
+        }
+        let p = public_runtime::profile(env)?;
+        let material = public_runtime::master(env)?
+            .tenant(&p.release_id, project)
+            .map_err(|_| Error::RustError("Invalid beta material".into()))?;
+        let keys = Keyring::new(
+            project,
+            &format!("public_beta_{}", p.release_id),
+            "beta_v1",
+            p.opens_at_ms / 1000,
+            p.callback_end_sec,
+            &material,
+        )
+        .map_err(|_| Error::RustError("Invalid beta signing policy".into()))?;
+        let mut map = BTreeMap::new();
+        map.insert(
+            "beta_v1".into(),
+            material
+                .key("beta_v1")
+                .ok_or_else(|| Error::RustError("Missing beta material".into()))?
+                .to_vec(),
+        );
+        return Ok(Some(Configuration {
+            public_beta: true,
+            self_host: Some(p.self_host),
+            keys,
+            egress: EgressPolicy {
+                managed_workers_dev: true,
+                approved_hosts: Default::default(),
+            },
+            material: map,
+        }));
+    }
+
     if env
         .var("INVITATION_DELIVERY_ENABLED")
         .map(|v| v.to_string())
@@ -83,6 +153,8 @@ fn configuration(env: &Env, project: &str) -> Result<Option<Configuration>> {
         material.insert(id, bytes);
     }
     Ok(Some(Configuration {
+        public_beta: false,
+        self_host: None,
         keys: p.keys,
         egress: p.egress,
         material,
@@ -90,6 +162,10 @@ fn configuration(env: &Env, project: &str) -> Result<Option<Configuration>> {
 }
 fn fail(e: crate::invitation_delivery::Error) -> Result<Response> {
     match e {
+        crate::invitation_delivery::Error::BetaCapacity => json_response(
+            &json!({"error":{"code":"beta_lifetime_task_capacity"},"task_accepted":false,"retryable":false,"payments":false}),
+            429,
+        ),
         crate::invitation_delivery::Error::Auth(e) => task_error(e.into()),
         crate::invitation_delivery::Error::Task(e) => task_error(e),
         crate::invitation_delivery::Error::Destination(e) => {
@@ -141,7 +217,7 @@ impl InvitationProject {
                     Err(e) => return fail(e),
                 };
                 save(&self.state, &s)?;
-                let target = match challenge.target(&c.egress) {
+                let target = match c.target(&challenge.url) {
                     Ok(t) => t,
                     Err(e) => return fail(e.into()),
                 };
@@ -171,6 +247,14 @@ impl InvitationProject {
                     Ok(v) => json_response(&v, 200),
                     Err(e) => fail(e),
                 };
+            }
+            if c.public_beta
+                && serde_json::from_slice::<Value>(&raw)
+                    .ok()
+                    .and_then(|v| v.get("url").and_then(Value::as_str).map(str::to_owned))
+                    .is_some_and(|url| c.target(&url).is_err())
+            {
+                return fail(crate::destinations::Error::Forbidden.into());
             }
             let result = s.destination_command(
                 &input.envelope,
@@ -206,15 +290,27 @@ impl InvitationProject {
                 };
             }
             save(&self.state, &s)?;
-            s.registered_task_command(
-                &input.envelope,
-                &input.signature,
-                &raw,
-                &c.egress,
-                &c.keys,
-                &c,
-                now(),
-            )
+            if c.public_beta {
+                s.registered_beta_task_command(
+                    &input.envelope,
+                    &input.signature,
+                    &raw,
+                    &c.egress,
+                    &c.keys,
+                    &c,
+                    now(),
+                )
+            } else {
+                s.registered_task_command(
+                    &input.envelope,
+                    &input.signature,
+                    &raw,
+                    &c.egress,
+                    &c.keys,
+                    &c,
+                    now(),
+                )
+            }
         } else {
             s.signed_task_command(&input.envelope, &input.signature, &raw, false, now())
                 .map_err(Into::into)
@@ -296,7 +392,13 @@ impl InvitationProject {
             .map_err(|_| Error::RustError("Outbox rejected".into()))?;
         save(&self.state, &s)?;
         for d in refs {
-            if self.env.queue("INVITATION_READY")?.send(d).await.is_err() {
+            if self
+                .env
+                .queue(queue_binding(&self.env))?
+                .send(d)
+                .await
+                .is_err()
+            {
                 self.state.storage().set_alarm(1000).await?;
                 return Err(Error::RustError("Invitation publication uncertain".into()));
             }
@@ -343,7 +445,7 @@ impl InvitationProject {
             self.rearm().await?;
             return json_response(&json!({"disposed":true}), 200);
         };
-        let (outcome, category) = match c.egress.target(&w.url) {
+        let (outcome, category) = match c.target(&w.url) {
             Ok(target) => {
                 match crate::safe_egress::fetch(target, w.body, "application/json", w.headers).await
                 {
@@ -383,7 +485,14 @@ impl InvitationProject {
 }
 #[cfg_attr(feature = "invitation-tests", event(queue))]
 pub async fn consume(batch: MessageBatch<Value>, env: Env, _ctx: Context) -> Result<()> {
-    if batch.queue() != "runlater-invitation-ready" || !guard(&env) {
+    if batch.queue()
+        != (if public_runtime::mode(&env) {
+            "runlater-public-ready"
+        } else {
+            "runlater-invitation-ready"
+        })
+        || !guard(&env)
+    {
         return Err(Error::RustError("Invalid invitation queue".into()));
     }
     for message in batch.messages()? {
@@ -397,7 +506,11 @@ pub async fn consume(batch: MessageBatch<Value>, env: Env, _ctx: Context) -> Res
         let mut gate = internal(
             &env,
             "ADMISSION",
-            "admission_registry_v1",
+            if public_runtime::mode(&env) {
+                "public_beta_registry_v1"
+            } else {
+                "admission_registry_v1"
+            },
             "/signed-route",
             &json!({"project_id":d.tenant}),
         )

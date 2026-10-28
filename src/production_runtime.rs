@@ -279,7 +279,7 @@ struct Enroll {
 #[event(fetch)]
 pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
     #[cfg(feature = "production")]
-    if env.var("INVITATION_ENROLLMENT").is_ok() {
+    if env.var("INVITATION_ENROLLMENT").is_ok() || env.var("PUBLIC_BETA_ENABLED").is_ok() {
         return crate::invitation_runtime::fetch(req, env, _ctx).await;
     }
     let url = req.url()?;

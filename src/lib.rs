@@ -75,6 +75,7 @@ pub mod delivery;
 
 pub mod invitation;
 pub mod invitation_delivery;
+pub mod public_beta;
 
 #[cfg(all(
     feature = "destination-tests",

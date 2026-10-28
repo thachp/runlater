@@ -201,6 +201,7 @@ async fn fetch_wire(w: Wire) -> (Outcome, &'static str) {
         return (Outcome::Http(400), "policy_unavailable");
     }
     let policy = crate::destinations::EgressPolicy {
+        managed_workers_dev: false,
         approved_hosts: ["receiver-alpha.runlater.io".into()].into_iter().collect(),
     };
     let Ok(target) = policy.target(&w.url) else {
@@ -241,7 +242,7 @@ pub async fn consume(
     env: Env,
     _ctx: Context,
 ) -> Result<()> {
-    if env.var("INVITATION_ENROLLMENT").is_ok() {
+    if env.var("INVITATION_ENROLLMENT").is_ok() || env.var("PUBLIC_BETA_ENABLED").is_ok() {
         return crate::invitation_runtime::delivery_transport::consume(batch, env, _ctx).await;
     }
     if batch.queue() != "runlater-alpha-ready" {
