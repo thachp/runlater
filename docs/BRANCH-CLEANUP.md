@@ -39,4 +39,6 @@ Input shape (SHAs/time below are illustrative and deliberately not current evide
 }
 ```
 
+PR numbers must be positive safe integers. Candidate/default/base/head names follow the literal `refs/heads/<name>` rules from [git-check-ref-format](https://git-scm.com/docs/git-check-ref-format), without normalization, refspec patterns or previous-checkout shorthand. Valid single-level, Unicode and allowed punctuation names are preserved; the tests compare a mixed valid/invalid corpus against read-only Git syntax checks. The validator itself still invokes no Git process.
+
 This example is blocked because PR49 depends on the candidate base. Missing head preservation, unmerged/wrong PR, changed candidate SHA, incomplete/stale/future inventory and default-branch targets also block. The tool returns exit 2 on refusal/invalid input and exit 0 only for internal snapshot consistency. It neither searches for credentials nor logs private repository content; use only repository/ref/PR metadata, never keys or tokens.
