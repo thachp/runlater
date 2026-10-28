@@ -1,5 +1,7 @@
 # RunLater
 
+The [offline invitation enrollment component](docs/INVITATIONS.md) adds bounded admission and atomic key/grant enrollment tests. It is not enabled on the public API; trial terms and public signup remain unset.
+
 RunLater is a reusable HTTP task delivery API built in **Rust on Cloudflare Workers**. Submit work now for a later signed callback, with bounded retries and an inspectable record of each attempt.
 
 ## Status

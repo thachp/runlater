@@ -22,6 +22,7 @@
     "build:web": "npm run build:discovery",
     "preview:web": "node scripts/preview-web.mjs",
     "test:web-local": "node scripts/test-web-local.mjs",
+    "test:invitations": "./scripts/test-invitations.sh",
     "test:destinations": "./scripts/test-destinations.sh"
   },
   "devDependencies": {

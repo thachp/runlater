@@ -33,3 +33,4 @@ jobs:
       - run: npm run test:signed-requests
       - run: npm run test:funding
       - run: npm run test:delivery
+      - run: npm run test:invitations
