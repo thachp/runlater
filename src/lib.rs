@@ -51,3 +51,5 @@ pub mod funding;
 pub mod funded_tasks;
 
 pub mod delivery;
+
+pub mod invitation;
