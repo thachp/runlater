@@ -1,0 +1,10 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "runlater-web-www",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-10-28",
+  "workers_dev": false,
+  "preview_urls": false,
+  "limits": {"cpu_ms": 10},
+  "observability": {"enabled": false}
+}
