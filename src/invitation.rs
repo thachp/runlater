@@ -72,9 +72,12 @@ pub struct Policy {
 }
 impl Policy {
     fn validate(&self) -> Result<(), Error> {
+        self.validate_cap(MAX_PROJECTS)
+    }
+    fn validate_cap(&self, cap: usize) -> Result<(), Error> {
         if self.revision == 0
             || self.revision > 9_007_199_254_740_991
-            || !(1..=MAX_PROJECTS).contains(&self.max_projects)
+            || !(1..=cap).contains(&self.max_projects)
             || !(1..=MAX_TICKETS).contains(&self.max_tickets)
             || !(1..=1024).contains(&self.requests_per_minute)
         {
@@ -133,6 +136,47 @@ impl Registry {
         }
         self.clock_ms = now;
         Ok(())
+    }
+    pub(crate) fn apply_public(&mut self, p: &Policy, now: i64) -> Result<(), Error> {
+        p.validate_cap(crate::public_beta::PROJECTS)?;
+        self.time(now)?;
+        if self.policy.is_some() {
+            return Err(Error::Conflict);
+        }
+        self.policy = Some(p.clone());
+        self.policy_hash = hash(p)?;
+        Ok(())
+    }
+    pub(crate) fn preview_public(&self, id: &str, expires: i64, now: i64) -> Result<Ticket, Error> {
+        let mut clone = self.clone();
+        clone.issue(id, expires, now)
+    }
+    pub(crate) fn commit_public(&mut self, t: &Ticket, now: i64) -> Result<Ticket, Error> {
+        t.validate()?;
+        self.time(now)?;
+        let p = self.policy.as_ref().ok_or(Error::Closed)?;
+        if p.terms.as_ref() != Some(&t.terms)
+            || t.policy_revision != p.revision
+            || now >= t.expires_at_ms
+        {
+            return Err(Error::Invalid);
+        }
+        if let Some(old) = self.tickets.get(&t.id) {
+            return if old == t {
+                Ok(old.clone())
+            } else {
+                Err(Error::Conflict)
+            };
+        }
+        if self.projects.len() >= p.max_projects
+            || self.tickets.len() >= p.max_tickets
+            || self.projects.contains(&t.project_id)
+        {
+            return Err(Error::Limited);
+        }
+        self.projects.insert(t.project_id.clone());
+        self.tickets.insert(t.id.clone(), t.clone());
+        Ok(t.clone())
     }
     pub fn apply(&mut self, p: &Policy, now: i64) -> Result<(), Error> {
         p.validate()?;
@@ -274,7 +318,11 @@ pub struct Challenge {
 }
 impl Challenge {
     pub fn bytes(&self) -> Result<Vec<u8>, Error> {
-        let mut b = b"RunLater invitation proof v1\n".to_vec();
+        let mut b = if self.purpose == crate::public_beta::PURPOSE {
+            b"RunLater public registration proof v1\n".to_vec()
+        } else {
+            b"RunLater invitation proof v1\n".to_vec()
+        };
         b.extend(
             serde_json::to_vec(&(
                 self.version,
@@ -401,6 +449,117 @@ impl Enrollment {
         self.project
             .task_command(&p, grant.as_ref(), e, signature, body, now)
     }
+    pub(crate) fn install_public(
+        &mut self,
+        g: &crate::public_beta::Grant,
+        c: &Challenge,
+        signature: &str,
+        now: i64,
+    ) -> Result<Receipt, Error> {
+        g.ticket.validate()?;
+        if self.mode != Mode::Invitation
+            || c.version != 1
+            || c.origin != identity::ORIGIN
+            || c.purpose != crate::public_beta::PURPOSE
+            || c.ticket != g.ticket
+            || c.public_key != g.public_key
+            || c.issued_at_ms > now
+            || c.expires_at_ms <= now
+            || now >= g.expires_at_ms
+            || g.expires_at_ms
+                != g.admitted_at_ms
+                    .checked_add(crate::public_beta::DURATION)
+                    .ok_or(Error::Invalid)?
+            || !identity::verify_ed25519(&g.public_key, &c.bytes()?, signature)
+        {
+            return Err(Error::Forbidden);
+        }
+        self.time(now)?;
+        if self.ticket.as_ref().is_some_and(|t| t.revoked) {
+            return Err(Error::Forbidden);
+        }
+        if let Some(r) = &self.receipt {
+            return if r.ticket_id == g.ticket.id
+                && r.public_key == g.public_key
+                && r.expires_at_ms == g.expires_at_ms
+            {
+                Ok(r.clone())
+            } else {
+                Err(Error::Conflict)
+            };
+        }
+        let mut next = self.clone();
+        next.project
+            .catalog
+            .enroll_public_verified(
+                &g.ticket.project_id,
+                &g.public_key,
+                &g.ticket.terms.permissions,
+                g.expires_at_ms,
+                &c.bytes()?,
+                signature,
+                now,
+            )
+            .map_err(|_| Error::Forbidden)?;
+        next.project
+            .funding
+            .apply(
+                &funding::Policy {
+                    version: 1,
+                    project_id: g.ticket.project_id.clone(),
+                    revision: 1,
+                    active_grant: Some(funding::GrantSpec {
+                        grant_id: g.ticket.grant_id.clone(),
+                        total_attempt_units: g.ticket.terms.attempt_units,
+                        admission_expires_at_ms: g.expires_at_ms,
+                    }),
+                    revoked_grants: vec![],
+                },
+                now,
+            )
+            .map_err(|_| Error::Conflict)?;
+        let receipt = Receipt {
+            ticket_id: g.ticket.id.clone(),
+            project_id: g.ticket.project_id.clone(),
+            public_key: g.public_key.clone(),
+            grant_id: g.ticket.grant_id.clone(),
+            enrolled_at_ms: g.admitted_at_ms,
+            expires_at_ms: g.expires_at_ms,
+            attempt_units: g.ticket.terms.attempt_units,
+            permissions: g.ticket.terms.permissions.clone(),
+        };
+        next.ticket = Some(g.ticket.clone());
+        next.receipt = Some(receipt.clone());
+        *self = next;
+        Ok(receipt)
+    }
+    pub(crate) fn verifier_key(
+        &mut self,
+        e: &crate::signed::Envelope,
+        signature: &str,
+        body: &[u8],
+        keys: &crate::callback::Keyring,
+        material: &impl crate::callback::Material,
+        now: i64,
+    ) -> Result<serde_json::Value, identity::Error> {
+        if e.method != "POST" || e.path != "/v1/callback-key" {
+            return Err(identity::Error::Invalid);
+        }
+        let mut next = self.clone();
+        let p = self.identity_policy()?;
+        next.project.catalog.apply_policy(&p, now)?;
+        e.authenticate(&next.project.catalog, signature, body, now)?;
+        next.project.requests.check_nonce(e, now)?;
+        next.outbound
+            .sync_keys(&e.project_id, keys, material)
+            .map_err(|_| identity::Error::Conflict)?;
+        let key = material.key("beta_v1").ok_or(identity::Error::Forbidden)?;
+        next.project.requests.record_nonce(e)?;
+        *self = next;
+        Ok(
+            serde_json::json!({"version":"v2","project_id":e.project_id,"policy_id":keys.policy_id(),"key_id":"beta_v1","key_hex":hex::encode(key),"signature_window_sec":300}),
+        )
+    }
     pub fn new(mode: Mode) -> Self {
         Self {
             version: 1,
@@ -413,6 +572,9 @@ impl Enrollment {
             consumed_proof: None,
             clock_ms: 0,
         }
+    }
+    pub(crate) fn beta_expiry(&self) -> Option<i64> {
+        self.receipt.as_ref().map(|r| r.expires_at_ms)
     }
     pub(crate) fn project_id(&self) -> Option<&str> {
         self.receipt.as_ref().map(|r| r.project_id.as_str())

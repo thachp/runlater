@@ -1,5 +1,7 @@
 #[path = "invitation_transport.rs"]
 pub(crate) mod delivery_transport;
+#[path = "public_beta_runtime.rs"]
+pub(crate) mod public_runtime;
 // Explicit invitation mode; defaults closed.
 use crate::invitation::{self as inv, Enrollment, Mode, Policy, Registry, Ticket};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -123,6 +125,9 @@ fn guard(env: &Env) -> bool {
     }
     #[cfg(feature = "production")]
     {
+        if public_runtime::mode(env) {
+            return public_runtime::configured(env);
+        }
         env.var("INVITATION_ENROLLMENT")
             .map(|v| v.to_string())
             .unwrap_or_default()
@@ -397,6 +402,9 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
     if req.path().starts_with("/fixture/") {
         return json_response(&json!({"error":"not_found"}), 404);
     }
+    if public_runtime::mode(&env) {
+        return public_runtime::front(req, env).await;
+    }
     if req.method() == Method::Get && req.path() == "/health" {
         let enabled = env
             .var("INVITATION_DELIVERY_ENABLED")
@@ -597,6 +605,9 @@ impl DurableObject for AdmissionRegistry {
         Self { state, env }
     }
     async fn fetch(&self, mut req: Request) -> Result<Response> {
+        if public_runtime::mode(&self.env) {
+            return self.public_fetch(req).await;
+        }
         if !guard(&self.env)
             || self.state.id().to_string()
                 != self
@@ -700,6 +711,9 @@ impl DurableObject for InvitationProject {
         let value: Value = req.json().await?;
         let mut s: Enrollment =
             load(&self.state)?.unwrap_or_else(|| Enrollment::new(Mode::Invitation));
+        if public_runtime::mode(&self.env) && req.path() == "/public/enroll" {
+            return self.public_install(value, &project);
+        }
         if req.path() == "/deliver" {
             let d: crate::core::Dispatch = serde_json::from_value(value)?;
             return self.deliver(&project, d).await;
@@ -723,13 +737,18 @@ impl DurableObject for InvitationProject {
             let Ok(raw) = hex::decode(&input.body_hex) else {
                 return rejected(inv::Error::Invalid);
             };
+            if public_runtime::mode(&self.env) && input.envelope.path == "/v1/callback-key" {
+                return self.public_key(s, &input, &raw);
+            }
             if input.envelope.method == "GET" {
                 return match s.signed_query(&input.envelope, &input.signature, &raw, now()) {
                     Ok(v) => task_result(v),
                     Err(e) => task_error(e),
                 };
             }
-            if self.env.var("INVITATION_DELIVERY_ENABLED").is_ok() {
+            if public_runtime::mode(&self.env)
+                || self.env.var("INVITATION_DELIVERY_ENABLED").is_ok()
+            {
                 return self.signed_delivery(s, input, raw).await;
             }
             // Fresh production admission is deliberately unavailable until registered delivery is integrated.

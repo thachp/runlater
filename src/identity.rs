@@ -357,6 +357,47 @@ impl Catalog {
         *self = next;
         Ok(identity)
     }
+    pub(crate) fn enroll_public_verified(
+        &mut self,
+        project: &str,
+        key: &str,
+        permissions: &BTreeSet<Permission>,
+        expires: i64,
+        proof: &[u8],
+        signature: &str,
+        now: i64,
+    ) -> Result<Identity, Error> {
+        if !proof.starts_with(b"RunLater public registration proof v1\n")
+            || !verify_ed25519(key, proof, signature)
+            || self.identities.contains_key(key)
+        {
+            return Err(Error::Forbidden);
+        }
+        let mut next = self.clone();
+        let policy = Policy {
+            project_id: project.into(),
+            revision: 1,
+            revoked: false,
+            approvals: vec![Approval {
+                public_key: key.into(),
+                permissions: permissions.clone(),
+                expires_at_ms: expires,
+            }],
+            revoked_keys: vec![],
+        };
+        next.apply_policy(&policy, now)?;
+        next.approval(key, now)?;
+        let identity = Identity {
+            project_id: project.into(),
+            public_key: key.into(),
+            permissions: permissions.clone(),
+            enrolled_at_ms: now,
+            expires_at_ms: expires,
+        };
+        next.identities.insert(key.into(), identity.clone());
+        *self = next;
+        Ok(identity)
+    }
     pub(crate) fn revoke_invitation(
         &mut self,
         project: &str,

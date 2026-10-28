@@ -38,6 +38,8 @@ pub enum Error {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EgressPolicy {
+    #[serde(default)]
+    pub managed_workers_dev: bool,
     pub approved_hosts: BTreeSet<String>,
 }
 #[derive(Clone)]
@@ -86,7 +88,7 @@ impl EgressPolicy {
             || u.port().is_some()
             || u.query().is_some()
             || u.fragment().is_some()
-            || !matches!(u.host(), Some(url::Host::Domain(h)) if self.approved_hosts.contains(h))
+            || !matches!(u.host(), Some(url::Host::Domain(h)) if self.approved_hosts.contains(h)||(self.managed_workers_dev&&crate::public_beta::managed_receiver_host(h)))
         {
             return Err(Error::Unavailable);
         }
@@ -210,6 +212,7 @@ impl State {
                     .ok_or(Error::Invalid)?
                     .to_string();
                 EgressPolicy {
+                    managed_workers_dev: false,
                     approved_hosts: [host].into_iter().collect(),
                 }
                 .target(&e.url)?;
@@ -233,7 +236,7 @@ impl State {
                             || p.id != p.response_hash
                             || !hex_digest(&p.id)
                             || p.expires_at_ms <= e.created_at_ms
-                            || p.expires_at_ms > s.clock_ms.saturating_add(PROOF_TTL_MS)
+                            || p.expires_at_ms > s.clock_ms.saturating_add(300_000)
                     })
                 {
                     return Err(Error::Invalid);
@@ -359,7 +362,13 @@ impl State {
         if r.attempts >= MAX_PROOFS {
             return Err(Error::Limited);
         }
-        let expires = now.checked_add(PROOF_TTL_MS).ok_or(Error::Invalid)?;
+        let expires = now
+            .checked_add(if policy.managed_workers_dev {
+                300_000
+            } else {
+                PROOF_TTL_MS
+            })
+            .ok_or(Error::Invalid)?;
         let body = format!(
             "RunLater destination proof v1\n{}",
             serde_json::to_string(&(

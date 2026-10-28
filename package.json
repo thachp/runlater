@@ -26,7 +26,8 @@
     "test:destinations": "./scripts/test-destinations.sh",
     "test:invitation-production": "./scripts/test-invitation-production.sh",
     "test:invitation-delivery": "./scripts/test-invitation-delivery.sh",
-    "test:invitation-client-v1": "node --test examples/invitation-client.v1.test.mjs"
+    "test:invitation-client-v1": "node --test examples/invitation-client.v1.test.mjs",
+    "test:public-beta": "./scripts/test-public-beta.sh"
   },
   "devDependencies": {
     "ajv": "8.20.0",

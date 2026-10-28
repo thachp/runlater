@@ -64,7 +64,9 @@ impl Envelope {
         Ok(bytes)
     }
     fn permission(&self) -> Result<Permission, Error> {
-        if crate::invitation_delivery::destination_route(&self.method, &self.path) {
+        if crate::invitation_delivery::destination_route(&self.method, &self.path)
+            || (self.method == "POST" && self.path == "/v1/callback-key")
+        {
             return Ok(Permission::ManageDestinations);
         }
         match (self.method.as_str(), self.path.as_str()) {
@@ -111,7 +113,9 @@ impl Envelope {
             return Err(Error::Invalid);
         }
         if self.method == "POST" {
-            if crate::invitation_delivery::destination_route(&self.method, &self.path) {
+            if crate::invitation_delivery::destination_route(&self.method, &self.path)
+                || (self.method == "POST" && self.path == "/v1/callback-key")
+            {
                 if !key_valid(&self.idempotency_key) {
                     return Err(Error::Invalid);
                 }

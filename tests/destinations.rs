@@ -3,6 +3,7 @@ use runlater::destinations::*;
 const URL: &str = "https://receiver-alpha.runlater.io/callback";
 fn policy() -> EgressPolicy {
     EgressPolicy {
+        managed_workers_dev: false,
         approved_hosts: ["receiver-alpha.runlater.io".into()].into_iter().collect(),
     }
 }
@@ -80,6 +81,7 @@ fn closed_policy_and_url_aliases_never_authorize_egress() {
         "receiver..runlater.io",
     ] {
         let p = EgressPolicy {
+            managed_workers_dev: false,
             approved_hosts: [host.into()].into_iter().collect(),
         };
         assert!(p.target(URL).is_err(), "invalid policy {host}");
