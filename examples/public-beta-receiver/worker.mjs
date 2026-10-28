@@ -63,7 +63,7 @@ function proofResponse(env, context, body, now) {
   if (!Array.isArray(t) || t.length !== 8 || t[0] !== 1 || t[1] !== context.project || !id(t[2])
     || !Number.isInteger(t[3]) || t[3] < 1 || t[3] > 0xffffffff || t[4] !== context.url
     || !Number.isInteger(t[5]) || t[5] < 1 || t[5] > 3 || !Number.isSafeInteger(t[6])
-    || t[6] !== p.expires_at_ms || t[6] <= now || t[6] - now > 60000 || !hex64(t[7])
+    || t[6] !== p.expires_at_ms || t[6] <= now || t[6] - now > 300000 || !hex64(t[7])
     || p.response !== PROOF_PREFIX + JSON.stringify(t)) throw Error();
   const expected = Buffer.from(VERIFY_PREFIX + JSON.stringify([t[1], t[2], t[3], p.id, t[6]]));
   if (body.length !== expected.length || !timingSafeEqual(body, expected)) return reply(403, 'proof_forbidden');
