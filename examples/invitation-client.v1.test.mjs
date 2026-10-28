@@ -271,19 +271,15 @@ test('owner-only key/token/proof storage refuses permissions, symlinks and overw
   } finally { fs.rmSync(dir, {recursive: true}); }
 });
 
-// Pinned published-alpha source bytes at the PR46 dependency; no live availability claim.
+// Preserve the legacy alpha protocol/client and local contract. Public website metadata is
+// intentionally advanced by the separately approved beta publication and tested independently.
 const publishedAlphaHashes = {
   "discovery/alpha.v1.json": "3304efdea45a6a74a2c33b13ce507a48cb6c2094f61e086697a9ffd592d89082",
   "discovery/alpha.v1.schema.json": "d20d12052511169011b4cc88a832af1b4428a2abdf1fd998067807302d14bb1e",
-  "discovery/service.v1.json": "c5f18c7fb46e74ead07472271587903297d84d9c4c8657c8e8e9b02f5546472a",
-  "discovery/pricing-status.v1.json": "b3b993c4af44e55ae00795d634dd955b4c24b3c823cce4e87e36b48fb1b5326e",
   "examples/alpha-quickstart.mjs": "8de88a85943243f0d63f94ad7eaa85c9f3bebb77675d1da1868fd7b54d4864eb",
-  "web/docs/index.html": "d3a762e0866f919581ef4d6334bd47256c32e26b314850b2c4632a213906b1c5",
-  "docs/AGENT-QUICKSTART.md": "9943f39d272807f2f08b75dccba4c0f4741840af765827b9fe404300c3ff998b",
   "docs/openapi.json": "0f6a658e18dff55ce391e75732987ca4e0f60a0f9b195793ce45aefcb533998e",
-  "scripts/discovery.mjs": "44866017edfa9dd0801a9f977dfd30df148436afd72f97f5dc41b07fc92df1b7"
 };
-test('client/guide preserve published alpha assets and source-only contract; relative guide links resolve without network', () => {
+test('client/guide preserve legacy alpha protocol assets and disabled invitation contract; relative guide links resolve without network', () => {
   for (const [name, expected] of Object.entries(publishedAlphaHashes)) assert.equal(hash(fs.readFileSync(path.join(root, name))), expected, name);
   assert.equal(contract.schema_version, 'runlater.invitation.v1');
   assert.equal(contract.availability, 'source_only_disabled'); assert.equal(contract.origin, ORIGIN);

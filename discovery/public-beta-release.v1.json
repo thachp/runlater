@@ -1,0 +1,34 @@
+{
+  "format": "runlater-public-beta-release-v1",
+  "api_origin": "https://api.runlater.io",
+  "release_id": "beta_d1894fcbe3b0",
+  "registration_opens_at_ms": 1793224210979,
+  "registration_closes_at_ms": 1793829010979,
+  "source_sha": "0b2ae466217872105039fba2ff856a3f47ceb162",
+  "callback_v2_key_metadata": {
+    "key_id": "beta_v1",
+    "introduced_revision": 1,
+    "active_from_sec": 1793224210,
+    "sign_until_sec": 1794520511,
+    "verify_until_sec": 1794520811,
+    "revoked_at_sec": null,
+    "signature_window_sec": 300
+  },
+  "receiver_restriction": "exact worker.account.workers.dev HTTPS hosts; independently verified ownership; no redirects",
+  "trial": {
+    "duration_ms": 604800000,
+    "attempt_units": 100,
+    "units_reserved_per_fresh_task": 5,
+    "lifetime_task_limit": 16,
+    "lifetime_publication_limit": 128
+  },
+  "global_lifetime_project_capacity": 10,
+  "remaining_projects_at_verification": 9,
+  "payments_enabled": false,
+  "verification": {
+    "signed_callbacks": 2,
+    "funded_settlement_fences_per_task": 1,
+    "receiver_removed": true,
+    "verified_at_ms": 1793227224415
+  }
+}

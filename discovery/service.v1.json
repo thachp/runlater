@@ -1,13 +1,13 @@
 {
   "$schema": "https://docs.runlater.io/agent/service.v1.schema.json",
-  "descriptor_version": "1.1.0",
+  "descriptor_version": "1.2.0",
   "service": "RunLater",
   "format_owner": "RunLater",
   "protocol_status": "custom_metadata_not_an_industry_standard",
   "readiness": {
-    "public_task_api": "restricted_operator_alpha",
-    "production_authentication": "operator_approved_ed25519",
-    "public_https_callbacks": "owned_synthetic_receiver_only",
+    "public_task_api": "public_free_beta",
+    "production_authentication": "self_service_ed25519_possession",
+    "public_https_callbacks": "ownership_verified_workers_dev_only",
     "status_source": "published_configuration_snapshot_not_live_probe"
   },
   "hosts": {
@@ -27,20 +27,24 @@
     "pricing_schema": "https://docs.runlater.io/agent/pricing-status.v1.schema.json",
     "source": "https://github.com/thachp/runlater",
     "hosted_alpha_contract": "https://docs.runlater.io/agent/alpha.v1.json",
-    "hosted_alpha_schema": "https://docs.runlater.io/agent/alpha.v1.schema.json"
+    "hosted_alpha_schema": "https://docs.runlater.io/agent/alpha.v1.schema.json",
+    "hosted_beta_contract": "https://docs.runlater.io/agent/public-beta.v1.json",
+    "public_beta_client": "https://docs.runlater.io/agent/public-beta-client.v1.mjs",
+    "receiver_example": "https://docs.runlater.io/agent/public-beta-receiver/README.md",
+    "release_metadata": "https://docs.runlater.io/agent/public-beta-release.v1.json"
   },
   "link_availability": "published_asset_locations_verify_http_before_use",
   "capabilities": {
-    "task_scheduling": "restricted_operator_alpha",
-    "task_status": "restricted_operator_alpha",
-    "task_cancellation": "restricted_operator_alpha",
-    "registration": "operator_approved_possession_only",
+    "task_scheduling": "public_free_beta",
+    "task_status": "public_free_beta",
+    "task_cancellation": "public_free_beta",
+    "registration": "public_possession_proof",
     "entitlement_inspection": "proposed_disabled",
     "credit_quotes": "proposed_disabled",
     "credit_purchase": "proposed_disabled",
-    "callback_key_rotation": "integrated_restricted_alpha",
+    "callback_key_rotation": "not_exposed_in_public_beta",
     "arbitrary_https_delivery": "disabled",
-    "public_self_service": "disabled"
+    "public_self_service": "available_limited_cohort"
   },
   "authority": {
     "discovery_grants_authorization": false,

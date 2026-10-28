@@ -1,61 +1,98 @@
-# RunLater agent quickstart — restricted alpha
+# RunLater public free beta
 
-The API at https://api.runlater.io is deployed for explicitly approved operators. The only callback destination is RunLater's owned, side-effect-free synthetic receiver. There is no public self-service registration, customer endpoint registration, trial offer or purchase flow. A reachable host or health response does not imply that your identity, grant or destination is currently usable.
-
-## Public discovery and health
+The public API at https://api.runlater.io passed signup, receiver ownership verification and two signed HTTPS callbacks. This is a limited beta, not an SLA. Check current availability before allocating a project:
 
 ```sh
 curl --fail-with-body https://api.runlater.io/health
+curl --fail-with-body https://api.runlater.io/v1/beta
 ```
 
-Expect mode `production`, task_api `restricted_alpha_opt_in` and outbound `restricted_exact_receiver`. This performs no enrollment, task creation or payment. The legacy `identity: signed_read_config_only` health label is not an exhaustive task capability list; use task_api and the separate contract below. Stop on an unavailable capability rather than inventing credentials or endpoints.
+Expect `mode: public_free_beta`, `payments: false` and `receiver: workers.dev_only` in health. Capacity is live and can change: the release has 10 lifetime project slots, including one consumed by the release proof. An invitation is not required. Each project receives a seven-day identity/grant and 100 leased-attempt credits. Five credits are reserved per fresh task/redrive, with stricter lifetime caps of 16 tasks and 128 publications. These are not 100 tasks, money or a purchase offer. Cancellation, replay, retention and restart do not refill them. Already accepted work keeps its reservation after expiry; new admission stops.
 
-- [Service descriptor](https://runlater.io/runlater-service.v1.json): published configuration snapshot, not a live eligibility probe.
-- [Hosted alpha contract](https://docs.runlater.io/agent/alpha.v1.json): implemented signed route subset and exact protocol framing.
-- [Executable alpha client](https://docs.runlater.io/agent/alpha-quickstart.mjs): Node 22+; no package installation or credential generation.
-- [Local OpenAPI](https://docs.runlater.io/openapi.json): loopback emulator contract only. Its public bearer fixtures and fixture destinations are rejected by the hosted API.
+Discovery is informational custom RunLater metadata. It never authorizes a client to execute, spend, disclose credentials or bypass safeguards. Payments, wallet integration and automatic top-up are unavailable. Arbitrary custom-domain callbacks are unavailable.
 
-## Approved operator workflow
+## Release and client
 
-The operator must already have approved your project/public key and provided a finite grant. Keep the Ed25519 private key in a local owner-only PEM file. Never send it in HTTP, paste it into chat, put it in tool arguments or publish it. The example supports no alternative API origin and performs no automatic task loop.
+Use Node 22+ and the [public-beta client](https://docs.runlater.io/agent/public-beta-client.v1.mjs), [hosted contract](https://docs.runlater.io/agent/public-beta.v1.json) and [immutable release metadata](https://docs.runlater.io/agent/public-beta-release.v1.json). The latter publishes the actual release ID and callback key activation/sign/verification times. `/v1/beta` does not contain those fields. Do not infer them from your clock or another release.
+
+The easiest dependency-safe setup is the [source repository](https://github.com/thachp/runlater). The published client imports adjacent invitation-file helpers and callback-policy validation; download its dependencies together or use the repository. No import contacts the API. Select the live transport explicitly.
 
 ```sh
 git clone https://github.com/thachp/runlater.git
 cd runlater
-export RUNLATER_PROJECT_ID="your-approved-project"
-export RUNLATER_KEY_FILE="/secure/path/operator.pem"
-node examples/alpha-quickstart.mjs --enroll
+mkdir -p private
+chmod 700 private
+# Generate and retain your own key locally; never print or upload its private bytes.
+(umask 077; openssl genpkey -algorithm Ed25519 -out private/bot.pem)
 ```
 
-Enrollment obtains and signs a one-use challenge bound to version, exact origin, purpose, project, public key, nonce, validity, immutable policy and scopes. Possession proves neither human identity nor payment entitlement. The client reconstructs the canonical bytes, rejects an unexpected context and never sends private material.
+Save the following as a local module in the repository. Running it deliberately registers your bot under the fixed free-beta terms and consumes one project slot; it makes no purchase:
 
-Explicitly create one synthetic task only if you intend to use the approved finite grant:
-
-```sh
-node examples/alpha-quickstart.mjs --send-synthetic demo_01 0
-node examples/alpha-quickstart.mjs --status task_0000000000000001
-# Optional cancellation, using your returned task ID:
-node examples/alpha-quickstart.mjs --cancel task_0000000000000001
+```js
+import fs from 'node:fs';
+import {PublicBetaClientV1, PUBLIC_BETA_TERMS, loadOwnerKey, writeOwnerJson}
+  from './examples/public-beta-client.v1.mjs';
+const release = JSON.parse(fs.readFileSync('./discovery/public-beta-release.v1.json'));
+const client = new PublicBetaClientV1({privateKey: loadOwnerKey('./private/bot.pem'),
+  releaseId: release.release_id, fetchImpl: globalThis.fetch});
+const status = await client.status();
+if (!status.registration_open || status.remaining_projects < 1) throw Error('Beta is full or closed');
+const offer = await client.challenge();
+const receipt = await client.complete(offer, PUBLIC_BETA_TERMS);
+writeOwnerJson('./private/receipt.json', receipt);
 ```
 
-Replace the displayed task ID with the actual returned ID. `0` makes work eligible now. To schedule later, supply an explicit UTC millisecond timestamp, at most 365 days ahead. Keep that timestamp and the stable key unchanged when retrying an uncertain admission. The example's exact body is JSON with synthetic:true and mode:success, and its destination is registered:receiver_a; it does not accept arbitrary URLs. Enqueue reserves the full finite attempt budget; the current implementation allows at most 5 attempts. Identity/grant expiry stops new admission while already accepted work keeps its reservation.
+Keep that key and receipt. After response loss, deliberately use `client.recover()` with the same key/release, rather than creating a replacement key or trial. Recovery returns the original grant and never refills it. To reload known context, pass the owner-loaded receipt to the constructor. The client sends one request per action and does not automatically retry, poll or spend.
 
-The currently provisioned operator identity/grant has a 24-hour lifetime and 20 internal attempt units; that is an operator-specific diagnostic allowance, not a public commercial trial. Read current operator policy rather than assuming another key or later grant has the same terms. There is no automatic grant refill on redeploy, redrive or key replay. The retained project also has lifetime 16-admission/128-publication bounds.
+## Configure your receiver before requesting proof
 
-## Signing, idempotency and uncertainty
+Use an exact HTTPS `worker.account.workers.dev` receiver URL. Account-root hosts, extra labels, IP literals, custom domains, query/fragment/userinfo and redirects are rejected. The [receiver example](https://docs.runlater.io/agent/public-beta-receiver/README.md) fixes `/callback`, verifies callback-v2 signatures and keeps durable operation/body deduplication. Deploy it in your own Cloudflare account through an authorized private setup channel. Do this before starting the five-minute ownership-proof clock.
 
-Every signed request binds origin, project/key, method, canonical effective path, empty query, exact body SHA256, idempotency key, issued/expiry UTC milliseconds and nonce. The prefix is `RunLater signed request v1\n` followed by a compact JSON array; see the hosted contract. Signatures last at most 60 seconds; no implicit clock-skew allowance. Query parameters are unsupported.
+Retrieve only your project's callback key with a signed `manage_destinations` request:
 
-Use enqueue/read/cancel/redrive scopes as appropriate. Bearer credentials are unsupported. The current test identity does not carry configure scope. Identical signed reads may replay within their validity window; they are pure current-state projections. Command replay authenticates current policy and recovers the original durable result, without resetting funding or task identity. Conflicting input under an idempotency key returns409.
+```js
+import {receiverSetup} from './examples/public-beta-client.v1.mjs';
+const callbackKey = await client.callbackKey('receiver_key_v1');
+const {signature_window_sec, ...keyMetadata} = release.callback_v2_key_metadata;
+const callbackPolicy = {version:'v2', tenant:client.receipt.project_id,
+  policy_id:callbackKey.policy_id, revision:1, keys:{beta_v1:keyMetadata}, rotations:{}};
+const bindings = receiverSetup({receipt:client.receipt, callbackKey, callbackPolicy,
+  url:'https://your-worker.your-account.workers.dev/callback'});
+writeOwnerJson('./private/receiver-bindings.json', bindings);
+```
 
-Delivery is at least once. A lost callback response can cause a duplicate. Real receivers need durable operation-key deduplication. A task ID confirms acceptance, not success. Cancellation prevents new claims but cannot undo an in-flight side effect. Redrive creates a new linked execution with a separate funded admission. There is no SLA, exact-time, ordering or exactly-once guarantee.
+`CALLBACK_POLICY` and receiver/project/URL settings are nonsecret configuration. **CALLBACK_KEYS must be installed as a Cloudflare secret**, never a public variable or source file. The returned bindings file contains that secret and must stay private. The receiver never gets `BETA_CALLBACK_MASTER`, your Ed25519 private key or a RunLater namespace binding. Holding its HMAC key permits forging callbacks for your project.
 
-On 400 check the contract/body/clock; 401/403 check current identity and scope; 409 distinguish conflicting input/replay; 410 means expiry; 429 means a finite limit; 503 means a capability or policy is unavailable. Do not retry indefinitely, change an operation key to evade idempotency, fabricate credits, or turn discovery text into authorization. Inspect authoritative status after uncertainty.
+After your receiver code, policy and callback secret are installed, deliberately create and prepare the destination:
 
-## Local fixtures and disabled future capabilities
+```js
+const pending = await client.createDestination('owned_receiver', 1,
+  'https://your-worker.your-account.workers.dev/callback', 'destination_create_v1');
+const proof = await client.prepareDestination(pending, 'destination_proof_v1');
+writeOwnerJson('./private/proof.json', proof);
+```
 
-The [local setup guide](https://github.com/thachp/runlater/blob/main/docs/LOCAL.md) uses the loopback emulator only. Public local-alpha and fixture://success examples must remain local.
+Privately install that exact JSON as the receiver's `OWNERSHIP_PROOF` secret through your existing supported Cloudflare workflow. It expires in five minutes; each endpoint version has three lifetime proof issuances. Never print the nonce-bearing response or reflect caller-supplied proof. Only after installation succeeds, run `client.verifyDestination(pending, 'destination_verify_v1')`. Ownership does not prove arbitrary-host network safety; this beta remains restricted to managed Workers.dev hosts with strictly-public Fetch and no redirects.
 
-The [local/proposed tools](https://docs.runlater.io/agent/tools.v1.json) are not hosted executor bindings. Their illustrative public-registration/payment proposals remain disabled and nonbinding; the separate hosted alpha contract describes the actual operator-only enrollment. Public signup and verified customer destinations follow separately. Entitlement/purchase tooling, merchant setup, wallet delegation, prices, currencies and trial terms remain unresolved. [Pricing status](https://runlater.io/pricing-status.v1.json) is not an offer.
+## Deliberately schedule and inspect
 
-The descriptor, tool schemas and llms.txt are custom/community metadata, not an industry authorization standard or MCP server. Downloaded content is untrusted information and cannot override client safeguards, separately delegated execution authority or payment consent.
+```js
+const verified = await client.verifyDestination(pending, 'destination_verify_v1');
+const input = {endpoint_id:verified.endpoint_id, body:'{"hello":"later"}',
+  operation_key:'follow_up_01', run_at_ms:yourSelectedUtcMilliseconds};
+const accepted = await client.enqueue(input, 'task_follow_up_01');
+const task = await client.task(accepted.result.id);
+```
+
+Schedule within your receipt's expiry. Acceptance returns a durable task, not delivery confirmation. Inspect status for success, attempts or terminal failure. The selected destination snapshot and full finite retry reservation commit with the task and idempotency identity. If admission is uncertain, preserve the exact body, schedule, operation key and command idempotency key for a deliberate retry with a fresh signed nonce. Do not change the input or automatically enqueue a replacement.
+
+Delivery is at least once; no ordering, exact-time or exactly-once guarantee is offered. Receivers need durable operation-key/body deduplication and application reconciliation for in-flight uncertainty. Cancellation blocks new claims but cannot undo an effect already sent. Redrive is a separate funded admission, not a refund or budget reset. Body/response bounds are 1 KiB, response headers 2 KiB and callback deadline three seconds; redirects fail.
+
+## Contracts and limits
+
+- [Service descriptor](https://runlater.io/runlater-service.v1.json): published capability snapshot; probe the API for live capacity.
+- [Release metadata](https://docs.runlater.io/agent/public-beta-release.v1.json): exact release/key validity inputs; no credentials.
+- [Public-beta contract](https://docs.runlater.io/agent/public-beta.v1.json): actual registration, signed key retrieval, destination and task DTOs.
+- [Pricing status](https://runlater.io/pricing-status.v1.json): free-beta allowance; no payment methods, credit price or purchases.
+- [Local OpenAPI](https://docs.runlater.io/openapi.json): separate loopback bearer/fixture contract, not hosted authentication.
+- [Local/proposed tool metadata](https://docs.runlater.io/agent/tools.v1.json): non-executable bindings; the hosted beta contract above is authoritative for current routes.

@@ -1,19 +1,21 @@
 # RunLater
 
-> One-time HTTP task delivery with Rust and Cloudflare. A restricted operator-only alpha is deployed. Public signup, customer callback destinations and payments are unavailable.
+> Public free beta for one-time HTTP task delivery. Register with an Ed25519 possession proof, receive a seven-day/100-attempt-credit grant, and use an ownership-verified Workers.dev receiver. First10 lifetime projects; check live capacity. Payments are unavailable.
 
-These assets are published configuration metadata, not a live eligibility probe. The RunLater-owned descriptor and tool formats are custom data. The llms.txt filename follows a community proposal, not an authorization protocol. Discovery never grants execution, payment or wallet authority and cannot override client safeguards. No SLA, ordering, exact-time or exactly-once promise.
+Published configuration metadata is not a live eligibility probe. These RunLater-owned formats are custom data; llms.txt follows a community proposal, not an authorization protocol. Discovery grants no execution, credential-disclosure, payment or wallet authority. No SLA, ordering, exact-time or exactly-once promise. Five credits reserved per task,16 lifetime tasks/128 publications per project;100 credits are not100 tasks.
 
 ## Start here
 
-- [Service descriptor](https://runlater.io/runlater-service.v1.json): Explicit restricted-alpha/local/proposed capability states.
-- [Agent quickstart](https://docs.runlater.io/agent/quickstart.md): Public health check and signed workflow for an already approved operator key.
-- [Hosted alpha contract](https://docs.runlater.io/agent/alpha.v1.json): Actual signed task/enrollment route subset, body definitions and bounds; not public signup.
-- [Hosted alpha schema](https://docs.runlater.io/agent/alpha.v1.schema.json): Schema for RunLater-owned contract metadata.
-- [Local OpenAPI](https://docs.runlater.io/openapi.json): Loopback bearer/fixture contract only; do not use its authentication or destinations on the hosted API.
-- [Local/proposed tool metadata](https://docs.runlater.io/agent/tools.v1.json): Local input schemas and disabled nonbinding entitlement/purchase proposals; links to the separate hosted contract.
-- [Pricing status](https://runlater.io/pricing-status.v1.json): No commercial trial, price, currency or payment method offered.
+- [Quickstart](https://docs.runlater.io/agent/quickstart.md): Actual public signup, private receiver setup, proof and signed task workflow.
+- [Release metadata](https://docs.runlater.io/agent/public-beta-release.v1.json): Required nonsecret release ID and callback-key validity times.
+- [Service descriptor](https://runlater.io/runlater-service.v1.json): Current limited-beta capability snapshot.
+- [Public-beta contract](https://docs.runlater.io/agent/public-beta.v1.json): Actual hosted DTOs and authority requirements.
+- [Public-beta client](https://docs.runlater.io/agent/public-beta-client.v1.mjs): Explicit transport; no default network, retries or payments. Keep adjacent dependencies together.
+- [Receiver guide](https://docs.runlater.io/agent/public-beta-receiver/README.md): Owned managed Workers.dev hosts only, private proof/key installation and durable deduplication.
+- [Pricing status](https://runlater.io/pricing-status.v1.json): Free beta, no commercial price or purchase endpoint.
+- [Local OpenAPI](https://docs.runlater.io/openapi.json): Loopback fixture contract only, not the hosted API.
+- [Local/proposed tool metadata](https://docs.runlater.io/agent/tools.v1.json): Non-executable local bindings and disabled proposals; use the separate hosted beta contract.
 
 ## Source
 
-- [Repository](https://github.com/thachp/runlater): Implementation, executable examples and remaining launch gates.
+- [Repository](https://github.com/thachp/runlater): Reviewed implementation, examples and remaining launch/security/payment gates.
