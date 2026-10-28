@@ -184,21 +184,29 @@ impl Registry {
         Ok(t)
     }
     /// Call only on the fixed registry object. Invalid input/rate denial cannot choose a project DO.
-    pub fn resolve(&mut self, id: &str, now: i64) -> Result<Ticket, Error> {
+    fn rate(&mut self, now: i64) -> Result<(), Error> {
         self.time(now)?;
-        let p = self.policy.as_ref().ok_or(Error::Closed)?;
-        if p.terms.is_none() {
-            return Err(Error::Closed);
-        }
+        let limit = self
+            .policy
+            .as_ref()
+            .ok_or(Error::Closed)?
+            .requests_per_minute;
         let bucket = now / 60_000;
         if bucket != self.bucket {
             self.bucket = bucket;
             self.requests = 0
         }
-        if self.requests >= p.requests_per_minute {
+        if self.requests >= limit {
             return Err(Error::Limited);
         }
         self.requests += 1;
+        Ok(())
+    }
+    pub fn resolve(&mut self, id: &str, now: i64) -> Result<Ticket, Error> {
+        self.rate(now)?;
+        if self.policy.as_ref().is_none_or(|p| p.terms.is_none()) {
+            return Err(Error::Closed);
+        }
         let t = self.tickets.get(id).ok_or(Error::Forbidden)?;
         if t.revoked {
             return Err(Error::Forbidden);
@@ -207,6 +215,15 @@ impl Registry {
             return Err(Error::Expired);
         }
         Ok(t.clone())
+    }
+    /// Routing only, after the fixed global gate; proof and revocation are checked in the project.
+    /// Recovery of an enrolled identity does not require an unexpired invitation or new grant terms.
+    pub fn route_existing(&mut self, project: &str, now: i64) -> Result<(), Error> {
+        self.rate(now)?;
+        if !self.projects.contains(project) {
+            return Err(Error::Forbidden);
+        }
+        Ok(())
     }
     pub fn revoke(&mut self, id: &str, now: i64) -> Result<Ticket, Error> {
         self.time(now)?;
@@ -462,6 +479,39 @@ impl Enrollment {
         *self = next;
         Ok(receipt)
     }
+    /// Authoritative project barrier for a registry revocation; retrying cannot reopen the grant.
+    pub fn revoke(&mut self, t: &Ticket, now: i64) -> Result<(), Error> {
+        if !t.revoked {
+            return Err(Error::Invalid);
+        }
+        let mut next = self.clone();
+        match next.ticket(t, now) {
+            Err(Error::Forbidden) => {}
+            Err(e) => return Err(e),
+            Ok(()) => return Err(Error::Invalid),
+        }
+        if let Some(r) = &next.receipt {
+            next.project
+                .catalog
+                .revoke_invitation(&r.project_id, &r.public_key, now)
+                .map_err(|_| Error::Forbidden)?;
+            next.project
+                .funding
+                .apply(
+                    &funding::Policy {
+                        version: 1,
+                        project_id: r.project_id.clone(),
+                        revision: 2,
+                        active_grant: None,
+                        revoked_grants: vec![r.grant_id.clone()],
+                    },
+                    now,
+                )
+                .map_err(|_| Error::Conflict)?;
+        }
+        *self = next;
+        Ok(())
+    }
     /// Pure recovery projection; no expiry extension, nonce consumption or registry acknowledgement.
     pub fn recover(
         &self,
@@ -472,7 +522,9 @@ impl Enrollment {
         signature: &str,
         now: i64,
     ) -> Result<Receipt, Error> {
-        if now < self.clock_ms
+        if self.version != 1
+            || self.mode != Mode::Invitation
+            || now < self.clock_ms
             || issued > now
             || issued < 0
             || expires <= now
@@ -483,6 +535,7 @@ impl Enrollment {
         }
         let r = self.receipt.as_ref().ok_or(Error::Forbidden)?;
         if r.public_key != key
+            || !r.permissions.contains(&Permission::Read)
             || now >= r.expires_at_ms
             || self.ticket.as_ref().is_none_or(|t| t.revoked)
         {

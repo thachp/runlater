@@ -235,3 +235,82 @@ fn challenge_capacity_expiry_and_immutable_ticket_are_bounded() {
         Some(Error::Expired)
     );
 }
+#[test]
+fn revocation_retires_only_unused_units_and_replay_never_refills_reserved_work() {
+    let t = ticket();
+    let mut e = Enrollment::new(Mode::Invitation);
+    let c = e.challenge(&t, &pk(7), &"a".repeat(64), 2).unwrap();
+    let r = e.complete(&t, &c.id().unwrap(), &proof(&c, 7), 3).unwrap();
+    let (task, _) = e
+        .project
+        .ledger
+        .create(
+            "accepted",
+            runlater::core::Create {
+                destination: "fixture://success".into(),
+                body: "fixture".into(),
+                operation_key: "op".into(),
+                run_at_ms: 0,
+            },
+            4,
+        )
+        .unwrap();
+    e.project
+        .funding
+        .reserve(&t.project_id, &task.id, 4)
+        .unwrap();
+    assert_eq!(e.project.funding.grant(&r.grant_id).unwrap().available, 15);
+    assert_eq!(
+        e.complete(&t, &c.id().unwrap(), &proof(&c, 7), 5).unwrap(),
+        r
+    );
+    assert_eq!(e.project.funding.grant(&r.grant_id).unwrap().available, 15);
+    let mut revoked = t.clone();
+    revoked.revoked = true;
+    e.revoke(&revoked, 6).unwrap();
+    let g = e.project.funding.grant(&r.grant_id).unwrap();
+    assert_eq!((g.available, g.reserved, g.retired), (0, 5, 15));
+    let mut e: Enrollment = restart(&e);
+    e.revoke(&revoked, 7).unwrap();
+    let g = e.project.funding.grant(&r.grant_id).unwrap();
+    assert_eq!((g.available, g.reserved, g.retired), (0, 5, 15));
+    assert!(e
+        .project
+        .catalog
+        .authorize(&t.project_id, &pk(7), Permission::Read, 7)
+        .is_err());
+    e.project.funding.validate().unwrap();
+}
+#[test]
+fn closed_new_admission_keeps_known_project_recovery_routing_and_receipts_require_read_scope() {
+    let mut reg = Registry::default();
+    reg.apply(&policy(), 0).unwrap();
+    let t = reg.issue(&digest(b"fixture"), 100, 1).unwrap();
+    let mut p = policy();
+    p.revision = 2;
+    p.terms = None;
+    reg.apply(&p, 2).unwrap();
+    assert_eq!(reg.resolve(&t.id, 3), Err(Error::Closed));
+    assert!(reg.route_existing(&t.project_id, 101).is_ok());
+    assert_eq!(reg.route_existing("foreign", 101), Err(Error::Forbidden));
+    let mut only = ticket();
+    only.terms.permissions = [Permission::Enqueue].into_iter().collect();
+    let mut e = Enrollment::new(Mode::Invitation);
+    let c = e.challenge(&only, &pk(7), &"b".repeat(64), 2).unwrap();
+    let r = e
+        .complete(&only, &c.id().unwrap(), &proof(&c, 7), 3)
+        .unwrap();
+    let nonce = "c".repeat(64);
+    let wire = Enrollment::recovery_bytes(&r.project_id, &pk(7), &nonce, 4, 60004).unwrap();
+    assert_eq!(
+        e.recover(
+            &pk(7),
+            &nonce,
+            4,
+            60004,
+            &hex::encode(key(7).sign(&wire).to_bytes()),
+            5
+        ),
+        Err(Error::Forbidden)
+    );
+}

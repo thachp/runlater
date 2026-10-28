@@ -357,6 +357,20 @@ impl Catalog {
         *self = next;
         Ok(identity)
     }
+    pub(crate) fn revoke_invitation(
+        &mut self,
+        project: &str,
+        key: &str,
+        now: i64,
+    ) -> Result<(), Error> {
+        if self.project_id != project {
+            return Err(Error::Forbidden);
+        }
+        self.time(now)?;
+        self.project_revoked = true;
+        self.revoked_keys.insert(key.into());
+        Ok(())
+    }
     pub fn identity_view(
         &self,
         project: &str,
