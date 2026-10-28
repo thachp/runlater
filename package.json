@@ -8,7 +8,7 @@
     "test:contract": "./scripts/build.sh && node scripts/contract.mjs",
     "example:local": "node examples/quickstart.mjs",
     "test:runtime-recovery": "./scripts/test-runtime-recovery.sh",
-    "test:callback-wire": "node --test examples/callback-rotation.test.mjs",
+    "test:callback-wire": "node --test examples/callback-rotation.test.mjs examples/public-beta-receiver/worker.test.mjs",
     "test:metrics-local": "./scripts/build.sh && node scripts/metrics-integration.mjs",
     "test:transport-local": "./scripts/test-transport.sh",
     "test:pause-local": "./scripts/test-pause.sh",
@@ -26,7 +26,8 @@
     "test:destinations": "./scripts/test-destinations.sh",
     "test:invitation-production": "./scripts/test-invitation-production.sh",
     "test:invitation-delivery": "./scripts/test-invitation-delivery.sh",
-    "test:invitation-client-v1": "node --test examples/invitation-client.v1.test.mjs"
+    "test:invitation-client-v1": "node --test examples/invitation-client.v1.test.mjs",
+    "test:public-beta-receiver": "npm run test:callback-wire"
   },
   "devDependencies": {
     "ajv": "8.20.0",
