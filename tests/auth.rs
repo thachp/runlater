@@ -486,3 +486,18 @@ fn actor_authority_is_bound_to_project_even_with_coincident_key_ids() {
         Err(Fault::Forbidden)
     ));
 }
+
+#[test]
+fn legacy_bootstrap_never_inherits_invitation_destination_scope() {
+    let (mut ring, admin) = fixture();
+    assert_eq!(Permission::all().len(), 6);
+    assert!(!admin.permissions.contains(&Permission::ManageDestinations));
+    assert_eq!(
+        ring.command(
+            &admin,
+            KeyCommand::Create(spec("destination_admin", &[Permission::ManageDestinations])),
+            100
+        ),
+        Err(Fault::Forbidden)
+    );
+}

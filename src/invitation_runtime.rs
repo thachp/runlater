@@ -1,4 +1,6 @@
-//! Explicit invitation mode; defaults closed. Fixture controls are compiled only for loopback tests.
+#[path = "invitation_transport.rs"]
+pub(crate) mod delivery_transport;
+// Explicit invitation mode; defaults closed.
 use crate::invitation::{self as inv, Enrollment, Mode, Policy, Registry, Ticket};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -43,7 +45,25 @@ struct Count {
 struct Row {
     data: String,
 }
-fn load<T: DeserializeOwned>(state: &State) -> Result<Option<T>> {
+trait Checked {
+    fn checked(&self) -> Result<()>;
+}
+impl Checked for Registry {
+    fn checked(&self) -> Result<()> {
+        Ok(())
+    }
+}
+impl Checked for Enrollment {
+    fn checked(&self) -> Result<()> {
+        if self.version != 1 {
+            return Err(Error::RustError("Unknown enrollment schema".into()));
+        }
+        self.outbound
+            .validate(self.project_id())
+            .map_err(|_| Error::RustError("Invalid invitation outbound state".into()))
+    }
+}
+fn load<T: DeserializeOwned + Checked>(state: &State) -> Result<Option<T>> {
     let sql = state.storage().sql();
     let c:Vec<Count>=sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='invitation_snapshot'",None)?.to_array()?;
     if c.first().is_some_and(|r| r.n == 0) {
@@ -59,9 +79,11 @@ fn load<T: DeserializeOwned>(state: &State) -> Result<Option<T>> {
     if s.version != 1 {
         return Err(Error::RustError("Unknown invitation snapshot".into()));
     }
+    s.data.checked()?;
     Ok(Some(s.data))
 }
-fn save<T: Serialize>(state: &State, value: &T) -> Result<()> {
+fn save<T: Serialize + Checked>(state: &State, value: &T) -> Result<()> {
+    value.checked()?;
     let sql = state.storage().sql();
     sql.exec("CREATE TABLE IF NOT EXISTS invitation_snapshot(id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL)",None)?;
     sql.exec("INSERT INTO invitation_snapshot(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",vec![serde_json::to_string(&Stored{version:1,data:value})?.into()])?;
@@ -282,7 +304,7 @@ fn decimal(v: &str) -> Option<i64> {
     }
 }
 fn task_result(v: serde_json::Value) -> Result<Response> {
-    let status = v["result"]["status"].as_u64().unwrap_or(200) as u16;
+    let status = if v["created"] == true { 201 } else { 200 };
     json_response(&v, status)
 }
 fn task_error(e: crate::funded_tasks::Error) -> Result<Response> {
@@ -376,12 +398,18 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
         return json_response(&json!({"error":"not_found"}), 404);
     }
     if req.method() == Method::Get && req.path() == "/health" {
+        let enabled = env
+            .var("INVITATION_DELIVERY_ENABLED")
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+            == "operator-approved";
         return json_response(
-            &json!({"mode":"invitation","fresh_task_admission":"unavailable","outbound":"disabled"}),
+            &json!({"mode":"invitation","fresh_task_admission":if enabled{"conditional_operator_opt_in"}else{"unavailable"},"outbound":if enabled{"operator_allowlist_required"}else{"disabled"}}),
             200,
         );
     }
-    if crate::funded_tasks::route(req.method().as_ref(), &req.path()).is_some()
+    if crate::invitation_delivery::destination_route(req.method().as_ref(), &req.path())
+        || crate::funded_tasks::route(req.method().as_ref(), &req.path()).is_some()
         || (req.method() == Method::Get
             && matches!(req.path().as_str(), "/v1/identity/me" | "/v1/queue"))
     {
@@ -650,6 +678,10 @@ impl DurableObject for InvitationProject {
     fn new(state: State, env: Env) -> Self {
         Self { state, env }
     }
+    async fn alarm(&self) -> Result<Response> {
+        self.pump().await?;
+        Response::from_json(&json!({"alarm":true}))
+    }
     async fn fetch(&self, mut req: Request) -> Result<Response> {
         if !guard(&self.env) {
             return rejected(inv::Error::Forbidden);
@@ -668,6 +700,10 @@ impl DurableObject for InvitationProject {
         let value: Value = req.json().await?;
         let mut s: Enrollment =
             load(&self.state)?.unwrap_or_else(|| Enrollment::new(Mode::Invitation));
+        if req.path() == "/deliver" {
+            let d: crate::core::Dispatch = serde_json::from_value(value)?;
+            return self.deliver(&project, d).await;
+        }
         if req.path() == "/signed" {
             let input: Signed = serde_json::from_value(value)?;
             if input.ticket.project_id != project || input.envelope.project_id != project {
@@ -692,6 +728,9 @@ impl DurableObject for InvitationProject {
                     Ok(v) => task_result(v),
                     Err(e) => task_error(e),
                 };
+            }
+            if self.env.var("INVITATION_DELIVERY_ENABLED").is_ok() {
+                return self.signed_delivery(s, input, raw).await;
             }
             // Fresh production admission is deliberately unavailable until registered delivery is integrated.
             let ready = cfg!(feature = "invitation-tests");

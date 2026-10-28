@@ -34,7 +34,11 @@ fn allowed(p: &BTreeSet<Permission>) -> bool {
         && p.iter().all(|p| {
             matches!(
                 p,
-                Permission::Enqueue | Permission::Read | Permission::Cancel | Permission::Redrive
+                Permission::Enqueue
+                    | Permission::Read
+                    | Permission::Cancel
+                    | Permission::Redrive
+                    | Permission::ManageDestinations
             )
         })
 }
@@ -316,6 +320,8 @@ pub struct Enrollment {
     pub version: u8,
     pub mode: Mode,
     pub project: Project,
+    #[serde(default)]
+    pub(crate) outbound: crate::invitation_delivery::State,
     ticket: Option<Ticket>,
     pending: BTreeMap<String, Pending>,
     receipt: Option<Receipt>,
@@ -323,7 +329,7 @@ pub struct Enrollment {
     clock_ms: i64,
 }
 impl Enrollment {
-    fn identity_policy(&self) -> Result<identity::Policy, identity::Error> {
+    pub(crate) fn identity_policy(&self) -> Result<identity::Policy, identity::Error> {
         let r = self.receipt.as_ref().ok_or(identity::Error::Forbidden)?;
         if self.version != 1
             || self.mode != Mode::Invitation
@@ -400,12 +406,16 @@ impl Enrollment {
             version: 1,
             mode,
             project: Project::default(),
+            outbound: Default::default(),
             ticket: None,
             pending: BTreeMap::new(),
             receipt: None,
             consumed_proof: None,
             clock_ms: 0,
         }
+    }
+    pub(crate) fn project_id(&self) -> Option<&str> {
+        self.receipt.as_ref().map(|r| r.project_id.as_str())
     }
     fn time(&mut self, now: i64) -> Result<(), Error> {
         if self.version != 1 || now < 0 || now < self.clock_ms {

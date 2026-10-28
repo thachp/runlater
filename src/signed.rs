@@ -64,6 +64,9 @@ impl Envelope {
         Ok(bytes)
     }
     fn permission(&self) -> Result<Permission, Error> {
+        if crate::invitation_delivery::destination_route(&self.method, &self.path) {
+            return Ok(Permission::ManageDestinations);
+        }
         match (self.method.as_str(), self.path.as_str()) {
             ("GET", "/v1/queue" | "/v1/identity/me") => Ok(Permission::Read),
             ("PUT", "/v1/queue") => Ok(Permission::Configure),
@@ -108,12 +111,19 @@ impl Envelope {
             return Err(Error::Invalid);
         }
         if self.method == "POST" {
-            match crate::funded_tasks::route(&self.method, &self.path) {
-                Some(crate::funded_tasks::Route::Cancel(_)) if self.idempotency_key.is_empty() => {}
-                Some(
-                    crate::funded_tasks::Route::Create | crate::funded_tasks::Route::Redrive(_),
-                ) if key_valid(&self.idempotency_key) => {}
-                _ => return Err(Error::Invalid),
+            if crate::invitation_delivery::destination_route(&self.method, &self.path) {
+                if !key_valid(&self.idempotency_key) {
+                    return Err(Error::Invalid);
+                }
+            } else {
+                match crate::funded_tasks::route(&self.method, &self.path) {
+                    Some(crate::funded_tasks::Route::Cancel(_))
+                        if self.idempotency_key.is_empty() => {}
+                    Some(
+                        crate::funded_tasks::Route::Create | crate::funded_tasks::Route::Redrive(_),
+                    ) if key_valid(&self.idempotency_key) => {}
+                    _ => return Err(Error::Invalid),
+                }
             }
         }
         catalog.authorize(&self.project_id, &self.public_key, self.permission()?, now)?;
