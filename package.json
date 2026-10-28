@@ -13,7 +13,8 @@
     "test:transport-local": "./scripts/test-transport.sh",
     "test:pause-local": "./scripts/test-pause.sh",
     "build:discovery": "node scripts/discovery.mjs",
-    "test:discovery": "node --test scripts/discovery.test.mjs"
+    "test:discovery": "node --test scripts/discovery.test.mjs",
+    "test:production-identity": "./scripts/test-production-identity.sh"
   },
   "devDependencies": {
     "ajv": "8.20.0",
