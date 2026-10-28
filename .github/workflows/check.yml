@@ -28,3 +28,4 @@ jobs:
       - run: npm run test:metrics-local
       - run: npm run test:transport-local
       - run: npm run test:pause-local
+      - run: npm run test:production-identity

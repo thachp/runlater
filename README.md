@@ -205,3 +205,5 @@ The local prototype also supports [diagnostic dead-letter reconciliation](docs/T
 [Durable default-queue pause/resume](docs/PAUSE.md) gates new claims while preserving accepted work, in-flight outcomes and original retry-age budgets.
 
 [Agent discovery source](docs/AGENT-DISCOVERY.md) describes local task tools and explicitly disabled onboarding/funding proposals. Static artifact generation does not deploy a service or authorize execution/payment.
+
+A separate [production identity source profile](docs/PRODUCTION-IDENTITY.md) provides offline-tested operator-approved possession enrollment. It is not activated and cannot accept tasks, issue production credentials or simulate delivery.
