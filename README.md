@@ -207,3 +207,5 @@ The local prototype also supports [diagnostic dead-letter reconciliation](docs/T
 [Agent discovery source](docs/AGENT-DISCOVERY.md) describes local task tools and explicitly disabled onboarding/funding proposals. Static artifact generation does not deploy a service or authorize execution/payment.
 
 A separate [production identity source profile](docs/PRODUCTION-IDENTITY.md) provides offline-tested operator-approved possession enrollment. It is not activated and cannot accept tasks, issue production credentials or simulate delivery.
+
+The production source profile also has [signed reads and configuration](docs/SIGNED-REQUESTS.md), with atomic command receipts and pure replayable reads. Unfunded task admission remains disabled.

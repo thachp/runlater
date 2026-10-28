@@ -1,5 +1,8 @@
 //! Production-only boundary. Enrollment is operator-approved; task acceptance/delivery remains disabled.
-use crate::identity::{self, Catalog, Policy};
+use crate::{
+    identity::{self, Policy},
+    signed::{Envelope, Project},
+};
 use serde::Deserialize;
 use serde_json::json;
 use worker::{
@@ -58,7 +61,7 @@ fn policies(env: &Env) -> std::result::Result<Vec<Policy>, ()> {
     env.durable_object("IDENTITIES").map_err(|_| ())?;
     Ok(list)
 }
-async fn body(req: &mut Request) -> Result<Option<serde_json::Value>> {
+async fn bytes(req: &mut Request, limit: usize) -> Result<Option<Vec<u8>>> {
     use futures_util::{
         future::{select, Either},
         pin_mut, StreamExt,
@@ -70,13 +73,13 @@ async fn body(req: &mut Request) -> Result<Option<serde_json::Value>> {
             while let Some(part) = stream.next().await {
                 let part = part?;
                 chunks += 1;
-                if chunks > 32 || bytes.len() + part.len() > 2048 {
+                if chunks > 32 || bytes.len() + part.len() > limit {
                     return Ok(None);
                 }
                 bytes.extend(part);
             }
         }
-        Ok::<_, worker::Error>(serde_json::from_slice(&bytes).ok())
+        Ok::<_, worker::Error>(Some(bytes))
     };
     let deadline = Delay::from(std::time::Duration::from_secs(5));
     pin_mut!(reader, deadline);
@@ -84,6 +87,114 @@ async fn body(req: &mut Request) -> Result<Option<serde_json::Value>> {
         Either::Left((result, _)) => result,
         Either::Right(_) => Ok(None),
     }
+}
+async fn body(req: &mut Request) -> Result<Option<serde_json::Value>> {
+    Ok(bytes(req, 2048)
+        .await?
+        .and_then(|b| serde_json::from_slice(&b).ok()))
+}
+#[derive(serde::Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SignedInput {
+    envelope: Envelope,
+    signature: String,
+    body_hex: String,
+}
+fn signed_error(e: identity::Error) -> Result<Response> {
+    let (code, status) = match e {
+        identity::Error::Invalid => ("request_invalid", 400),
+        identity::Error::Forbidden => ("request_forbidden", 403),
+        identity::Error::Conflict => ("request_conflict", 409),
+        identity::Error::Expired => ("request_expired", 410),
+        identity::Error::Limited => ("request_limit", 429),
+        identity::Error::ClockRegressed => ("request_clock_unavailable", 503),
+    };
+    response(code, status)
+}
+fn decimal(value: &str) -> Option<i64> {
+    let n = value.parse::<i64>().ok()?;
+    if n >= 0 && n.to_string() == value {
+        Some(n)
+    } else {
+        None
+    }
+}
+async fn signed_forward(req: &mut Request, env: &Env, list: &[Policy]) -> Result<Response> {
+    let Some(project) = req.headers().get("RunLater-Project-Id")? else {
+        return response("request_signature_required", 401);
+    };
+    if !list.iter().any(|p| p.project_id == project) {
+        return response("request_forbidden", 403);
+    }
+    let public_key = req
+        .headers()
+        .get("RunLater-Public-Key")?
+        .unwrap_or_default();
+    let signature = req
+        .headers()
+        .get("RunLater-Request-Signature")?
+        .unwrap_or_default();
+    let nonce = req.headers().get("RunLater-Nonce")?.unwrap_or_default();
+    let Some(issued) = req
+        .headers()
+        .get("RunLater-Issued-At")?
+        .and_then(|v| decimal(&v))
+    else {
+        return response("request_invalid", 400);
+    };
+    let Some(expires) = req
+        .headers()
+        .get("RunLater-Expires-At")?
+        .and_then(|v| decimal(&v))
+    else {
+        return response("request_invalid", 400);
+    };
+    if req.method() == Method::Put
+        && req
+            .headers()
+            .get("Content-Type")?
+            .as_deref()
+            .and_then(|v| v.split(';').next())
+            != Some("application/json")
+    {
+        return response("json_required", 415);
+    }
+    let Some(body) = bytes(req, 2048).await? else {
+        return response("invalid_or_oversized_signed_body", 400);
+    };
+    let envelope = Envelope {
+        version: 1,
+        origin: identity::ORIGIN.into(),
+        project_id: project.clone(),
+        public_key,
+        method: req.method().to_string(),
+        path: req.path(),
+        query: String::new(),
+        body_sha256: crate::security::digest(&body),
+        idempotency_key: req.headers().get("Idempotency-Key")?.unwrap_or_default(),
+        issued_at_ms: issued,
+        expires_at_ms: expires,
+        nonce,
+    };
+    let input = SignedInput {
+        envelope,
+        signature,
+        body_hex: hex::encode(body),
+    };
+    let ns = env.durable_object("IDENTITIES")?;
+    let stub = ns.id_from_name(&project)?.get_stub()?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_body(Some(serde_json::to_string(&input)?.into()));
+    let mut forwarded = Request::new_with_init("https://identity/signed", &init)?;
+    forwarded.headers_mut()?.set("x-project", &project)?;
+    let result = stub.fetch_with_request(forwarded).await?;
+    let headers = Headers::new();
+    for (key, value) in result.headers().entries() {
+        headers.append(&key, &value)?;
+    }
+    headers.set("Cache-Control", "no-store")?;
+    Ok(result.with_headers(headers))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -142,8 +253,13 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
     let path = req.path();
     if req.method() == Method::Get && path == "/health" {
         return Response::from_json(
-            &json!({"mode":"production","identity":"operator_approved_enrollment_only","task_api":"unavailable","outbound":"disabled"}),
+            &json!({"mode":"production","identity":"signed_read_config_only","task_api":"unavailable","outbound":"disabled"}),
         );
+    }
+    if (path == "/v1/queue" && matches!(req.method(), Method::Get | Method::Put))
+        || (path == "/v1/identity/me" && req.method() == Method::Get)
+    {
+        return signed_forward(&mut req, &env, &list).await;
     }
     if !matches!(
         path.as_str(),
@@ -204,7 +320,7 @@ pub struct ProjectIdentity {
     env: Env,
 }
 impl ProjectIdentity {
-    fn load(&self) -> Result<Catalog> {
+    fn load(&self) -> Result<Project> {
         let sql = self.state.storage().sql();
         #[derive(Deserialize)]
         struct Count {
@@ -212,17 +328,18 @@ impl ProjectIdentity {
         }
         let exists:Vec<Count>=sql.exec("SELECT count(*) AS count FROM sqlite_master WHERE type='table' AND name='identity_catalog'",None)?.to_array()?;
         if exists.first().is_none_or(|n| n.count == 0) {
-            return Ok(Catalog::default());
+            return Ok(Project::default());
         }
         let rows: Vec<Row> = sql
             .exec("SELECT data FROM identity_catalog WHERE id=1", None)?
             .to_array()?;
         match rows.first() {
-            Some(r) => Ok(serde_json::from_str(&r.data)?),
-            None => Ok(Catalog::default()),
+            Some(r) => Project::decode(serde_json::from_str(&r.data)?)
+                .map_err(|_| Error::RustError("Invalid project state".into())),
+            None => Ok(Project::default()),
         }
     }
-    fn save(&self, c: &Catalog) -> Result<()> {
+    fn save(&self, c: &Project) -> Result<()> {
         let sql = self.state.storage().sql();
         sql.exec("CREATE TABLE IF NOT EXISTS identity_catalog(id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL)",None)?;
         sql.exec("INSERT INTO identity_catalog(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",vec![serde_json::to_string(c)?.into()])?;
@@ -251,16 +368,61 @@ impl DurableObject for ProjectIdentity {
         let Some(policy) = list.iter().find(|p| p.project_id == project) else {
             return response("identity_forbidden", 403);
         };
+        if req.path() == "/signed" {
+            if req.method() != Method::Post {
+                return response("method_not_supported", 405);
+            }
+            let Some(raw) = bytes(&mut req, 8192).await? else {
+                return response("invalid_signed_input", 400);
+            };
+            let input: SignedInput = match serde_json::from_slice(&raw) {
+                Ok(v) => v,
+                Err(_) => return response("invalid_signed_input", 400),
+            };
+            if input.envelope.project_id != project {
+                return response("request_forbidden", 403);
+            }
+            let raw_body = match hex::decode(&input.body_hex) {
+                Ok(v) if v.len() <= 2048 => v,
+                _ => return response("invalid_signed_input", 400),
+            };
+            let mut stored = self.load()?;
+            if input.envelope.method == "GET" {
+                return match stored.query(
+                    policy,
+                    &input.envelope,
+                    &input.signature,
+                    &raw_body,
+                    now(),
+                ) {
+                    Ok(v) => Response::from_json(&v),
+                    Err(e) => signed_error(e),
+                };
+            }
+            // Persist monotonic policy independently; effect + nonce + receipt share the final upsert.
+            if let Err(e) = stored.catalog.apply_policy(policy, now()) {
+                return signed_error(e);
+            }
+            self.save(&stored)?;
+            let result =
+                stored.command(policy, &input.envelope, &input.signature, &raw_body, now());
+            self.save(&stored)?;
+            return match result {
+                Ok(v) => Response::from_json(&v),
+                Err(e) => signed_error(e),
+            };
+        }
         let Some(value) = body(&mut req).await? else {
             return response("invalid_or_oversized_identity_body", 400);
         };
         // All awaits precede authoritative load, policy application, proof/consume and one atomic SQL upsert.
-        let mut catalog = self.load()?;
-        if let Err(e) = catalog.apply_policy(policy, now()) {
+        let mut stored = self.load()?;
+        if let Err(e) = stored.catalog.apply_policy(policy, now()) {
             return reject(e);
         }
         // Configuration revocation is durable even if later proof processing fails.
-        self.save(&catalog)?;
+        self.save(&stored)?;
+        let catalog = &mut stored.catalog;
         let result = match req.path().as_str() {
             "/v1/identity/sync" => match serde_json::from_value::<SyncPolicy>(value) {
                 Ok(v) if v.project_id == project => Response::from_json(&json!({"configured_policy_applied":true,"task_api":"unavailable"})),
@@ -289,7 +451,7 @@ impl DurableObject for ProjectIdentity {
             },
             _=>response("not_found",404),
         };
-        self.save(&catalog)?;
+        self.save(&stored)?;
         result
     }
 }
