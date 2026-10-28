@@ -1,6 +1,8 @@
 # Executable local API quickstart
 
-RunLater is an early Rust/Cloudflare prototype. This guide uses only the loopback emulator, public fixture credentials and in-process destinations. It creates no Cloudflare account resources. A live signed HTTPS delivery failed in the earlier isolated campaign; see staging/CAMPAIGN-2026-10-27.md. These examples do not establish production delivery or SSRF safety.
+RunLater is an early Rust/Cloudflare prototype. This guide uses only the loopback emulator, public fixture credentials and in-process destinations. It creates no Cloudflare account resources. The earlier campaign report records an HTTP400 failure; later controlled alpha HTTPS proof is separate from this loopback example. These examples do not establish production delivery or SSRF safety. For the current compiled invitation journey and activation boundary, see [PILOT.md](PILOT.md).
+
+Language-neutral raw HTTP/curl examples, status/attempt inspection and failed-only replay are in [HTTP-EXAMPLES.md](HTTP-EXAMPLES.md).
 
 ## Start and try the API
 

@@ -2,6 +2,8 @@
 
 This is a tested first vertical slice, not completion of issues 1–13. Original README design targets remain unchanged. No Cloudflare account, resources or secrets are required.
 
+For the current complete compiled invitation/ownership/funded-callback demonstration (still local-only), see [PILOT.md](PILOT.md). This page describes the original default fixture profile; later source components have their own explicitly gated contracts.
+
 ## Tools
 
 Released worker/worker-build 0.8.7, Wrangler 4.154.0 (package-lock), Rust 1.92.0, wasm32-unknown-unknown. worker 0.8.7 requires Rust >=1.91. On this Mac Homebrew rustc 1.90 precedes rustup, so the build script explicitly selects the pinned Rust 1.92.0 compiler. Dependencies are locked in Cargo.lock. No upstream main dependencies.
