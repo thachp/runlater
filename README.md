@@ -1,38 +1,25 @@
 # RunLater
 
-RunLater is a reusable HTTP task delivery API with a local prototype built in **Rust on Cloudflare Workers**. Other systems will be able to submit work now and have RunLater deliver a signed HTTP request later, with bounded retries and a record of each attempt.
-
-Product domain: **runlater.io**. Domain registration does not mean a hosted service is available.
+RunLater is a reusable HTTP task delivery API built in **Rust on Cloudflare Workers**. Submit work now for a later signed callback, with bounded retries and an inspectable record of each attempt.
 
 ## Status
 
-**Early local prototype; not production-ready.** The repository includes a tested Rust/Cloudflare fixture-only vertical slice and the proposed product backlog. The architecture and delivery semantics below describe the broader design targets; they are not a claim that the full MVP is implemented. Real outbound HTTPS delivery is disabled. There is no published SLA, production endpoint, or verified capacity claim. See [local setup and limits](docs/LOCAL.md) and [verification evidence](docs/VERIFICATION.md).
+**Retained restricted alpha at [api.runlater.io](https://api.runlater.io/health), not customer general availability.** Only explicitly approved Ed25519 operators and RunLater's owned, side-effect-free synthetic receiver are enabled. The controlled cloud proof covered signed HTTPS success, retry across callback-key cutover, redirect rejection and timeout/cancel. No SLA, exact-time, ordering, exactly-once or verified capacity promise.
 
-## Current local capabilities and launch gates
+Public self-service signup, arbitrary customer callbacks, commercial trials and credit purchases remain disabled. The current finite operator identity/grant is not a public offer. Request keys, callback signing material and provider credentials are never part of public examples.
 
-Merged [#15](https://github.com/thachp/runlater/pull/15), [#16](https://github.com/thachp/runlater/pull/16), and [#17](https://github.com/thachp/runlater/pull/17) establish the following **local-fixture-only** capabilities:
+## Landing, docs and discovery
 
-- CQRS command and read-only query handlers over one authoritative, tenant-scoped SQLite Durable Object ledger.
-- Durable acceptance/deduplication, alarm-driven ready/outbox recovery, Queue dispatch, expiring fenced leases, bounded retries, cancellation, and linked **failed-task** redrive. Callbacks are signed in-process fixtures, not network requests.
-- One configurable default queue per project, active-task/payload admission, durable token-bucket dispatch limits, expiring concurrency capacity, and structured throttling metadata. Retries share the same limits.
-- Project-scoped action permissions and hash-only local key issuance, revocation, rotation overlap/cutover, redacted receipts, and bounded lifecycle audit. No production credentials are provisioned.
+The responsive landing and docs in this branch are prepared for publication at runlater.io and docs.runlater.io, with a preserving308 redirect from www. Source does not by itself prove those hosts are published. The independently deployed API/receiver remain unchanged by static publication.
 
-See [local setup](docs/LOCAL.md), [admission controls](docs/ADMISSION.md), and [local authentication](docs/AUTH.md). The pilot uses a bounded versioned SQLite snapshot, not a production-scale indexed task store. The broader design below includes planned capabilities beyond this slice, including real HTTPS and any expansion of redrive eligibility.
+- [Agent quickstart](docs/AGENT-QUICKSTART.md): public health check and executable signed client for an already approved operator key.
+- [Host ownership, build, release and rollback](docs/HOSTS.md): separate static/redirect configurations and actual verification requirements.
+- [Discovery formats](docs/AGENT-DISCOVERY.md): custom capability metadata, local versus hosted contracts and disabled payment proposals.
+- [Local setup](docs/LOCAL.md): loopback-only public bearer/fixture development. Do not use these tokens or destinations on the hosted API.
 
-**Verification checkpoint — 2026-10-27:** the merged key-lifecycle slice records 47 native Rust tests, 2 redirect tests, Wasm compilation and release bundling, plus codeowner-run local HTTP/SQLite/Queue integration suites. Independent QA reported 15 additional adversarial probes, and reviewed-head CI passed. These are checkpoint results, not a permanent test-count or production guarantee. This README update did not independently rerun the emulator. Details and earlier checkpoints are in [verification evidence](docs/VERIFICATION.md).
+Run `npm run build:web`, `npm run test:web` and `npm run test:web-local` for this static slice. The API preserves CQRS, authoritative tenant/project SQLite state, durable idempotency/outbox/alarms, fenced leases, finite grant reservations, scoped authentication and bounded attempt/age/admission/publication limits. The retained transport permits exactly one owned synthetic endpoint; it does not establish arbitrary-host SSRF/DNS-rebinding safety. See [registered delivery](docs/REGISTERED-DELIVERY.md), [funding](docs/FUNDING.md) and [verification history](docs/VERIFICATION.md) for source evolution and earlier checkpoints.
 
-**Still gated:** real HTTPS callbacks and connection-target/DNS-rebinding defenses; production key enrollment, secret delivery/recovery and callback-key rotation; live-runtime failure injection, prolonged outages, measured fairness/noisy-neighbor capacity; operational metrics and durable audit policy; and hosted service/DNS/deployment readiness. External HTTPS delivery remains disabled, and no hosted service is available.
-
-## Planned hosts
-
-| Host | Intended role |
-| --- | --- |
-| `runlater.io` | Product landing page |
-| `docs.runlater.io` | Developer documentation |
-| `api.runlater.io` | HTTP API |
-| `www.runlater.io` | Redirect to `https://runlater.io`, preserving path and query |
-
-This is the confirmed host layout, not a deployment claim. DNS, routes, certificates, and live service readiness still need verification before launch. See [issue #13](https://github.com/thachp/runlater/issues/13).
+Broader customer delivery, abuse resistance, self-service onboarding, payment activation, measured fairness/load, operational alerting and full cloud failure proof remain separate work. Earlier source-increment documents are historical evidence, not the current deployment status.
 
 ## Proposed MVP
 
@@ -43,7 +30,7 @@ This is the confirmed host layout, not a deployment claim. DNS, routes, certific
 - Deliver signed HTTPS callbacks with bounded retries, rate limits, and concurrency controls.
 - Keep auditable outcomes without logging credentials or sensitive payloads by default.
 
-Recurring cron schedules, workflow orchestration, a full dashboard, billing, and language-specific SDKs are outside the first MVP. The versioned API contract, limits, and retention policy will be finalized in [issue #1](https://github.com/thachp/runlater/issues/1); a local-only fixture prototype and setup commands are now available in [docs/LOCAL.md](docs/LOCAL.md). The hosted service and real HTTPS delivery remain unavailable.
+Recurring cron schedules, workflow orchestration, a full dashboard, billing, and language-specific SDKs are outside the first MVP. The versioned API contract, limits, and retention policy will be finalized in [issue #1](https://github.com/thachp/runlater/issues/1); a local-only fixture prototype and setup commands are now available in [docs/LOCAL.md](docs/LOCAL.md). The retained restricted alpha is narrower than this broader product plan; customer general availability remains gated.
 
 ## System design
 

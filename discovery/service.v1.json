@@ -1,14 +1,14 @@
 {
   "$schema": "https://docs.runlater.io/agent/service.v1.schema.json",
-  "descriptor_version": "1.0.0",
+  "descriptor_version": "1.1.0",
   "service": "RunLater",
   "format_owner": "RunLater",
   "protocol_status": "custom_metadata_not_an_industry_standard",
   "readiness": {
-    "public_task_api": "unavailable",
-    "production_authentication": "unavailable",
-    "public_https_callbacks": "disabled",
-    "status_source": "repository_snapshot_not_live_probe"
+    "public_task_api": "restricted_operator_alpha",
+    "production_authentication": "operator_approved_ed25519",
+    "public_https_callbacks": "owned_synthetic_receiver_only",
+    "status_source": "published_configuration_snapshot_not_live_probe"
   },
   "hosts": {
     "landing": "https://runlater.io",
@@ -25,19 +25,22 @@
     "quickstart": "https://docs.runlater.io/agent/quickstart.md",
     "pricing_status": "https://runlater.io/pricing-status.v1.json",
     "pricing_schema": "https://docs.runlater.io/agent/pricing-status.v1.schema.json",
-    "source": "https://github.com/thachp/runlater"
+    "source": "https://github.com/thachp/runlater",
+    "hosted_alpha_contract": "https://docs.runlater.io/agent/alpha.v1.json",
+    "hosted_alpha_schema": "https://docs.runlater.io/agent/alpha.v1.schema.json"
   },
-  "link_availability": "planned_host_locations_built_from_repository_not_verified_live",
+  "link_availability": "published_asset_locations_verify_http_before_use",
   "capabilities": {
-    "task_scheduling": "local_fixture_only",
-    "task_status": "local_fixture_only",
-    "task_cancellation": "local_fixture_only",
-    "registration": "proposed_disabled",
+    "task_scheduling": "restricted_operator_alpha",
+    "task_status": "restricted_operator_alpha",
+    "task_cancellation": "restricted_operator_alpha",
+    "registration": "operator_approved_possession_only",
     "entitlement_inspection": "proposed_disabled",
     "credit_quotes": "proposed_disabled",
     "credit_purchase": "proposed_disabled",
-    "callback_key_rotation": "offline_design_library_only",
-    "arbitrary_https_delivery": "disabled"
+    "callback_key_rotation": "integrated_restricted_alpha",
+    "arbitrary_https_delivery": "disabled",
+    "public_self_service": "disabled"
   },
   "authority": {
     "discovery_grants_authorization": false,

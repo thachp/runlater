@@ -1,0 +1,9 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "runlater-web-docs",
+  "compatibility_date": "2026-10-28",
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {"directory": "../../build/discovery/docs", "not_found_handling": "404-page", "html_handling": "auto-trailing-slash"},
+  "observability": {"enabled": false}
+}
