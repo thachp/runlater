@@ -83,7 +83,7 @@ try{
  await probe('cancelTask',{path:`/v1/tasks/${t.id}/cancel`});
  const limits=await probe('getDefaultQueueLimits');await probe('configureDefaultQueueLimits',{body:limits});
  await probe('configureDefaultQueueLimits',{body:{...limits,max_concurrent:0},status:400,invalid:true});
- await probe('getQueueHealth');await probe('getQueueAudit');await probe('maintainRetention',{body:{}});
+ await probe('getQueueHealth');await probe('getQueueMetrics');await probe('getQueueAudit');await probe('maintainRetention',{body:{}});
  await probe('maintainRetention',{body:{now_ms:9999999999999},status:400,invalid:true});
  const tokenFor=id=>`rl_local.alpha.${id}.public_contract_fixture_secret`;
  const keySpec=id=>({key_id:id,token_sha256:createHash('sha256').update(tokenFor(id)).digest('hex'),permissions:['enqueue','enqueue'],expires_at_ms:Date.now()+3600000});
@@ -95,14 +95,14 @@ try{
  await probe('rotateLocalProjectKey',{path:`/v1/keys/${writer.key_id}/rotate`,body:rotate,status:201});await probe('rotateLocalProjectKey',{path:`/v1/keys/${writer.key_id}/rotate`,body:rotate});
  await probe('revokeProjectKey',{path:`/v1/keys/${writer.key_id}/revoke`});await probe('createTask',{body:input,key:'revoked',token:tokenFor(writer.key_id),status:401});
  const f=await probe('createTask',{body:{...input,destination:'fixture://fail',run_at_ms:0},key:'fail',status:201});
- let failed;for(let i=0;i<40;i++){failed=await probe('getTask',{path:`/v1/tasks/${f.id}`});if(failed.status==='failed')break;await new Promise(r=>setTimeout(r,100));}assert.equal(failed.status,'failed');
+ let failed;for(let i=0;i<40;i++){failed=await probe('getTask',{path:`/v1/tasks/${f.id}`});if(failed.status==='failed')break;await new Promise(r=>setTimeout(r,100));}assert.equal(failed.status,'failed');const observed=await probe('getQueueMetrics');assert.ok(observed.totals.counts.attempt_permanent_http>=1,'Actual Queue/finish outcome not counted');
  const redriven=await probe('redriveTask',{path:`/v1/tasks/${f.id}/redrive`,key:'redrive',status:201});assert.equal(redriven.input.operation_key,input.operation_key);assert.equal((await probe('redriveTask',{path:`/v1/tasks/${f.id}/redrive`,key:'redrive'})).id,redriven.id);
  await probe('configureDefaultQueueLimits',{body:{...limits,max_active_tasks:1}});
  const rejected=await probe('createTask',{body:input,key:'limited',status:429});assert.equal(rejected.reason,'active_tasks');
  await assert.rejects(client.enqueue(input,'client_limited'),e=>e instanceof RunLaterError&&e.status===429&&e.retryAfterSeconds>=1&&!e.message.includes(input.body));
  await probe('configureDefaultQueueLimits',{body:limits});
  const sample=await client.enqueue(input,'client_example');assert.equal((await client.enqueue(input,'client_example')).data.id,sample.data.id);await client.cancel(sample.data.id);await client.configure(limits);await client.redrive(f.id,'client_redrive');
- assert.equal((await client.task(t.id)).data.status,'cancelled');assert.equal((await client.inspection(t.id)).data.id,t.id);await client.attempts(t.id);await client.list();await client.health();await client.audit();await client.limits();await client.maintain();
+ assert.equal((await client.task(t.id)).data.status,'cancelled');assert.equal((await client.inspection(t.id)).data.id,t.id);await client.attempts(t.id);await client.list();await client.health();await client.metrics();await client.audit();await client.limits();await client.maintain();
  assert.deepEqual([...covered].sort(),[...operations.keys()].sort(),'Every documented operation must execute');
  console.log(`PASS: ${covered.size} OpenAPI operations, full/scoped receipts, DTO/media/error/idempotency/auth/retention/rate parity and local client; ${calls} bounded HTTP calls`);
 }finally{await mf.dispose();}

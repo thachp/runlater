@@ -24,3 +24,4 @@ jobs:
       - run: cargo install worker-build --version 0.8.7 --locked
       - run: npm run test:contract
       - run: npm run test:runtime-recovery
+      - run: npm run test:metrics-local

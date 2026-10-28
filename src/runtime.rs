@@ -191,7 +191,7 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
     if !(path == "/v1/queue"
         || matches!(
             path.as_str(),
-            "/v1/queue/health" | "/v1/queue/audit" | "/v1/queue/maintenance"
+            "/v1/queue/health" | "/v1/queue/metrics" | "/v1/queue/audit" | "/v1/queue/maintenance"
         )
         || path == "/v1/tasks"
         || path.starts_with("/v1/tasks/")
@@ -725,6 +725,9 @@ fn query_response(ledger: &Ledger, a: Api) -> Result<Response> {
     let parts: Vec<&str> = a.path.trim_matches('/').split('/').collect();
     let q = match parts.as_slice() {
         ["v1", "queue"] => Some(Query::QueueConfig),
+        ["v1", "queue", "metrics"] => Some(Query::Metrics {
+            sampled_at_ms: now(),
+        }),
         ["v1", "queue", "health"] => Some(Query::Health {
             sampled_at_ms: now(),
         }),

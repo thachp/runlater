@@ -414,6 +414,7 @@ pub fn required_permission(method: &str, path: &str) -> Option<Permission> {
         | ("GET", ["v1", "tasks", _])
         | ("GET", ["v1", "tasks", _, "attempts"])
         | ("GET", ["v1", "tasks", _, "inspection"])
+        | ("GET", ["v1", "queue", "metrics"])
         | ("GET", ["v1", "queue", "health"])
         | ("GET", ["v1", "queue", "audit"])
         | ("GET", ["v1", "queue"]) => Some(Permission::Read),

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "RunLater LOCAL prototype",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "description": "No production service. At-least-once design; no ordering or exact-time guarantee. Active idempotency plus 30 days after termination. All numeric limits proposed. Arbitrary outbound HTTPS disabled."
   },
   "servers": [
@@ -1043,6 +1043,45 @@
           }
         }
       }
+    },
+    "/v1/queue/metrics": {
+      "get": {
+        "operationId": "getQueueMetrics",
+        "responses": {
+          "200": {
+            "description": "Bounded lifetime and 1/5/60 aligned minute-bucket observations; clock/saturation state explicit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueMetrics"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Malformed JSON envelope or invalid operation input."
+          },
+          "401": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Missing, invalid, revoked or expired credential."
+          },
+          "403": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Credential lacks the required permission or authority."
+          },
+          "413": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Request body exceeds 24KiB at the shared envelope reader, before Durable Object dispatch. Applies to GET bodies too; normal GET clients send no body."
+          },
+          "503": {
+            "$ref": "#/components/responses/LocalError",
+            "description": "Default local prototype is disabled or authentication configuration is invalid; this outer gate runs before credentials, media or body processing."
+          }
+        },
+        "x-required-permission": "read",
+        "description": "Pure tenant-local fixed UTC minute buckets including current partial minute; server sampled. Transport/denial observations are separate from logical attempt outcomes. No provider, billing or business-operation error-rate claim."
+      }
     }
   },
   "components": {
@@ -1855,6 +1894,240 @@
         "required": [
           "error"
         ]
+      },
+      "MetricCounts": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "admission_active_tasks_denied",
+          "admission_payload_denied",
+          "admission_retained_tasks_denied",
+          "claim_references",
+          "claim_ignored",
+          "claim_missing",
+          "claim_rate_denied",
+          "claim_concurrency_denied",
+          "claim_age_expired",
+          "attempt_started",
+          "attempt_succeeded",
+          "attempt_timeout",
+          "attempt_retryable_http",
+          "attempt_permanent_http",
+          "attempt_lease_expired_unknown",
+          "attempt_unknown_failure",
+          "stale_results_ignored",
+          "clock_regressed_observations"
+        ],
+        "properties": {
+          "admission_active_tasks_denied": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "admission_payload_denied": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "admission_retained_tasks_denied": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "claim_references": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "claim_ignored": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "claim_missing": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "claim_rate_denied": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "claim_concurrency_denied": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "claim_age_expired": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "attempt_started": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "attempt_succeeded": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "attempt_timeout": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "attempt_retryable_http": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "attempt_permanent_http": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "attempt_lease_expired_unknown": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "attempt_unknown_failure": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "stale_results_ignored": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "clock_regressed_observations": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          }
+        }
+      },
+      "MetricSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "counts",
+          "saturated",
+          "attempt_completed",
+          "attempt_errors_or_unknown",
+          "attempt_error_ratio"
+        ],
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/MetricCounts"
+          },
+          "saturated": {
+            "type": "boolean"
+          },
+          "attempt_completed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6000000000000
+          },
+          "attempt_errors_or_unknown": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5000000000000
+          },
+          "attempt_error_ratio": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      },
+      "MetricWindow": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "bucket_minutes",
+          "start_inclusive_ms",
+          "end_exclusive_ms",
+          "observed_through_ms",
+          "observations"
+        ],
+        "properties": {
+          "bucket_minutes": {
+            "type": "integer",
+            "enum": [
+              1,
+              5,
+              60
+            ]
+          },
+          "start_inclusive_ms": {
+            "type": "integer"
+          },
+          "end_exclusive_ms": {
+            "type": "integer"
+          },
+          "observed_through_ms": {
+            "type": "integer"
+          },
+          "observations": {
+            "$ref": "#/components/schemas/MetricSummary"
+          }
+        }
+      },
+      "QueueMetrics": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sampled_at_ms",
+          "effective_sample_ms",
+          "last_observed_at_ms",
+          "clock_regressed",
+          "bucket_width_ms",
+          "retained_bucket_capacity",
+          "windows",
+          "totals"
+        ],
+        "properties": {
+          "sampled_at_ms": {
+            "type": "integer"
+          },
+          "effective_sample_ms": {
+            "type": "integer"
+          },
+          "last_observed_at_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "clock_regressed": {
+            "type": "boolean"
+          },
+          "bucket_width_ms": {
+            "const": 60000
+          },
+          "retained_bucket_capacity": {
+            "const": 60
+          },
+          "windows": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "$ref": "#/components/schemas/MetricWindow"
+            }
+          },
+          "totals": {
+            "$ref": "#/components/schemas/MetricSummary"
+          }
+        }
       }
     },
     "responses": {

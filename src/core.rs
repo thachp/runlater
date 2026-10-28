@@ -1,5 +1,6 @@
 //! Deterministic ledger transitions. Runtime persists one atomic SQLite snapshot per tenant.
 use crate::limits::{Bucket, QueueLimits};
+use crate::metrics::Kind as Metric;
 use crate::security::digest;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -71,6 +72,8 @@ pub struct Dispatch {
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Ledger {
+    #[serde(default)]
+    pub metrics: crate::metrics::Metrics,
     #[serde(default)]
     pub audit: Vec<crate::operations::Event>,
     #[serde(default)]
@@ -156,11 +159,15 @@ impl Ledger {
         now: i64,
     ) -> Result<Task, Fault> {
         if self.tasks.len() >= 1000 {
+            self.metrics
+                .observe(Metric::AdmissionRetainedTasksDenied, now);
             return Err(Fault::Capacity);
         }
         if self.tasks.values().filter(|t| !t.status.terminal()).count()
             >= self.limits.max_active_tasks as usize
         {
+            self.metrics
+                .observe(Metric::AdmissionActiveTasksDenied, now);
             return Err(Fault::Limited {
                 reason: LimitReason::ActiveTasks,
                 retry_after_ms: 1000,
@@ -174,6 +181,7 @@ impl Ledger {
             + input.body.len()
             > self.limits.max_payload_bytes as usize
         {
+            self.metrics.observe(Metric::AdmissionPayloadDenied, now);
             return Err(Fault::Limited {
                 reason: LimitReason::PayloadBytes,
                 retry_after_ms: 1000,
@@ -335,6 +343,8 @@ impl Ledger {
             }
         }
         for id in expired {
+            self.metrics
+                .observe(Metric::AttemptLeaseExpiredUnknown, now);
             self.record(
                 now,
                 crate::operations::EventKind::LeaseExpired,
@@ -359,11 +369,16 @@ impl Ledger {
     }
     pub fn claim(&mut self, d: &Dispatch, now: i64) -> Result<Option<Task>, Fault> {
         self.reconcile(now);
-        let candidate = self.tasks.get(&d.id).ok_or(Fault::NotFound)?;
+        self.metrics.observe(Metric::ClaimReferences, now);
+        let Some(candidate) = self.tasks.get(&d.id) else {
+            self.metrics.observe(Metric::ClaimMissing, now);
+            return Err(Fault::NotFound);
+        };
         if candidate.generation != d.generation
             || candidate.status != Status::Ready
             || candidate.due_ms > now
         {
+            self.metrics.observe(Metric::ClaimIgnored, now);
             return Ok(None);
         }
         // Expired age is terminal even when no dispatch capacity is available.
@@ -381,19 +396,26 @@ impl Ledger {
                     .unwrap_or(now + LEASE)
                     .saturating_sub(now)
                     .max(1);
+                self.metrics.observe(Metric::ClaimConcurrencyDenied, now);
                 return Err(Fault::Limited {
                     reason: LimitReason::Concurrency,
                     retry_after_ms,
                 });
             }
-            self.bucket
+            if let Err(error) = self
+                .bucket
                 .get_or_insert_with(|| Bucket::new(&self.limits, now))
-                .take(&self.limits, now)?;
+                .take(&self.limits, now)
+            {
+                self.metrics.observe(Metric::ClaimRateDenied, now);
+                return Err(error);
+            }
         }
         let t = self.tasks.get_mut(&d.id).ok_or(Fault::NotFound)?;
         if now - t.initial_due_ms > DAY {
             t.status = Status::Failed;
             t.terminal_ms = Some(now);
+            self.metrics.observe(Metric::ClaimAgeExpired, now);
             self.record(
                 now,
                 crate::operations::EventKind::AgeExpired,
@@ -413,6 +435,7 @@ impl Ledger {
             staging_diagnostic: None,
         });
         let task = t.clone();
+        self.metrics.observe(Metric::AttemptStarted, now);
         self.record(
             now,
             crate::operations::EventKind::Claimed,
@@ -431,6 +454,7 @@ impl Ledger {
         let t = self.tasks.get_mut(id).ok_or(Fault::NotFound)?;
         if t.status != Status::Running || t.fence != fence || t.lease_until.is_none_or(|x| x <= now)
         {
+            self.metrics.observe(Metric::StaleResultsIgnored, now);
             return Err(Fault::Stale);
         }
         Self::settle(t, outcome, now);
@@ -440,6 +464,17 @@ impl Ledger {
             .last()
             .and_then(|a| a.outcome.as_deref())
             .and_then(crate::operations::failure);
+        self.metrics.observe(
+            match outcome {
+                Outcome::Http(200..=299) => Metric::AttemptSucceeded,
+                Outcome::Timeout | Outcome::Http(408) => Metric::AttemptTimeout,
+                Outcome::LeaseExpired => Metric::AttemptLeaseExpiredUnknown,
+                Outcome::Http(425 | 429 | 500..=599) => Metric::AttemptRetryableHttp,
+                Outcome::Http(100..=599) => Metric::AttemptPermanentHttp,
+                _ => Metric::AttemptUnknownFailure,
+            },
+            now,
+        );
         self.record(
             now,
             crate::operations::EventKind::Finished,
