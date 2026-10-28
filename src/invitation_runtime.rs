@@ -1,4 +1,4 @@
-//! Isolated loopback compiled fixture. Never linked with production or staging; no real issuer route.
+//! Explicit invitation mode; defaults closed. Fixture controls are compiled only for loopback tests.
 use crate::invitation::{self as inv, Enrollment, Mode, Policy, Registry, Ticket};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -76,6 +76,7 @@ fn nonce() -> Result<String> {
     f.call1(&c, &b)?;
     Ok(hex::encode(b.to_vec()))
 }
+#[cfg(feature = "invitation-tests")]
 async fn point(env: &Env, name: &str) -> Result<()> {
     let mut r = env
         .service("TEST_INVITATION_CONTROL")?
@@ -89,7 +90,82 @@ async fn point(env: &Env, name: &str) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(feature = "production")]
+async fn point(_env: &Env, _name: &str) -> Result<()> {
+    Ok(())
+}
+fn guard(env: &Env) -> bool {
+    #[cfg(feature = "invitation-tests")]
+    {
+        env.service("TEST_INVITATION_CONTROL").is_ok()
+    }
+    #[cfg(feature = "production")]
+    {
+        env.var("INVITATION_ENROLLMENT")
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+            == "operator-approved"
+            && js_sys::Reflect::own_keys(env.as_ref())
+                .map(|keys| {
+                    !keys
+                        .iter()
+                        .filter_map(|k| k.as_string())
+                        .any(|k| crate::identity::forbidden_binding(&k) || k.starts_with("ALPHA_"))
+                })
+                .unwrap_or(false)
+            && env.durable_object("ADMISSION").is_ok()
+            && env.durable_object("PROJECTS").is_ok()
+    }
+}
+fn policy(env: &Env) -> Result<Policy> {
+    #[cfg(feature = "invitation-tests")]
+    let name = "TEST_INVITATION_POLICY";
+    #[cfg(feature = "production")]
+    let name = "INVITATION_POLICY";
+    let raw = env.var(name)?.to_string();
+    if raw.len() > 4096 {
+        return Err(Error::RustError(
+            "Invitation configuration too large".into(),
+        ));
+    }
+    Ok(serde_json::from_str(&raw)?)
+}
+#[cfg(feature = "production")]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Seed {
+    id: String,
+    expires_at_ms: i64,
+    revoked: bool,
+}
+#[cfg(feature = "production")]
+fn sync_seeds(env: &Env, s: &mut Registry, admission_open: bool) -> Result<()> {
+    let raw = env.var("INVITATION_SEEDS")?.to_string();
+    if raw.len() > 16384 {
+        return Err(Error::RustError("Invitation seeds too large".into()));
+    }
+    let seeds: Vec<Seed> = serde_json::from_str(&raw)?;
+    if seeds.len() > inv::MAX_TICKETS {
+        return Err(Error::RustError("Too many invitation seeds".into()));
+    }
+    for seed in seeds {
+        if admission_open {
+            s.issue(&seed.id, seed.expires_at_ms, now())
+                .map_err(|_| Error::RustError("Invalid immutable invitation seed".into()))?;
+        }
+        if seed.revoked {
+            s.revoke(&seed.id, now())
+                .map_err(|_| Error::RustError("Invalid invitation revocation".into()))?;
+        }
+    }
+    Ok(())
+}
 async fn read_body(req: &mut Request) -> Result<Option<Value>> {
+    Ok(read_raw(req)
+        .await?
+        .and_then(|v| serde_json::from_slice(&v).ok()))
+}
+async fn read_raw(req: &mut Request) -> Result<Option<Vec<u8>>> {
     use futures_util::{
         future::{select, Either},
         pin_mut, StreamExt,
@@ -97,7 +173,9 @@ async fn read_body(req: &mut Request) -> Result<Option<Value>> {
     let read = async {
         let mut all = Vec::new();
         let mut chunks = 0;
-        let mut stream = req.stream()?;
+        let Ok(mut stream) = req.stream() else {
+            return Ok(Some(all));
+        };
         while let Some(v) = stream.next().await {
             let v = v?;
             chunks += 1;
@@ -106,7 +184,7 @@ async fn read_body(req: &mut Request) -> Result<Option<Value>> {
             }
             all.extend(v);
         }
-        Ok::<_, Error>(serde_json::from_slice(&all).ok())
+        Ok::<_, Error>(Some(all))
     };
     let deadline = Delay::from(std::time::Duration::from_secs(5));
     pin_mut!(read, deadline);
@@ -124,6 +202,108 @@ async fn internal(env: &Env, binding: &str, name: &str, path: &str, v: &Value) -
     let mut r = Request::new_with_init(&format!("http://internal{path}"), &init)?;
     r.headers_mut()?.set("x-project-id", name)?;
     stub.fetch_with_request(r).await
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Signed {
+    ticket: Ticket,
+    envelope: crate::signed::Envelope,
+    signature: String,
+    body_hex: String,
+}
+async fn signed_forward(req: &mut Request, env: &Env) -> Result<Response> {
+    let project = req
+        .headers()
+        .get("RunLater-Project-Id")?
+        .unwrap_or_default();
+    if !crate::security::tenant_valid(&project) {
+        return rejected(inv::Error::Forbidden);
+    }
+    let mut gate = internal(
+        env,
+        "ADMISSION",
+        "admission_registry_v1",
+        "/signed-route",
+        &json!({"project_id":project}),
+    )
+    .await?;
+    if gate.status_code() != 200 {
+        return Ok(gate);
+    }
+    let ticket: Ticket = gate.json().await?;
+    if req.method() != Method::Get
+        && req.headers().get("Content-Type")?.as_deref() != Some("application/json")
+    {
+        return json_response(&json!({"error":"json_required"}), 415);
+    }
+    let Some(raw) = read_raw(req).await? else {
+        return rejected(inv::Error::Invalid);
+    };
+    let h = req.headers();
+    let issued = h.get("RunLater-Issued-At")?.and_then(|v| decimal(&v));
+    let expires = h.get("RunLater-Expires-At")?.and_then(|v| decimal(&v));
+    let (Some(issued), Some(expires)) = (issued, expires) else {
+        return rejected(inv::Error::Invalid);
+    };
+    let e = crate::signed::Envelope {
+        version: 1,
+        origin: crate::identity::ORIGIN.into(),
+        project_id: project.clone(),
+        public_key: h.get("RunLater-Public-Key")?.unwrap_or_default(),
+        method: req.method().to_string(),
+        path: req.path(),
+        query: String::new(),
+        body_sha256: crate::security::digest(&raw),
+        idempotency_key: h.get("Idempotency-Key")?.unwrap_or_default(),
+        issued_at_ms: issued,
+        expires_at_ms: expires,
+        nonce: h.get("RunLater-Nonce")?.unwrap_or_default(),
+    };
+    let input = Signed {
+        ticket,
+        envelope: e,
+        signature: h.get("RunLater-Request-Signature")?.unwrap_or_default(),
+        body_hex: hex::encode(raw),
+    };
+    internal(
+        env,
+        "PROJECTS",
+        &project,
+        "/signed",
+        &serde_json::to_value(input)?,
+    )
+    .await
+}
+fn decimal(v: &str) -> Option<i64> {
+    if v.is_empty() || v.len() > 16 || !v.bytes().all(|b| b.is_ascii_digit()) {
+        None
+    } else {
+        v.parse().ok()
+    }
+}
+fn task_result(v: serde_json::Value) -> Result<Response> {
+    let status = v["result"]["status"].as_u64().unwrap_or(200) as u16;
+    json_response(&v, status)
+}
+fn task_error(e: crate::funded_tasks::Error) -> Result<Response> {
+    use crate::funded_tasks::Error as E;
+    let (status, code) = match e {
+        E::AdmissionUnavailable => (503, "delivery_not_ready"),
+        E::Auth(crate::identity::Error::Forbidden) => (403, "request_forbidden"),
+        E::Auth(crate::identity::Error::Expired) => (410, "request_expired"),
+        E::Auth(crate::identity::Error::Conflict) => (409, "request_conflict"),
+        E::Auth(crate::identity::Error::Limited) => (429, "request_limit"),
+        E::Auth(crate::identity::Error::ClockRegressed) => (503, "clock_unavailable"),
+        E::Auth(_) => (400, "invalid_signed_request"),
+        E::Funding(crate::funding::Error::Insufficient) => (402, "funding_required"),
+        E::Funding(_) => (409, "funding_conflict"),
+        E::Ledger(crate::core::Fault::NotFound) => (404, "task_not_found"),
+        E::Ledger(_) => (409, "task_conflict"),
+    };
+    json_response(
+        &json!({"error":{"code":code},"task_accepted":false}),
+        status,
+    )
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -159,14 +339,53 @@ fn token(v: &str) -> bool {
         && v.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
-#[event(fetch)]
+#[cfg_attr(feature = "invitation-tests", event(fetch))]
 pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    if env.service("TEST_INVITATION_CONTROL").is_err() {
-        return json_response(&json!({"error":"invitation_fixture_unbound"}), 403);
+    if !guard(&env) {
+        return json_response(
+            &json!({"error":"invitation_configuration_unavailable"}),
+            403,
+        );
     }
     let url = req.url()?;
+    #[cfg(feature = "invitation-tests")]
     if url.scheme() != "http" || url.host_str() != Some("127.0.0.1") {
         return json_response(&json!({"error":"invitation_fixture_loopback_only"}), 421);
+    }
+    #[cfg(feature = "production")]
+    if url.scheme() != "https" || url.host_str() != Some("api.runlater.io") || url.port().is_some()
+    {
+        return json_response(&json!({"error":"production_origin_required"}), 421);
+    }
+    if url.query().is_some()
+        || req.headers().get("Authorization")?.is_some()
+        || req
+            .headers()
+            .get("Origin")?
+            .is_some_and(|o| o != crate::identity::ORIGIN)
+        || req.headers().entries().any(|(n, _)| {
+            n.to_ascii_lowercase().starts_with("x-runlater-test")
+                || n.to_ascii_lowercase().starts_with("x-runlater-staging")
+                || n.eq_ignore_ascii_case("x-tenant")
+        })
+    {
+        return rejected(inv::Error::Forbidden);
+    }
+    #[cfg(feature = "production")]
+    if req.path().starts_with("/fixture/") {
+        return json_response(&json!({"error":"not_found"}), 404);
+    }
+    if req.method() == Method::Get && req.path() == "/health" {
+        return json_response(
+            &json!({"mode":"invitation","fresh_task_admission":"unavailable","outbound":"disabled"}),
+            200,
+        );
+    }
+    if crate::funded_tasks::route(req.method().as_ref(), &req.path()).is_some()
+        || (req.method() == Method::Get
+            && matches!(req.path().as_str(), "/v1/identity/me" | "/v1/queue"))
+    {
+        return signed_forward(&mut req, &env).await;
     }
     let path = req.path();
     if path == "/fixture/registry" && req.method() == Method::Get {
@@ -245,15 +464,22 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
             &env,
             "ADMISSION",
             "admission_registry_v1",
-            "/route",
+            "/signed-route",
             &json!({"project_id":v.project_id}),
         )
         .await?;
         if gate.status_code() != 200 {
             return Ok(gate);
         }
-        let _: Value = gate.json().await?;
-        return internal(&env, "PROJECTS", &v.project_id, "/recover", &value).await;
+        let ticket: Ticket = gate.json().await?;
+        return internal(
+            &env,
+            "PROJECTS",
+            &v.project_id,
+            "/recover",
+            &json!({"ticket":ticket,"recovery":value}),
+        )
+        .await;
     }
     let (raw, key, id, signature) = if path == "/registration/challenge" {
         let Ok(v) = serde_json::from_value::<Start>(value) else {
@@ -343,7 +569,7 @@ impl DurableObject for AdmissionRegistry {
         Self { state, env }
     }
     async fn fetch(&self, mut req: Request) -> Result<Response> {
-        if self.env.service("TEST_INVITATION_CONTROL").is_err()
+        if !guard(&self.env)
             || self.state.id().to_string()
                 != self
                     .env
@@ -359,10 +585,15 @@ impl DurableObject for AdmissionRegistry {
         }
         let v: Value = req.json().await?;
         let mut s: Registry = load(&self.state)?.unwrap_or_default();
-        let policy: Policy =
-            serde_json::from_str(&self.env.var("TEST_INVITATION_POLICY")?.to_string())?;
+        let Ok(policy) = policy(&self.env) else {
+            return rejected(inv::Error::Closed);
+        };
         if let Err(e) = s.apply(&policy, now()) {
             return rejected(e);
+        }
+        #[cfg(feature = "production")]
+        if sync_seeds(&self.env, &mut s, policy.terms.is_some()).is_err() {
+            return rejected(inv::Error::Closed);
         }
         let outcome = match req.path().as_str() {
             "/issue" => s
@@ -377,6 +608,9 @@ impl DurableObject for AdmissionRegistry {
                 .and_then(|t| serde_json::to_value(t).map_err(|_| inv::Error::Invalid)),
             "/revoke" => s
                 .revoke(v["id"].as_str().unwrap_or_default(), now())
+                .and_then(|t| serde_json::to_value(t).map_err(|_| inv::Error::Invalid)),
+            "/signed-route" => s
+                .existing_ticket(v["project_id"].as_str().unwrap_or_default(), now())
                 .and_then(|t| serde_json::to_value(t).map_err(|_| inv::Error::Invalid)),
             "/route" => s
                 .route_existing(v["project_id"].as_str().unwrap_or_default(), now())
@@ -417,7 +651,7 @@ impl DurableObject for InvitationProject {
         Self { state, env }
     }
     async fn fetch(&self, mut req: Request) -> Result<Response> {
-        if self.env.service("TEST_INVITATION_CONTROL").is_err() {
+        if !guard(&self.env) {
             return rejected(inv::Error::Forbidden);
         }
         let project = req.headers().get("x-project-id")?.unwrap_or_default();
@@ -434,6 +668,44 @@ impl DurableObject for InvitationProject {
         let value: Value = req.json().await?;
         let mut s: Enrollment =
             load(&self.state)?.unwrap_or_else(|| Enrollment::new(Mode::Invitation));
+        if req.path() == "/signed" {
+            let input: Signed = serde_json::from_value(value)?;
+            if input.ticket.project_id != project || input.envelope.project_id != project {
+                return rejected(inv::Error::Forbidden);
+            }
+            if input.ticket.revoked {
+                if input.envelope.method == "GET" {
+                    return rejected(inv::Error::Forbidden);
+                }
+                let r = s.revoke(&input.ticket, now());
+                save(&self.state, &s)?;
+                return match r {
+                    Ok(()) => rejected(inv::Error::Forbidden),
+                    Err(e) => rejected(e),
+                };
+            }
+            let Ok(raw) = hex::decode(&input.body_hex) else {
+                return rejected(inv::Error::Invalid);
+            };
+            if input.envelope.method == "GET" {
+                return match s.signed_query(&input.envelope, &input.signature, &raw, now()) {
+                    Ok(v) => task_result(v),
+                    Err(e) => task_error(e),
+                };
+            }
+            // Fresh production admission is deliberately unavailable until registered delivery is integrated.
+            let ready = cfg!(feature = "invitation-tests");
+            let result =
+                s.signed_task_command(&input.envelope, &input.signature, &raw, ready, now());
+            save(&self.state, &s)?;
+            if result.is_ok() {
+                point(&self.env, "after_task_commit").await?;
+            }
+            return match result {
+                Ok(v) => task_result(v),
+                Err(e) => task_error(e),
+            };
+        }
         if req.path() == "/revoke" {
             let ticket: Ticket = serde_json::from_value(value)?;
             if ticket.project_id != project {
@@ -447,7 +719,14 @@ impl DurableObject for InvitationProject {
             };
         }
         if req.path() == "/recover" {
-            let v: Recovery = serde_json::from_value(value)?;
+            let ticket: Ticket = serde_json::from_value(value["ticket"].clone())?;
+            if ticket.project_id != project {
+                return rejected(inv::Error::Forbidden);
+            }
+            if ticket.revoked {
+                return rejected(inv::Error::Forbidden);
+            }
+            let v: Recovery = serde_json::from_value(value["recovery"].clone())?;
             if v.project_id != project {
                 return rejected(inv::Error::Forbidden);
             }

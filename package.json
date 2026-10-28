@@ -23,7 +23,8 @@
     "preview:web": "node scripts/preview-web.mjs",
     "test:web-local": "node scripts/test-web-local.mjs",
     "test:invitations": "./scripts/test-invitations.sh",
-    "test:destinations": "./scripts/test-destinations.sh"
+    "test:destinations": "./scripts/test-destinations.sh",
+    "test:invitation-production": "./scripts/test-invitation-production.sh"
   },
   "devDependencies": {
     "ajv": "8.20.0",

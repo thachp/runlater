@@ -314,3 +314,76 @@ fn closed_new_admission_keeps_known_project_recovery_routing_and_receipts_requir
         Err(Error::Forbidden)
     );
 }
+
+fn signed_task(
+    t: &Ticket,
+    path: &str,
+    body: &[u8],
+    method: &str,
+    nonce: &str,
+) -> (runlater::signed::Envelope, String) {
+    let e = runlater::signed::Envelope {
+        version: 1,
+        origin: runlater::identity::ORIGIN.into(),
+        project_id: t.project_id.clone(),
+        public_key: pk(7),
+        method: method.into(),
+        path: path.into(),
+        query: String::new(),
+        body_sha256: digest(body),
+        idempotency_key: if method == "GET" || path.ends_with("/cancel") {
+            String::new()
+        } else {
+            "task-once".into()
+        },
+        issued_at_ms: 10,
+        expires_at_ms: 60000,
+        nonce: nonce.repeat(64),
+    };
+    let signature = hex::encode(key(7).sign(&e.bytes().unwrap()).to_bytes());
+    (e, signature)
+}
+#[test]
+fn invitation_authority_routes_signed_task_atomically_without_static_policy_or_grant_refill() {
+    let t = ticket();
+    let mut e = Enrollment::new(Mode::Invitation);
+    let c = e.challenge(&t, &pk(7), &"a".repeat(64), 2).unwrap();
+    e.complete(&t, &c.id().unwrap(), &proof(&c, 7), 3).unwrap();
+    let body=br#"{"destination":"registered:fixture","body":"synthetic","operation_key":"signed-invitation"}"#;
+    let (request, signature) = signed_task(&t, "/v1/tasks", body, "POST", "b");
+    assert_eq!(
+        e.signed_task_command(&request, &signature, body, false, 10)
+            .unwrap_err(),
+        runlater::funded_tasks::Error::AdmissionUnavailable
+    );
+    assert!(e.project.ledger.tasks.is_empty());
+    let result = e
+        .signed_task_command(&request, &signature, body, true, 10)
+        .unwrap();
+    assert_eq!(result["created"], true);
+    let id = e.project.ledger.tasks.keys().next().unwrap().clone();
+    let balance = e.project.funding.clone();
+    let mut e: Enrollment = restart(&e);
+    let replay = e
+        .signed_task_command(&request, &signature, body, false, 11)
+        .unwrap();
+    assert_eq!(replay["replayed"], true);
+    let after = serde_json::to_value(&e.project.funding).unwrap();
+    let before = serde_json::to_value(balance).unwrap();
+    assert_eq!(after["grants"], before["grants"]);
+    assert_eq!(after["reservations"], before["reservations"]);
+    let (read, sig) = signed_task(&t, &format!("/v1/tasks/{id}"), b"", "GET", "c");
+    let snapshot = serde_json::to_value(&e).unwrap();
+    e.signed_query(&read, &sig, b"", 12).unwrap();
+    assert_eq!(serde_json::to_value(&e).unwrap(), snapshot);
+    let mut unknown = e.clone();
+    unknown.version = 2;
+    assert!(unknown.signed_query(&read, &sig, b"", 12).is_err());
+    let (cancel, sig) = signed_task(&t, &format!("/v1/tasks/{id}/cancel"), b"{}", "POST", "d");
+    e.signed_task_command(&cancel, &sig, b"{}", false, 13)
+        .unwrap();
+    let mut revoked = t.clone();
+    revoked.revoked = true;
+    e.revoke(&revoked, 14).unwrap();
+    assert!(e.signed_query(&read, &signature, b"", 15).is_err());
+}

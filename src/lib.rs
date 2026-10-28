@@ -9,7 +9,10 @@
     )
 ))]
 compile_error!("invitation-tests must never be combined with production, funding-tests, staging, runtime-tests or destination-tests");
-#[cfg(all(target_arch = "wasm32", feature = "invitation-tests"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    any(feature = "invitation-tests", feature = "production")
+))]
 mod invitation_runtime;
 #[cfg(all(
     feature = "funding-tests",
