@@ -1,4 +1,4 @@
-//! Signed project reads and commands. No task admission, funding, bearer issuance or external I/O.
+//! Signed project envelope, configuration receipts and authoritative identity/ledger/funding snapshot. No external I/O.
 use crate::{
     auth::Permission,
     core::Ledger,
@@ -67,10 +67,16 @@ impl Envelope {
         match (self.method.as_str(), self.path.as_str()) {
             ("GET", "/v1/queue" | "/v1/identity/me") => Ok(Permission::Read),
             ("PUT", "/v1/queue") => Ok(Permission::Configure),
-            _ => Err(Error::Invalid),
+            _ => match crate::funded_tasks::route(&self.method, &self.path) {
+                Some(crate::funded_tasks::Route::Create) => Ok(Permission::Enqueue),
+                Some(crate::funded_tasks::Route::Read(_)) => Ok(Permission::Read),
+                Some(crate::funded_tasks::Route::Cancel(_)) => Ok(Permission::Cancel),
+                Some(crate::funded_tasks::Route::Redrive(_)) => Ok(Permission::Redrive),
+                None => Err(Error::Invalid),
+            },
         }
     }
-    fn authenticate(
+    pub(crate) fn authenticate(
         &self,
         catalog: &Catalog,
         signature: &str,
@@ -100,6 +106,15 @@ impl Envelope {
             || self.method == "PUT" && !key_valid(&self.idempotency_key)
         {
             return Err(Error::Invalid);
+        }
+        if self.method == "POST" {
+            match crate::funded_tasks::route(&self.method, &self.path) {
+                Some(crate::funded_tasks::Route::Cancel(_)) if self.idempotency_key.is_empty() => {}
+                Some(
+                    crate::funded_tasks::Route::Create | crate::funded_tasks::Route::Redrive(_),
+                ) if key_valid(&self.idempotency_key) => {}
+                _ => return Err(Error::Invalid),
+            }
         }
         catalog.authorize(&self.project_id, &self.public_key, self.permission()?, now)?;
         if digest(body) != self.body_sha256
@@ -152,6 +167,28 @@ impl Receipts {
     fn nonces(&self) -> usize {
         self.nonces.values().map(BTreeMap::len).sum()
     }
+    pub(crate) fn check_nonce(&mut self, e: &Envelope, now: i64) -> Result<(), Error> {
+        self.prune(now);
+        let existing = self.nonces.get(&e.public_key).and_then(|m| m.get(&e.nonce));
+        if let Some(n) = existing {
+            if n.wire_hash != digest(&e.bytes()?) {
+                return Err(Error::Conflict);
+            }
+        } else if self.nonces() >= CAPACITY {
+            return Err(Error::Limited);
+        }
+        Ok(())
+    }
+    pub(crate) fn record_nonce(&mut self, e: &Envelope) -> Result<(), Error> {
+        self.nonces.entry(e.public_key.clone()).or_default().insert(
+            e.nonce.clone(),
+            Nonce {
+                wire_hash: digest(&e.bytes()?),
+                expires_at_ms: e.expires_at_ms,
+            },
+        );
+        Ok(())
+    }
     fn commands(&self) -> usize {
         self.configuration.len()
     }
@@ -163,30 +200,50 @@ pub struct Project {
     pub catalog: Catalog,
     pub ledger: Ledger,
     pub requests: Receipts,
+    pub funding: crate::funding::State,
 }
 impl Default for Project {
     fn default() -> Self {
         Self {
-            project_state_version: 1,
+            project_state_version: 2,
             catalog: Catalog::default(),
             ledger: Ledger::default(),
             requests: Receipts::default(),
+            funding: crate::funding::State::default(),
         }
     }
 }
 impl Project {
     pub fn decode(value: Value) -> Result<Self, Error> {
-        if value.get("project_state_version").is_some() {
-            let state: Self = serde_json::from_value(value).map_err(|_| Error::Invalid)?;
-            if state.project_state_version != 1 {
-                return Err(Error::Invalid);
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Legacy {
+            project_state_version: u8,
+            catalog: Catalog,
+            ledger: Ledger,
+            requests: Receipts,
+        }
+        match value.get("project_state_version").and_then(Value::as_u64) {
+            Some(1) => {
+                let old: Legacy = serde_json::from_value(value).map_err(|_| Error::Invalid)?;
+                if old.project_state_version != 1 {
+                    return Err(Error::Invalid);
+                }
+                Ok(Self {
+                    project_state_version: 2,
+                    catalog: old.catalog,
+                    ledger: old.ledger,
+                    requests: old.requests,
+                    funding: crate::funding::State::default(),
+                })
             }
-            Ok(state)
-        } else {
-            Ok(Self {
+            Some(2) => serde_json::from_value(value).map_err(|_| Error::Invalid),
+            Some(_) => Err(Error::Invalid),
+            None if value.get("project_state_version").is_some() => Err(Error::Invalid),
+            None => Ok(Self {
                 catalog: serde_json::from_value(value).map_err(|_| Error::Invalid)?,
                 ..Self::default()
-            })
+            }),
         }
     }
     /// Signed reads permit repeated valid signatures until expiry; they never consume nonce/receipt state.

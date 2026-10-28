@@ -29,12 +29,16 @@ fn reject(e: identity::Error) -> Result<Response> {
     }
 }
 fn policies(env: &Env) -> std::result::Result<Vec<Policy>, ()> {
+    #[cfg(feature = "funding-tests")]
+    env.service("TEST_FUNDING_CONTROL").map_err(|_| ())?;
     let names = js_sys::Reflect::own_keys(env.as_ref()).map_err(|_| ())?;
-    if names
-        .iter()
-        .filter_map(|n| n.as_string())
-        .any(|n| identity::forbidden_binding(&n))
-    {
+    if names.iter().filter_map(|n| n.as_string()).any(|n| {
+        #[cfg(feature = "funding-tests")]
+        if n == "TEST_FUNDING_CONTROL" {
+            return false;
+        }
+        identity::forbidden_binding(&n)
+    }) {
         return Err(());
     }
     if env.var("ALPHA_ENROLLMENT").map_err(|_| ())?.to_string() != "operator-approved" {
@@ -111,6 +115,48 @@ fn signed_error(e: identity::Error) -> Result<Response> {
     };
     response(code, status)
 }
+fn task_error(e: crate::funded_tasks::Error) -> Result<Response> {
+    use crate::{core::Fault as C, funded_tasks::Error as E, funding::Error as F};
+    match e {
+        E::Auth(e) => signed_error(e),
+        E::AdmissionUnavailable => response("delivery_not_ready", 503),
+        E::Funding(e) => match e {
+            F::Insufficient => response("operator_grant_exhausted", 429),
+            F::Expired => response("operator_grant_expired", 503),
+            F::Conflict => response("funding_policy_conflict", 409),
+            F::Capacity => response("funding_capacity", 429),
+            F::ClockRegressed => response("funding_clock_unavailable", 503),
+            _ => response("funding_unavailable", 503),
+        },
+        E::Ledger(e) => match e {
+            C::NotFound => response("task_not_found", 404),
+            C::Conflict | C::Stale => response("task_conflict", 409),
+            C::Capacity | C::Limited { .. } => response("task_limit", 429),
+            C::DestinationDisabled => response("registered_destination_required", 400),
+            _ => response("task_invalid", 400),
+        },
+    }
+}
+#[cfg(feature = "funding-tests")]
+async fn fixture_policy(env: &Env, project: &str) -> Result<Option<crate::funding::Policy>> {
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_body(Some(
+        serde_json::to_string(&json!({"project_id":project}))?.into(),
+    ));
+    let mut r = env
+        .service("TEST_FUNDING_CONTROL")?
+        .fetch("http://control.invalid/funding", Some(init))
+        .await?;
+    if r.status_code() == 204 {
+        return Ok(None);
+    }
+    if r.status_code() != 200 {
+        return Err(Error::RustError(
+            "Funding fixture policy unavailable".into(),
+        ));
+    }
+    Ok(Some(r.json().await?))
+}
 fn decimal(value: &str) -> Option<i64> {
     let n = value.parse::<i64>().ok()?;
     if n >= 0 && n.to_string() == value {
@@ -149,7 +195,7 @@ async fn signed_forward(req: &mut Request, env: &Env, list: &[Policy]) -> Result
     else {
         return response("request_invalid", 400);
     };
-    if req.method() == Method::Put
+    if matches!(req.method(), Method::Put | Method::Post)
         && req
             .headers()
             .get("Content-Type")?
@@ -217,6 +263,14 @@ struct Enroll {
 #[event(fetch)]
 pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let url = req.url()?;
+    #[cfg(feature = "funding-tests")]
+    if url.scheme() != "http"
+        || url.host_str() != Some("127.0.0.1")
+        || env.service("TEST_FUNDING_CONTROL").is_err()
+    {
+        return response("funding_fixture_requires_loopback_harness", 403);
+    }
+    #[cfg(feature = "production")]
     if url.scheme() != "https"
         || url.host_str() != Some("api.runlater.io")
         || url.port().is_some_and(|p| p != 443)
@@ -252,13 +306,29 @@ pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response
     }
     let path = req.path();
     if req.method() == Method::Get && path == "/health" {
+        let mode = if cfg!(feature = "funding-tests") {
+            "loopback_funding_model_fixture"
+        } else {
+            "production"
+        };
         return Response::from_json(
-            &json!({"mode":"production","identity":"signed_read_config_only","task_api":"unavailable","outbound":"disabled"}),
+            &json!({"mode":mode,"identity":"signed_read_config_only","task_api":"unavailable","outbound":"disabled"}),
         );
     }
     if (path == "/v1/queue" && matches!(req.method(), Method::Get | Method::Put))
         || (path == "/v1/identity/me" && req.method() == Method::Get)
     {
+        return signed_forward(&mut req, &env, &list).await;
+    }
+    if let Some(_action) = crate::funded_tasks::route(req.method().as_ref(), &path) {
+        #[cfg(feature = "production")]
+        if matches!(
+            _action,
+            crate::funded_tasks::Route::Create | crate::funded_tasks::Route::Redrive(_)
+        ) && req.headers().get("RunLater-Project-Id")?.is_none()
+        {
+            return response("delivery_not_ready", 503);
+        }
         return signed_forward(&mut req, &env, &list).await;
     }
     if !matches!(
@@ -368,6 +438,68 @@ impl DurableObject for ProjectIdentity {
         let Some(policy) = list.iter().find(|p| p.project_id == project) else {
             return response("identity_forbidden", 403);
         };
+        #[cfg(feature = "funding-tests")]
+        if req.path().starts_with("/funding-fixture/") {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Finish {
+                id: String,
+                fence: u64,
+                status: Option<u16>,
+                timeout: bool,
+            }
+            let Some(value) = body(&mut req).await? else {
+                return response("fixture_invalid", 400);
+            };
+            let mut stored = self.load()?;
+            let result = if req.path() == "/funding-fixture/sync" {
+                let Some(policy) = fixture_policy(&self.env, &project).await? else {
+                    return response("fixture_policy_missing", 503);
+                };
+                // Reload after the private policy await; do not commit the earlier snapshot.
+                stored = self.load()?;
+                if policy.project_id != project {
+                    return response("fixture_invalid", 400);
+                }
+                stored
+                    .funding
+                    .apply(&policy, now())
+                    .map(|_| json!({"applied":true}))
+                    .map_err(crate::funded_tasks::Error::Funding)
+            } else if req.path() == "/funding-fixture/claim" {
+                let d: crate::core::Dispatch = serde_json::from_value(value)?;
+                if d.tenant != project {
+                    return response("request_forbidden", 403);
+                }
+                stored.funded_claim(&d, now()).and_then(|t| {
+                    serde_json::to_value(t)
+                        .map_err(|_| crate::funded_tasks::Error::Auth(identity::Error::Invalid))
+                })
+            } else if req.path() == "/funding-fixture/finish" {
+                let f: Finish = serde_json::from_value(value)?;
+                let outcome = if f.timeout {
+                    crate::core::Outcome::Timeout
+                } else {
+                    match f.status {
+                        Some(v) if (100..=599).contains(&v) => crate::core::Outcome::Http(v),
+                        _ => return response("fixture_invalid", 400),
+                    }
+                };
+                stored
+                    .funded_finish(&f.id, f.fence, outcome, now())
+                    .and_then(|t| {
+                        serde_json::to_value(t)
+                            .map_err(|_| crate::funded_tasks::Error::Auth(identity::Error::Invalid))
+                    })
+            } else {
+                return response("fixture_invalid", 404);
+            };
+            self.save(&stored)?;
+            return match result {
+                Ok(v) => Response::from_json(&v),
+                Err(e) => task_error(e),
+            };
+        }
         if req.path() == "/signed" {
             if req.method() != Method::Post {
                 return response("method_not_supported", 405);
@@ -386,7 +518,55 @@ impl DurableObject for ProjectIdentity {
                 Ok(v) if v.len() <= 2048 => v,
                 _ => return response("invalid_signed_input", 400),
             };
+            #[cfg(feature = "funding-tests")]
+            let admission = if matches!(
+                crate::funded_tasks::route(&input.envelope.method, &input.envelope.path),
+                Some(crate::funded_tasks::Route::Create | crate::funded_tasks::Route::Redrive(_))
+            ) {
+                fixture_policy(&self.env, &project).await?
+            } else {
+                None
+            };
+            #[cfg(feature = "production")]
+            let admission: Option<crate::funding::Policy> = None;
             let mut stored = self.load()?;
+            if crate::funded_tasks::route(&input.envelope.method, &input.envelope.path).is_some() {
+                if input.envelope.method == "GET" {
+                    return match stored.task_query(
+                        policy,
+                        &input.envelope,
+                        &input.signature,
+                        &raw_body,
+                        now(),
+                    ) {
+                        Ok(v) => Response::from_json(&v),
+                        Err(e) => task_error(e),
+                    };
+                }
+                if let Err(e) = stored.catalog.apply_policy(policy, now()) {
+                    return signed_error(e);
+                }
+                self.save(&stored)?;
+                let result = stored.task_command(
+                    policy,
+                    admission.as_ref(),
+                    &input.envelope,
+                    &input.signature,
+                    &raw_body,
+                    now(),
+                );
+                self.save(&stored)?;
+                return match result {
+                    Ok(v) => Ok(
+                        Response::from_json(&v)?.with_status(if v["created"] == true {
+                            201
+                        } else {
+                            200
+                        }),
+                    ),
+                    Err(e) => task_error(e),
+                };
+            }
             if input.envelope.method == "GET" {
                 return match stored.query(
                     policy,

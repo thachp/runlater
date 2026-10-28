@@ -209,3 +209,5 @@ The local prototype also supports [diagnostic dead-letter reconciliation](docs/T
 A separate [production identity source profile](docs/PRODUCTION-IDENTITY.md) provides offline-tested operator-approved possession enrollment. It is not activated and cannot accept tasks, issue production credentials or simulate delivery.
 
 The production source profile also has [signed reads and configuration](docs/SIGNED-REQUESTS.md), with atomic command receipts and pure replayable reads. Unfunded task admission remains disabled.
+
+Finite operator-alpha task funding is a [source-only model](docs/FUNDING.md), tested with disposable local SQLite. Production fresh task admission remains disabled until destination registration, signing and actual delivery are integrated and reviewed.
