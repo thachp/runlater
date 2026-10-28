@@ -23,7 +23,11 @@ pub mod identity;
 mod production_runtime;
 #[cfg(all(
     target_arch = "wasm32",
-    not(any(feature = "production", feature = "funding-tests"))
+    not(any(
+        feature = "production",
+        feature = "funding-tests",
+        feature = "destination-tests"
+    ))
 ))]
 mod runtime;
 pub mod security;
@@ -51,3 +55,22 @@ pub mod funding;
 pub mod funded_tasks;
 
 pub mod delivery;
+#[cfg(all(
+    feature = "destination-tests",
+    any(
+        feature = "production",
+        feature = "staging",
+        feature = "runtime-tests",
+        feature = "funding-tests"
+    )
+))]
+compile_error!("destination-tests must be built in isolation");
+
+#[cfg(all(target_arch = "wasm32", feature = "destination-tests"))]
+mod destination_runtime;
+pub mod destinations;
+#[cfg(all(
+    target_arch = "wasm32",
+    any(feature = "production", feature = "destination-tests")
+))]
+mod safe_egress;

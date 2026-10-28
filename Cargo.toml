@@ -12,6 +12,7 @@ staging = []
 runtime-tests = []
 production = []
 funding-tests = []
+destination-tests = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

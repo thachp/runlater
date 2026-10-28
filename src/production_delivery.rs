@@ -196,85 +196,44 @@ impl ProjectIdentity {
     }
 }
 async fn fetch_wire(w: Wire) -> (Outcome, &'static str) {
-    use futures_util::{
-        future::{select, Either},
-        pin_mut, StreamExt,
+    // The live alpha remains restricted to its one exact owned endpoint.
+    if w.url != crate::delivery::RECEIVER_URL {
+        return (Outcome::Http(400), "policy_unavailable");
+    }
+    let policy = crate::destinations::EgressPolicy {
+        approved_hosts: ["receiver-alpha.runlater.io".into()].into_iter().collect(),
     };
-    let controller = AbortController::default();
-    let signal = controller.signal();
-    let action = async {
-        let headers = Headers::new();
-        headers.set("Content-Type", "application/json")?;
-        for (k, v) in &w.headers {
-            headers.set(k, v)?;
-        }
-        let mut init = RequestInit::new();
-        init.with_method(Method::Post)
-            .with_redirect(RequestRedirect::Manual)
-            .with_headers(headers)
-            .with_body(Some(w.body.into()));
-        let request = Request::new_with_init(&w.url, &init)?;
-        let mut r = Fetch::Request(request).send_with_signal(&signal).await?;
-        let status = r.status_code();
-        if (300..400).contains(&status) {
-            return Ok::<_, worker::Error>((Outcome::Http(400), "redirect_rejected"));
-        }
-        let count: usize = r.headers().entries().map(|(k, v)| k.len() + v.len()).sum();
-        if count > 2048 {
-            return Ok((Outcome::Http(400), "response_headers_too_large"));
-        }
-        let mut size = 0;
-        let mut body_bytes = Vec::new();
-        let mut chunks = 0;
-        if let Ok(mut stream) = r.stream() {
-            while let Some(part) = stream.next().await {
-                let part = part?;
-                size += part.len();
-                if size <= 1024 {
-                    body_bytes.extend_from_slice(&part);
-                }
-                chunks += 1;
-                if size > 1024 || chunks > 32 {
-                    return Ok((Outcome::Http(400), "response_body_too_large"));
-                }
+    let Ok(target) = policy.target(&w.url) else {
+        return (Outcome::Http(400), "policy_unavailable");
+    };
+    let r = match crate::safe_egress::fetch(target, w.body, "application/json", w.headers).await {
+        Ok(r) => r,
+        Err(e) => return (e.outcome, e.category),
+    };
+    let category = if (200..300).contains(&r.status) {
+        "http_success"
+    } else {
+        let code = serde_json::from_slice::<serde_json::Value>(&r.body)
+            .ok()
+            .and_then(|v| {
+                v.get("code")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            });
+        match code.as_deref() {
+            Some("callback_forbidden") => "receiver_callback_forbidden",
+            Some("callback_policy_rejected") => "receiver_policy_rejected",
+            Some("synthetic_failure") => "receiver_synthetic_failure",
+            Some("synthetic_retry") => "receiver_synthetic_retry",
+            Some("receiver_unconfigured") => "receiver_unconfigured",
+            Some("body_limit") => "receiver_body_limit",
+            Some("synthetic_required") | Some("invalid_synthetic_body") => {
+                "receiver_invalid_synthetic"
             }
+            _ => "http_error",
         }
-        Ok((
-            Outcome::Http(status),
-            if (200..300).contains(&status) {
-                "http_success"
-            } else {
-                let code = serde_json::from_slice::<serde_json::Value>(&body_bytes)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("code")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string)
-                    });
-                match code.as_deref() {
-                    Some("callback_forbidden") => "receiver_callback_forbidden",
-                    Some("callback_policy_rejected") => "receiver_policy_rejected",
-                    Some("synthetic_failure") => "receiver_synthetic_failure",
-                    Some("synthetic_retry") => "receiver_synthetic_retry",
-                    Some("receiver_unconfigured") => "receiver_unconfigured",
-                    Some("body_limit") => "receiver_body_limit",
-                    Some("synthetic_required") | Some("invalid_synthetic_body") => {
-                        "receiver_invalid_synthetic"
-                    }
-                    _ => "http_error",
-                }
-            },
-        ))
     };
-    let deadline = Delay::from(std::time::Duration::from_millis(3000));
-    pin_mut!(action, deadline);
-    let result = match select(action, deadline).await {
-        Either::Left((Ok(result), _)) => result,
-        Either::Left((Err(_), _)) => (Outcome::Timeout, "network_uncertain"),
-        Either::Right(_) => (Outcome::Timeout, "timeout_uncertain"),
-    };
-    controller.abort();
-    result
+    (Outcome::Http(r.status), category)
 }
 #[event(queue)]
 pub async fn consume(
