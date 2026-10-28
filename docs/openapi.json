@@ -478,7 +478,7 @@
       },
       "put": {
         "operationId": "configureDefaultQueueLimits",
-        "description": "CQRS command replaces all limits. Lowering limits gates future work without revoking existing leases. Reconfiguration never resets rate tokens.",
+        "description": "Configure the default tenant queue using a full object with explicit paused state. Pause/resume blocks new claims without undoing effects or resetting budgets. Same configuration does not refill tokens or append a configuration event. Read prior config before replacing; concurrent config writes are last committed writer wins.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1481,7 +1481,8 @@
           "max_payload_bytes",
           "max_concurrent",
           "dispatch_per_second",
-          "dispatch_burst"
+          "dispatch_burst",
+          "paused"
         ],
         "properties": {
           "max_active_tasks": {
@@ -1513,9 +1514,14 @@
             "minimum": 1,
             "maximum": 100,
             "default": 20
+          },
+          "paused": {
+            "type": "boolean",
+            "default": false,
+            "description": "Durable dispatch gate; blocks new claims, preserves accepted work and in-flight effects. PUT must explicitly specify this field."
           }
         },
-        "description": "All values proposed local prototype limits. One tenant-wide default logical queue per project; no multiple-queue sharding."
+        "description": "All values proposed local prototype limits. One tenant-wide default logical queue per project; no multiple-queue sharding. Full replacement requires explicit paused; omitted paused is accepted only when migrating old stored snapshots, not API writes."
       },
       "NewLocalKey": {
         "type": "object",
@@ -1899,6 +1905,9 @@
           "retained_audit_events": {
             "type": "integer",
             "minimum": 0
+          },
+          "paused": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -1917,7 +1926,8 @@
           "attempt_failures_by_category",
           "failed_tasks_without_attempts",
           "retained_tasks",
-          "retained_audit_events"
+          "retained_audit_events",
+          "paused"
         ]
       },
       "QueueEvent": {
@@ -2155,7 +2165,9 @@
           "attempt_lease_expired_unknown",
           "attempt_unknown_failure",
           "stale_results_ignored",
-          "clock_regressed_observations"
+          "clock_regressed_observations",
+          "claim_paused",
+          "paused_age_expired"
         ],
         "properties": {
           "admission_active_tasks_denied": {
@@ -2244,6 +2256,16 @@
             "maximum": 1000000000000
           },
           "clock_regressed_observations": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "claim_paused": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000
+          },
+          "paused_age_expired": {
             "type": "integer",
             "minimum": 0,
             "maximum": 1000000000000

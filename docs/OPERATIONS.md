@@ -32,3 +32,5 @@ Run `./scripts/check.sh` for native/Wasm checks, and `node scripts/operations.mj
 Still required before production: exported interval metrics/alerts and production calibration; durable long-term audit policy/export and recovery; normalized/indexed storage and measured scan costs; formal deletion/legal retention policy; operational access review and capacity/load evidence. No live account deletion, resource creation, deployment or new credential provisioning is part of this slice. Issue #10 remains partial.
 
 Windowed observations now have a separate read-scoped `/v1/queue/metrics` route; see [METRICS.md](METRICS.md). Snapshot health still means retained ledger state/history; event metrics cover only observations since instrumentation. Throttle counters are implemented locally, while exported telemetry/alerts and production monitoring remain deferred.
+
+The health snapshot includes `paused`. Backlog counts still describe due/stored work, not claim eligibility while paused. See [durable pause/resume](PAUSE.md).

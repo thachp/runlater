@@ -11,6 +11,8 @@ pub enum Kind {
     AdmissionActiveTasksDenied,
     AdmissionPayloadDenied,
     AdmissionRetainedTasksDenied,
+    ClaimPaused,
+    PausedAgeExpired,
     ClaimReferences,
     ClaimIgnored,
     ClaimMissing,
@@ -28,10 +30,12 @@ pub enum Kind {
     ClockRegressedObservations,
 }
 impl Kind {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 20] = [
         Self::AdmissionActiveTasksDenied,
         Self::AdmissionPayloadDenied,
         Self::AdmissionRetainedTasksDenied,
+        Self::ClaimPaused,
+        Self::PausedAgeExpired,
         Self::ClaimReferences,
         Self::ClaimIgnored,
         Self::ClaimMissing,

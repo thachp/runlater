@@ -138,7 +138,9 @@ fn redrive_mapping_follows_child_and_survives_source_retention() {
 fn journal_is_bounded_and_retention_wake_eventually_clears_without_queries() {
     let mut l = Ledger::default();
     for i in 0..300 {
-        l.configure(l.limits.clone(), i).unwrap();
+        let mut limits = l.limits.clone();
+        limits.max_concurrent = 1 + (i % 2) as u32;
+        l.configure(limits, i).unwrap();
     }
     assert_eq!(l.audit.len(), operations::AUDIT_CAP);
     assert_eq!(l.audit[0].sequence, 45);

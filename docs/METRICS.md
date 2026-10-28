@@ -17,6 +17,8 @@ Old buckets are excluded logically on reads and pruned on the next observed comm
 | admission_active_tasks_denied / admission_payload_denied / admission_retained_tasks_denied | A new enqueue/redrive fails its authoritative tenant admission check. Repeated rejected calls are repeated observations; an existing idempotent result bypasses admission without another denial |
 | claim_references | A valid internal claim DTO reaches the ledger; not a unique task or provider transport count |
 | claim_ignored / claim_missing | A stale/duplicate/noneligible reference returns no claim, or its retained task is absent |
+| claim_paused | An otherwise eligible reference is deferred by the durable pause gate before spending tokens or starting a lease |
+| paused_age_expired | Paused nonrunning work exceeds its original delivery-age budget; no attempt is started |
 | claim_rate_denied / claim_concurrency_denied | An otherwise eligible reference is deferred by durable dispatch limits; repeated transport references may repeat these counts |
 | claim_age_expired | Work becomes terminal before starting an attempt because its delivery age budget expired |
 | attempt_started | A new lease/fence/attempt is actually committed |

@@ -201,3 +201,5 @@ This tracks both completed local foundations and remaining MVP work. Issues #2 a
 A loopback-only client example, receiver protocol demonstration and executable local API contract are documented in [the local quickstart](docs/QUICKSTART.md). No account provisioning or live callbacks are required.
 
 The local prototype also supports [diagnostic dead-letter reconciliation](docs/TRANSPORT-RECOVERY.md); no production dead-letter Queue is configured.
+
+[Durable default-queue pause/resume](docs/PAUSE.md) gates new claims while preserving accepted work, in-flight outcomes and original retry-age budgets.

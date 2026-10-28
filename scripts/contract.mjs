@@ -66,6 +66,12 @@ try{
   assert.ok(validate,`Undocumented prototype media ${id}`);assert.ok(validate(await response.text()),`Prototype body schema ${id}`);
  }
 
+ const queueBefore=await probe('getDefaultQueueLimits');
+ const {paused: omitted,...withoutPause}=queueBefore;await probe('configureDefaultQueueLimits',{body:withoutPause,status:400,invalid:true});
+ await probe('configureDefaultQueueLimits',{body:{...queueBefore,paused:true}});assert.equal((await probe('getQueueHealth')).paused,true);
+ const pausedTask=await probe('createTask',{body:{destination:'fixture://success',body:'paused contract fixture',operation_key:'paused_contract',run_at_ms:0},key:'paused_contract',status:201});
+ assert.equal((await probe('getTask',{path:'/v1/tasks/'+pausedTask.id})).attempts.length,0);
+ await probe('cancelTask',{path:'/v1/tasks/'+pausedTask.id+'/cancel'});await client.resume();await client.pause();await client.resume();
  const input={destination:'fixture://success',body:'contract fixture',operation_key:'contract_operation',run_at_ms:Date.now()+60000};
  const t=await probe('createTask',{body:input,key:'enqueue',status:201});
  assert.equal((await probe('createTask',{body:input,key:'enqueue'})).id,t.id);

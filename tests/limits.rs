@@ -19,6 +19,7 @@ fn configured() -> Ledger {
     let mut l = Ledger::default();
     l.configure(
         QueueLimits {
+            paused: false,
             max_active_tasks: 10,
             max_payload_bytes: 1024,
             max_concurrent: 1,

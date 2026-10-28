@@ -14,7 +14,7 @@ Cloudflare forwards exhausted messages to the configured DLQ; without one they a
 
 `POST /v1/queue/dead-letters/{record_id}/reconcile` requires `configure`, an empty JSON object and no query parameters. It uses current authoritative state and trusted server time:
 
-- Eligible ready work keeps the same durable outbox entry, task ID and generation. Existing alarms publish it; this command never publishes inline.
+- Eligible ready work keeps the same durable outbox entry, task ID and generation. Existing alarms publish it when dispatch is enabled; this command never publishes inline or overrides queue pause.
 - Scheduled/retry work retains its due time; live leases retain their fence and possible in-flight effect. Expired leases follow the ordinary uncertain-outcome retry policy.
 - Missing, stale, cancelled, succeeded and failed references never resurrect a task. A failed task requires the separate explicit `redrive` permission/API to create a linked execution.
 - Age and attempt budgets are never reset. An exhausted nonrunning task is terminalized without a new callback or attempt. A defensive claim check also refuses a sixth attempt in an inconsistent ready snapshot.
@@ -31,4 +31,4 @@ At most 128 diagnostic references are retained per tenant ledger, evicting oldes
 
 `npm run test:transport-local` builds the compiled Rust Worker with `runtime-tests`, uses owned disposable Miniflare SQLite/Queues and private service-binding fault hooks, then restores a normal artifact and checks that hooks are absent. It exercises actual local source retries and dead-letter forwarding before claim and after a durable success, outbox recovery, schedule preservation, terminal no-op, permissions, malformed/foreign references, query immutability and a clean workerd/SQLite restart with receipt replay. Failures are injected exceptions; this suite does not kill a process or prove Cloudflare failure behavior. Separate runtime-recovery tests cover actual local SIGKILL boundaries.
 
-[Cloudflare local Queue support](https://developers.cloudflare.com/queues/configuration/local-development/) does not model consumer concurrency. No live DLQ, external callback, cross-region outage, provider retention or production operational guarantee is proven here. Production issue #8 criteria require that separate validation.
+[Cloudflare local Queue support](https://developers.cloudflare.com/queues/configuration/local-development/) does not model consumer concurrency. No live DLQ, external callback, cross-region outage, provider retention or production operational guarantee is proven here. Issue #8’s original local component criteria are complete. Separate launch/runtime-safety proof remains tracked by #7/#11.

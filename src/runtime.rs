@@ -338,7 +338,7 @@ impl TaskLedger {
         test_point(
             &self.env,
             "before_rearm",
-            json!({"preserve_earlier":preserve_earlier}),
+            json!({"preserve_earlier":preserve_earlier,"paused":self.load()?.ledger.limits.paused,"planned_wake_ms":self.load()?.ledger.next_wake(now())}),
         )
         .await?;
         let existing = self.state.storage().get_alarm().await?;
@@ -896,6 +896,9 @@ fn parse_command(
             Some(Command::MaintainRetention)
         }
         ("PUT", ["v1", "queue"]) => {
+            if !a.body.get("paused").is_some_and(|v| v.is_boolean()) {
+                return Err(Fault::Invalid);
+            }
             let limits: crate::limits::QueueLimits =
                 serde_json::from_value(a.body).map_err(|_| Fault::Invalid)?;
             limits.validate()?;

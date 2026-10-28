@@ -64,3 +64,5 @@ Tenant-scoped read-only operational views and explicit retention maintenance are
 For a runnable local client, pure receiver demonstration and an executable OpenAPI parity suite, see [QUICKSTART.md](QUICKSTART.md).
 
 Transport reconciliation: `npm run test:transport-local` exercises disposable local Queue exhaustion and SQLite recovery. See [transport recovery](TRANSPORT-RECOVERY.md) for scoped endpoints, retention and evidence limits.
+
+Durable queue pause/resume uses the existing queue configuration API. Run `npm run test:pause-local` for bounded local Worker/SQLite/Queue proofs; see [PAUSE.md](PAUSE.md).
