@@ -14,7 +14,7 @@ export function tools(spec,bytes){
 export function buildDiscovery(output=path.join(repo,'build/discovery')){
  const marker=path.join(output,'.runlater-discovery-output');if(fs.existsSync(output)&&(!fs.existsSync(marker)||fs.readFileSync(marker,'utf8')!=='runlater-source-artifacts-v1'))throw Error('Refuse to overwrite a directory not owned by this artifact builder');
  fs.mkdirSync(output,{recursive:true});fs.writeFileSync(marker,'runlater-source-artifacts-v1');
- for(const role of ['landing','docs']){fs.rmSync(path.join(output,role),{recursive:true,force:true});fs.cpSync(path.join(repo,'web',role),path.join(output,role),{recursive:true,filter:source=>!source.endsWith('wrangler.jsonc')});fs.cpSync(path.join(repo,'web/shared'),path.join(output,role),{recursive:true});}
+ for(const role of ['landing','docs']){fs.rmSync(path.join(output,role),{recursive:true,force:true});fs.cpSync(path.join(repo,'web',role),path.join(output,role),{recursive:true,filter:source=>!source.endsWith('wrangler.jsonc')&&!source.endsWith('/worker.mjs')&&!source.endsWith('/worker.test.mjs')});fs.cpSync(path.join(repo,'web/shared'),path.join(output,role),{recursive:true});}
  const copy=(src,dest)=>{const target=path.join(output,dest);fs.mkdirSync(path.dirname(target),{recursive:true});fs.copyFileSync(path.join(repo,src),target);};
  copy('discovery/service.v1.json','landing/runlater-service.v1.json');copy('discovery/pricing-status.v1.json','landing/pricing-status.v1.json');copy('discovery/llms.txt','landing/llms.txt');copy('discovery/llms.txt','docs/llms.txt');
  for(const name of ['service.v1.schema.json','tools.v1.schema.json','pricing-status.v1.schema.json'])copy('discovery/'+name,'docs/agent/'+name);
