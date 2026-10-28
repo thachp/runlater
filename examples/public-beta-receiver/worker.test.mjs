@@ -97,6 +97,11 @@ test('actual local Worker/SQLite: static proof, HMAC authentication, atomic dedu
     await call({address: url + '?proof=1', status: 404}); await call({method: 'GET', status: 404});
     await call({headers: {'Content-Type': 'text/plain'}, status: 415});
     await call({headers: {...proofHeaders, 'x-untrusted': 'x'.repeat(2049)}, status: 431});
+    const wideHeaders = new Headers({...proofHeaders, 'x-wide': 'é'.repeat(1200)});
+    assert.ok([...wideHeaders].reduce((n, [k, v]) => n + k.length + v.length, 0) < 2048);
+    assert.ok([...wideHeaders].reduce((n, [k, v]) => n + Buffer.byteLength(k) + Buffer.byteLength(v), 0) > 2048);
+    await call({body: f.verifyBody, headers: wideHeaders, status: 431});
+    assert.equal(await call({body: f.verifyBody, headers: {...proofHeaders, 'x-wide': 'é'.repeat(500)}, status: 200}), f.proof.response);
     await call({body: 'x'.repeat(1025), headers: proofHeaders, status: 413});
     await call({headers: {...f.headers('bad'), 'RunLater-Signature': '0'.repeat(64)}, status: 403});
     await call({headers: {...f.headers('{"synthetic":true}'), 'RunLater-Task-Id': 'other:task_0000000000000001'}, status: 403});

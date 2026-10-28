@@ -72,7 +72,7 @@ function proofResponse(env, context, body, now) {
 export default {async fetch(request, env) {
   let context; try { context = base(env); } catch { return reply(503, 'receiver_unconfigured'); }
   if (request.url !== context.url || request.method !== 'POST') return reply(404, 'route_unavailable');
-  let headerBytes = 0; for (const [k, v] of request.headers) headerBytes += k.length + v.length;
+  let headerBytes = 0; for (const [k, v] of request.headers) headerBytes += Buffer.byteLength(k, 'utf8') + Buffer.byteLength(v, 'utf8');
   if (headerBytes > 2048) return reply(431, 'headers_too_large');
   const type = request.headers.get('Content-Type');
   if (!['text/plain; charset=utf-8', 'application/json'].includes(type)) return reply(415, 'unsupported_media');
