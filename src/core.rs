@@ -323,18 +323,32 @@ impl Ledger {
     }
     pub fn configure(&mut self, limits: QueueLimits, now: i64) -> Result<(), Fault> {
         limits.validate()?;
-        if let Some(bucket) = self.bucket.as_mut() {
-            bucket.refill(&self.limits, now);
-            bucket.available_milli = bucket
-                .available_milli
-                .min(limits.dispatch_burst as u64 * 1000);
+        if self.limits.paused {
+            self.reconcile(now);
+        }
+        if self.limits == limits {
+            return Ok(());
+        }
+        if limits.dispatch_per_second != self.limits.dispatch_per_second
+            || limits.dispatch_burst != self.limits.dispatch_burst
+        {
+            if let Some(bucket) = self.bucket.as_mut() {
+                bucket.refill(&self.limits, now);
+                bucket.available_milli = bucket
+                    .available_milli
+                    .min(limits.dispatch_burst as u64 * 1000);
+            }
         }
         self.limits = limits;
+        if self.limits.paused {
+            self.reconcile(now);
+        }
         self.record(now, crate::operations::EventKind::Configured, None, None);
         Ok(())
     }
     pub fn reconcile(&mut self, now: i64) {
         let mut expired = Vec::new();
+        let mut aged = Vec::new();
         for t in self.tasks.values_mut() {
             if t.status == Status::Running && t.lease_until.is_some_and(|x| x <= now) {
                 Self::settle(t, Outcome::LeaseExpired, now);
@@ -343,6 +357,28 @@ impl Ledger {
             if matches!(t.status, Status::Scheduled | Status::RetryWait) && t.due_ms <= now {
                 t.status = Status::Ready;
             }
+            // Pausing never extends the accepted task's delivery-age budget.
+            // Running effects settle through their ordinary fenced result/lease path.
+            if self.limits.paused
+                && matches!(
+                    t.status,
+                    Status::Scheduled | Status::Ready | Status::RetryWait
+                )
+                && now.saturating_sub(t.initial_due_ms) > DAY
+            {
+                t.status = Status::Failed;
+                t.terminal_ms = Some(now);
+                aged.push(t.id.clone());
+            }
+        }
+        for id in aged {
+            self.metrics.observe(Metric::PausedAgeExpired, now);
+            self.record(
+                now,
+                crate::operations::EventKind::AgeExpired,
+                Some(id),
+                None,
+            );
         }
         for id in expired {
             self.metrics
@@ -358,6 +394,9 @@ impl Ledger {
     // The persisted eligible rows are the outbox. Republish until a claim, including uncertain sends.
     pub fn outbox(&mut self, tenant: &str, now: i64) -> Vec<Dispatch> {
         self.reconcile(now);
+        if self.limits.paused {
+            return Vec::new();
+        }
         self.tasks
             .values()
             .filter(|t| t.status == Status::Ready && t.due_ms <= now)
@@ -381,6 +420,10 @@ impl Ledger {
             || candidate.due_ms > now
         {
             self.metrics.observe(Metric::ClaimIgnored, now);
+            return Ok(None);
+        }
+        if self.limits.paused {
+            self.metrics.observe(Metric::ClaimPaused, now);
             return Ok(None);
         }
         if candidate.attempts.len() >= MAX_ATTEMPTS as usize {
@@ -539,6 +582,14 @@ impl Ledger {
             .values()
             .filter_map(|t| match t.status {
                 Status::Running => t.lease_until,
+                Status::Ready | Status::Scheduled | Status::RetryWait if self.limits.paused => {
+                    Some(
+                        t.initial_due_ms
+                            .saturating_add(DAY)
+                            .saturating_add(1)
+                            .max(now.saturating_add(1)),
+                    )
+                }
                 Status::Ready => Some(now + 1000),
                 Status::Scheduled | Status::RetryWait => Some(t.due_ms.max(now + 1)),
                 _ => t.terminal_ms.map(|x| x.saturating_add(RETENTION)),

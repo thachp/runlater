@@ -125,7 +125,7 @@ pub fn health(l: &Ledger, now: i64) -> Value {
             }
         }
     }
-    json!({"sampled_at_ms":now,"counts_by_state":states,"eligible_backlog":eligible,"due_retry_backlog":retry_due,"future_backlog":future,"oldest_eligible_due_ms":oldest,"oldest_eligible_age_ms":oldest.map(|at|now.saturating_sub(at).max(0)),"active_leases":active_lease,"expired_leases":expired_lease,"missing_leases":missing_lease,"retained_attempts":attempts,"finished_attempts":finished,"attempt_failures_by_category":failures,"failed_tasks_without_attempts":failed_without_attempt,"retained_tasks":l.tasks.len(),"retained_audit_events":l.audit.len()})
+    json!({"paused":l.limits.paused,"sampled_at_ms":now,"counts_by_state":states,"eligible_backlog":eligible,"due_retry_backlog":retry_due,"future_backlog":future,"oldest_eligible_due_ms":oldest,"oldest_eligible_age_ms":oldest.map(|at|now.saturating_sub(at).max(0)),"active_leases":active_lease,"expired_leases":expired_lease,"missing_leases":missing_lease,"retained_attempts":attempts,"finished_attempts":finished,"attempt_failures_by_category":failures,"failed_tasks_without_attempts":failed_without_attempt,"retained_tasks":l.tasks.len(),"retained_audit_events":l.audit.len()})
 }
 #[derive(Default, Debug, Serialize, PartialEq, Eq)]
 pub struct RetentionReport {

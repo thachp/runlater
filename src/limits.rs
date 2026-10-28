@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct QueueLimits {
+    #[serde(default)]
+    pub paused: bool,
     pub max_active_tasks: u32,
     pub max_payload_bytes: u32,
     pub max_concurrent: u32,
@@ -13,6 +15,7 @@ pub struct QueueLimits {
 impl Default for QueueLimits {
     fn default() -> Self {
         Self {
+            paused: false,
             max_active_tasks: 1000,
             max_payload_bytes: 128 * 1024,
             max_concurrent: 4,

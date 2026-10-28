@@ -26,6 +26,9 @@ export class LocalRunLater {
  deadLetter(id){return this.request('/v1/queue/dead-letters/'+encodeURIComponent(id));}
  reportDeadLetter(reference){return this.request('/v1/queue/dead-letters',{method:'POST',body:reference});}
  reconcileDeadLetter(id){return this.request('/v1/queue/dead-letters/'+encodeURIComponent(id)+'/reconcile',{method:'POST',body:{}});}
+ // Read/replace helpers: concurrent configuration writers remain last committed writer wins.
+ async pause(){const current=await this.limits();return this.configure({...current.data,paused:true});}
+ async resume(){const current=await this.limits();return this.configure({...current.data,paused:false});}
  metrics(){return this.request('/v1/queue/metrics');}
  health(){return this.request('/v1/queue/health');}
  audit(){return this.request('/v1/queue/audit');}
