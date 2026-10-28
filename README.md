@@ -10,7 +10,7 @@ Public self-service signup, arbitrary customer callbacks, commercial trials and 
 
 ## Landing, docs and discovery
 
-The responsive landing and docs in this branch are prepared for publication at runlater.io and docs.runlater.io, with a preserving308 redirect from www. Source does not by itself prove those hosts are published. The independently deployed API/receiver remain unchanged by static publication.
+The responsive landing at [runlater.io](https://runlater.io) and docs at [docs.runlater.io](https://docs.runlater.io) are published, with a preserving308 redirect from www. A reviewed follow-up consolidates apex/www onto the landing Worker; deployment evidence remains separate from source presence. The independently deployed API/receiver remain unchanged by static publication.
 
 - [Agent quickstart](docs/AGENT-QUICKSTART.md): public health check and executable signed client for an already approved operator key.
 - [Host ownership, build, release and rollback](docs/HOSTS.md): separate static/redirect configurations and actual verification requirements.

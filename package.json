@@ -18,7 +18,7 @@
     "test:signed-requests": "./scripts/test-signed-requests.sh",
     "test:funding": "./scripts/test-funding.sh",
     "test:delivery": "./scripts/test-delivery.sh",
-    "test:web": "npm run test:discovery && node --test web/redirect/worker.test.mjs scripts/web.test.mjs examples/alpha-quickstart.test.mjs",
+    "test:web": "npm run test:discovery && node --test web/redirect/worker.test.mjs web/landing/worker.test.mjs scripts/web.test.mjs examples/alpha-quickstart.test.mjs",
     "build:web": "npm run build:discovery",
     "preview:web": "node scripts/preview-web.mjs",
     "test:web-local": "node scripts/test-web-local.mjs"
