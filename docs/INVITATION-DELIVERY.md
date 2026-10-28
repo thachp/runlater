@@ -4,6 +4,8 @@ This increment connects invitation enrollment, destination ownership and funded 
 
 The separate RunLater-owned contract is [contracts/invitation-v1.json](../contracts/invitation-v1.json). It is informational metadata, not an authorization grant or a standards claim. Do not use the current alpha quickstart as a public signup client.
 
+The [invitation client v1 quickstart](INVITATION-QUICKSTART-v1.md) provides an explicitly injected transport, owner-file handling and offline protocol/schema tests. It covers the source contract without changing published alpha assets or claiming that invitation delivery is available on the live API.
+
 ## Permission and request boundary
 
 | Operation | Required enrolled scope | Signed body |
