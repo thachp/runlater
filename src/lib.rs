@@ -74,6 +74,7 @@ pub mod funded_tasks;
 pub mod delivery;
 
 pub mod invitation;
+pub mod invitation_delivery;
 
 #[cfg(all(
     feature = "destination-tests",
@@ -92,6 +93,10 @@ mod destination_runtime;
 pub mod destinations;
 #[cfg(all(
     target_arch = "wasm32",
-    any(feature = "production", feature = "destination-tests")
+    any(
+        feature = "production",
+        feature = "destination-tests",
+        feature = "invitation-tests"
+    )
 ))]
 mod safe_egress;

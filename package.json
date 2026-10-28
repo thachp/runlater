@@ -24,7 +24,8 @@
     "test:web-local": "node scripts/test-web-local.mjs",
     "test:invitations": "./scripts/test-invitations.sh",
     "test:destinations": "./scripts/test-destinations.sh",
-    "test:invitation-production": "./scripts/test-invitation-production.sh"
+    "test:invitation-production": "./scripts/test-invitation-production.sh",
+    "test:invitation-delivery": "./scripts/test-invitation-delivery.sh"
   },
   "devDependencies": {
     "ajv": "8.20.0",

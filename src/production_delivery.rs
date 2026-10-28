@@ -241,6 +241,9 @@ pub async fn consume(
     env: Env,
     _ctx: Context,
 ) -> Result<()> {
+    if env.var("INVITATION_ENROLLMENT").is_ok() {
+        return crate::invitation_runtime::delivery_transport::consume(batch, env, _ctx).await;
+    }
     if batch.queue() != "runlater-alpha-ready" {
         return Err(Error::RustError("Unknown alpha queue".into()));
     }

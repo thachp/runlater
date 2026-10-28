@@ -15,6 +15,7 @@ pub enum Permission {
     Redrive,
     Configure,
     ManageKeys,
+    ManageDestinations,
 }
 impl Permission {
     pub fn all() -> BTreeSet<Self> {
@@ -25,6 +26,7 @@ impl Permission {
             Self::Redrive,
             Self::Configure,
             Self::ManageKeys,
+            Self::ManageDestinations,
         ]
         .into_iter()
         .collect()
