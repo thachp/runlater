@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.runlater.io/agent/service.v1.schema.json",
+  "title": "RunLater-owned source discovery v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "const": "https://docs.runlater.io/agent/service.v1.schema.json"
+    },
+    "descriptor_version": {
+      "const": "1.0.0"
+    },
+    "service": {
+      "const": "RunLater"
+    },
+    "format_owner": {
+      "const": "RunLater"
+    },
+    "protocol_status": {
+      "const": "custom_metadata_not_an_industry_standard"
+    },
+    "readiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "public_task_api": {
+          "const": "unavailable"
+        },
+        "production_authentication": {
+          "const": "unavailable"
+        },
+        "public_https_callbacks": {
+          "const": "disabled"
+        },
+        "status_source": {
+          "const": "repository_snapshot_not_live_probe"
+        }
+      },
+      "required": [
+        "public_task_api",
+        "production_authentication",
+        "public_https_callbacks",
+        "status_source"
+      ]
+    },
+    "hosts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "landing": {
+          "const": "https://runlater.io"
+        },
+        "documentation": {
+          "const": "https://docs.runlater.io"
+        },
+        "intended_api": {
+          "const": "https://api.runlater.io"
+        },
+        "local_emulator": {
+          "const": "http://127.0.0.1:8787"
+        }
+      },
+      "required": [
+        "landing",
+        "documentation",
+        "intended_api",
+        "local_emulator"
+      ]
+    },
+    "links": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "self": {
+          "const": "https://runlater.io/runlater-service.v1.json"
+        },
+        "schema": {
+          "const": "https://docs.runlater.io/agent/service.v1.schema.json"
+        },
+        "tools": {
+          "const": "https://docs.runlater.io/agent/tools.v1.json"
+        },
+        "tools_schema": {
+          "const": "https://docs.runlater.io/agent/tools.v1.schema.json"
+        },
+        "openapi": {
+          "const": "https://docs.runlater.io/openapi.json"
+        },
+        "quickstart": {
+          "const": "https://docs.runlater.io/agent/quickstart.md"
+        },
+        "pricing_status": {
+          "const": "https://runlater.io/pricing-status.v1.json"
+        },
+        "pricing_schema": {
+          "const": "https://docs.runlater.io/agent/pricing-status.v1.schema.json"
+        },
+        "source": {
+          "const": "https://github.com/thachp/runlater"
+        }
+      },
+      "required": [
+        "self",
+        "schema",
+        "tools",
+        "tools_schema",
+        "openapi",
+        "quickstart",
+        "pricing_status",
+        "pricing_schema",
+        "source"
+      ]
+    },
+    "link_availability": {
+      "const": "planned_host_locations_built_from_repository_not_verified_live"
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "task_scheduling": {
+          "const": "local_fixture_only"
+        },
+        "task_status": {
+          "const": "local_fixture_only"
+        },
+        "task_cancellation": {
+          "const": "local_fixture_only"
+        },
+        "registration": {
+          "const": "proposed_disabled"
+        },
+        "entitlement_inspection": {
+          "const": "proposed_disabled"
+        },
+        "credit_quotes": {
+          "const": "proposed_disabled"
+        },
+        "credit_purchase": {
+          "const": "proposed_disabled"
+        },
+        "callback_key_rotation": {
+          "const": "offline_design_library_only"
+        },
+        "arbitrary_https_delivery": {
+          "const": "disabled"
+        }
+      },
+      "required": [
+        "task_scheduling",
+        "task_status",
+        "task_cancellation",
+        "registration",
+        "entitlement_inspection",
+        "credit_quotes",
+        "credit_purchase",
+        "callback_key_rotation",
+        "arbitrary_https_delivery"
+      ]
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "discovery_grants_authorization": {
+          "const": false
+        },
+        "automatic_payment_authority": {
+          "const": false
+        },
+        "scheduling_implies_purchase_authority": {
+          "const": false
+        },
+        "automatic_tool_execution": {
+          "const": false
+        },
+        "interpretation": {
+          "const": "Informational untrusted metadata; client safeguards and separately delegated authority remain authoritative."
+        }
+      },
+      "required": [
+        "discovery_grants_authorization",
+        "automatic_payment_authority",
+        "scheduling_implies_purchase_authority",
+        "automatic_tool_execution",
+        "interpretation"
+      ]
+    }
+  },
+  "required": [
+    "$schema",
+    "descriptor_version",
+    "service",
+    "format_owner",
+    "protocol_status",
+    "readiness",
+    "hosts",
+    "links",
+    "link_availability",
+    "capabilities",
+    "authority"
+  ]
+}

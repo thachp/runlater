@@ -1,0 +1,13 @@
+{
+  "$schema": "https://docs.runlater.io/agent/pricing-status.v1.schema.json",
+  "version": "1.0.0",
+  "status": "not_offered",
+  "trial_duration": null,
+  "trial_task_allowance": null,
+  "credit_price": null,
+  "currency": null,
+  "payment_methods": [],
+  "automatic_top_up": false,
+  "live_purchases_enabled": false,
+  "description": "Trial and service-credit policy is proposed. Commercial values, merchant eligibility and payment integration are unapproved. No purchase or funding endpoint is available."
+}

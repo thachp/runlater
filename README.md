@@ -203,3 +203,5 @@ A loopback-only client example, receiver protocol demonstration and executable l
 The local prototype also supports [diagnostic dead-letter reconciliation](docs/TRANSPORT-RECOVERY.md); no production dead-letter Queue is configured.
 
 [Durable default-queue pause/resume](docs/PAUSE.md) gates new claims while preserving accepted work, in-flight outcomes and original retry-age budgets.
+
+[Agent discovery source](docs/AGENT-DISCOVERY.md) describes local task tools and explicitly disabled onboarding/funding proposals. Static artifact generation does not deploy a service or authorize execution/payment.

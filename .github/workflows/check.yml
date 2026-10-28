@@ -19,6 +19,7 @@ jobs:
       - run: cargo check --locked --target wasm32-unknown-unknown
       - run: node --test web/redirect/worker.test.mjs
       - run: npm ci
+      - run: npm run test:discovery
       - run: npm run test:examples
       - run: npm run test:callback-wire
       - run: cargo install worker-build --version 0.8.7 --locked

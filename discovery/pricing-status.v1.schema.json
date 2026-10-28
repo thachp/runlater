@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.runlater.io/agent/pricing-status.v1.schema.json",
+  "title": "RunLater commercial availability, not a quote",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "const": "https://docs.runlater.io/agent/pricing-status.v1.schema.json"
+    },
+    "version": {
+      "const": "1.0.0"
+    },
+    "status": {
+      "const": "not_offered"
+    },
+    "trial_duration": {
+      "const": null
+    },
+    "trial_task_allowance": {
+      "const": null
+    },
+    "credit_price": {
+      "const": null
+    },
+    "currency": {
+      "const": null
+    },
+    "payment_methods": {
+      "const": []
+    },
+    "automatic_top_up": {
+      "const": false
+    },
+    "live_purchases_enabled": {
+      "const": false
+    },
+    "description": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "$schema",
+    "version",
+    "status",
+    "trial_duration",
+    "trial_task_allowance",
+    "credit_price",
+    "currency",
+    "payment_methods",
+    "automatic_top_up",
+    "live_purchases_enabled",
+    "description"
+  ]
+}

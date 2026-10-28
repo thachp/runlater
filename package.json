@@ -11,7 +11,9 @@
     "test:callback-wire": "node --test examples/callback-rotation.test.mjs",
     "test:metrics-local": "./scripts/build.sh && node scripts/metrics-integration.mjs",
     "test:transport-local": "./scripts/test-transport.sh",
-    "test:pause-local": "./scripts/test-pause.sh"
+    "test:pause-local": "./scripts/test-pause.sh",
+    "build:discovery": "node scripts/discovery.mjs",
+    "test:discovery": "node --test scripts/discovery.test.mjs"
   },
   "devDependencies": {
     "ajv": "8.20.0",
