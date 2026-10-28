@@ -1,13 +1,14 @@
 #[cfg(all(
     feature = "invitation-tests",
     any(
+        feature = "destination-tests",
         feature = "production",
         feature = "funding-tests",
         feature = "staging",
         feature = "runtime-tests"
     )
 ))]
-compile_error!("invitation-tests must never be combined with production, funding-tests, staging or runtime-tests");
+compile_error!("invitation-tests must never be combined with production, funding-tests, staging, runtime-tests or destination-tests");
 #[cfg(all(
     target_arch = "wasm32",
     any(feature = "invitation-tests", feature = "production")
@@ -41,7 +42,8 @@ mod production_runtime;
     not(any(
         feature = "production",
         feature = "funding-tests",
-        feature = "invitation-tests"
+        feature = "invitation-tests",
+        feature = "destination-tests"
     ))
 ))]
 mod runtime;
@@ -72,3 +74,24 @@ pub mod funded_tasks;
 pub mod delivery;
 
 pub mod invitation;
+
+#[cfg(all(
+    feature = "destination-tests",
+    any(
+        feature = "production",
+        feature = "staging",
+        feature = "runtime-tests",
+        feature = "funding-tests",
+        feature = "invitation-tests"
+    )
+))]
+compile_error!("destination-tests must be built in isolation");
+
+#[cfg(all(target_arch = "wasm32", feature = "destination-tests"))]
+mod destination_runtime;
+pub mod destinations;
+#[cfg(all(
+    target_arch = "wasm32",
+    any(feature = "production", feature = "destination-tests")
+))]
+mod safe_egress;

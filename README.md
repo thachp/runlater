@@ -202,3 +202,5 @@ The production source profile also has [signed reads and configuration](docs/SIG
 Finite operator-alpha task funding is a [source-only model](docs/FUNDING.md), tested with disposable local SQLite. Default production fresh admission remains closed; the restricted opt-in path below requires reviewed policies, fresh approved material and real delivery proof before activation.
 
 The subsequent [restricted registered-delivery source](docs/REGISTERED-DELIVERY.md) wires production-mode alarms, Queue and v2 signatures for one owned synthetic receiver behind explicit operator configuration. It is offline-tested and not activated; arbitrary destinations and public customer enrollment remain unavailable.
+
+Offline destination verification source and activation boundaries: [DESTINATIONS.md](docs/DESTINATIONS.md).

@@ -12,6 +12,7 @@ staging = []
 runtime-tests = []
 production = []
 funding-tests = []
+destination-tests = []
 invitation-tests = []
 
 [dependencies]
