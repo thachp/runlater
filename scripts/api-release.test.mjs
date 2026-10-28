@@ -33,3 +33,12 @@ test('main advancing during upload blocks promotion',async()=>{
  await assert.rejects(deployExisting({settings_sha256:digest(s)},async path=>path==='/settings'?s:{deployments:['old']},async()=>JSON.stringify(record),async()=>{promoted=true},async()=>++checks===1));
  assert.equal(promoted,false);assert.equal(checks,2);
 });
+
+test('repository automatic trigger cannot satisfy separate execution gate',()=>{
+ const {c,a,e}=fixture();const repositoryOnly={...e,RUNLATER_AUTODEPLOY_ENABLED:'true'};delete repositoryOnly.RUNLATER_RELEASE_ENABLED;
+ assert.throws(()=>validate(c,a,repositoryOnly));
+ const w=readFileSync('.github/workflows/release-api.yml','utf8');
+ assert.match(w,/vars\.RUNLATER_AUTODEPLOY_ENABLED == 'true'/);
+ assert.match(w,/RUNLATER_RELEASE_ENABLED: \$\{\{ vars\.RUNLATER_RELEASE_ENABLED \}\}/);
+ assert.doesNotMatch(w,/vars\.RUNLATER_RELEASE_ENABLED == 'true'/);
+});
