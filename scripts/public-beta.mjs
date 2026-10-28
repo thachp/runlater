@@ -85,8 +85,14 @@ try {
  const k2=await api('/v1/callback-key',signed(r2.project_id,'/v1/callback-key',{}, {idempotency:'second-key',key:second}));assert.notEqual(k2.key_hex,verifier.key_hex);
  const foreign=await api('/v1/callback-key',{...signed(project,'/v1/callback-key',{}, {idempotency:'foreign-owner',key:second}),status:403});
  await api('/v1/tasks',{...signed(project,'/v1/tasks',{...task,operation_key:'past_trial',run_at_ms:receipt.expires_at_ms+1},{idempotency:'past-trial'}),status:400});
- for(let i=2;i<=16;i++) await api('/v1/tasks',{...signed(project,'/v1/tasks',{...task,operation_key:'future_'+i,run_at_ms:Date.now()+3600000},{idempotency:'task-'+i}),status:201});
- await api('/v1/tasks',{...signed(project,'/v1/tasks',{...task,operation_key:'over_capacity',run_at_ms:Date.now()+3600000},{idempotency:'task-17'}),status:429});
+ let cancelAtCapacity;
+ for(let i=2;i<=16;i++) {const accepted=await api('/v1/tasks',{...signed(project,'/v1/tasks',{...task,operation_key:'future_'+i,run_at_ms:Date.now()+3600000},{idempotency:'task-'+i}),status:201});if(i===2)cancelAtCapacity=accepted.result.id;}
+ const exhausted=await api('/v1/tasks',{...signed(project,'/v1/tasks',{...task,operation_key:'over_capacity',run_at_ms:Date.now()+3600000},{idempotency:'task-17'}),status:429});assert.equal(exhausted.error.code,'beta_lifetime_task_capacity');assert.equal(exhausted.retryable,false);
+ const atCapacityReplay=await api('/v1/tasks',signed(project,'/v1/tasks',task,{idempotency:'task-one'}));assert.equal(atCapacityReplay.replayed,true);
+ await api('/v1/tasks/'+cancelAtCapacity+'/cancel',signed(project,'/v1/tasks/'+cancelAtCapacity+'/cancel',{}, {idempotency:''}));
+ await start();
+ const stillExhausted=await api('/v1/tasks',{...signed(project,'/v1/tasks',{...task,operation_key:'after_cancel',run_at_ms:Date.now()+3600000},{idempotency:'after-cancel'}),status:429});assert.equal(stillExhausted.error.code,'beta_lifetime_task_capacity');assert.equal(stillExhausted.retryable,false);
+
 
  const beforeRead=projectSnapshot();await api('/v1/identity/me',signed(project,'/v1/identity/me',undefined,{method:'GET',idempotency:''}));assert.equal(projectSnapshot(),beforeRead);
  await start({BETA_REVOKED_PROJECTS:JSON.stringify([r2.project_id])});
