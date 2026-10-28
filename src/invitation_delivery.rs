@@ -284,9 +284,6 @@ impl Enrollment {
         let mut next = self.clone();
         let v = next.registered_task_command(e, signature, body, policy, keys, material, now)?;
         if v["created"] == true {
-            if next.outbound.beta_admissions >= 16 {
-                return Err(Error::BetaCapacity);
-            }
             let id = v["result"]["id"].as_str().ok_or(Error::Unavailable)?;
             let t = next
                 .project
@@ -314,6 +311,12 @@ impl Enrollment {
         let mut next = self.clone();
         let value = next.signed_task_command(e, signature, body, true, now)?;
         if value["created"] == true {
+            // Public lifetime capacity is checked after authenticated idempotent replay,
+            // before the destination's independent acceptance cap can shadow its permanent error.
+            // Invitation aggregates leave beta_admissions at zero.
+            if next.outbound.beta_admissions >= 16 {
+                return Err(Error::BetaCapacity);
+            }
             next.outbound.sync_keys(&e.project_id, keys, material)?;
             let id = value["result"]["id"].as_str().ok_or(Error::Unavailable)?;
             let task = next
