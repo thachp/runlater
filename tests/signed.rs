@@ -293,7 +293,7 @@ fn bounded_receipt_retention_and_signature_expiry_are_explicit() {
 fn malformed_new_snapshots_fail_closed_and_request_json_is_strict() {
     let p = state();
     let mut value = serde_json::to_value(&p).unwrap();
-    value["project_state_version"] = 2.into();
+    value["project_state_version"] = 99.into();
     assert!(Project::decode(value).is_err());
     let mut value = serde_json::to_value(&p).unwrap();
     value.as_object_mut().unwrap().remove("requests");
