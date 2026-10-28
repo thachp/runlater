@@ -1,3 +1,5 @@
+#[cfg(all(feature = "runtime-tests", feature = "staging"))]
+compile_error!("runtime-tests must never be combined with the staging build");
 pub mod core;
 #[cfg(target_arch = "wasm32")]
 mod runtime;

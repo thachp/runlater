@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 staging = []
+runtime-tests = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

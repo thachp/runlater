@@ -39,6 +39,28 @@ fn text_error(message: impl Into<String>, status: u16) -> Result<Response> {
         .set("Content-Type", "text/plain; charset=utf-8")?;
     Ok(response)
 }
+// Test builds only: private service binding, never a request-selected fault route.
+// Default and staging artifacts contain neither this function nor its call sites.
+#[cfg(feature = "runtime-tests")]
+async fn test_point(env: &Env, point: &str, metadata: serde_json::Value) -> Result<()> {
+    if env.var("TEST_RUNTIME_ENABLED")?.to_string() != "true"
+        || env.var("LOCAL_FIXTURES")?.to_string() != "true"
+    {
+        return Err(Error::RustError("Local test harness disabled".into()));
+    }
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_body(Some(
+        serde_json::to_string(&json!({"point":point,"metadata":metadata}))?.into(),
+    ));
+    let response = env
+        .service("TEST_CONTROL")?
+        .fetch("http://control.invalid/point", Some(init))
+        .await?;
+    if response.status_code() != 204 {
+        return Err(Error::RustError("Injected local runtime failure".into()));
+    }
+    Ok(())
+}
 fn fault(e: Fault) -> Result<Response> {
     if let Fault::Limited {
         reason,
@@ -94,6 +116,26 @@ async fn call(
 }
 #[event(fetch)]
 pub async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    #[cfg(feature = "runtime-tests")]
+    {
+        let url = req.url()?;
+        if url.scheme() != "http"
+            || url.host_str() != Some("127.0.0.1")
+            || env
+                .var("TEST_RUNTIME_ENABLED")
+                .map(|v| v.to_string())
+                .unwrap_or_default()
+                != "true"
+            || env
+                .var("LOCAL_FIXTURES")
+                .map(|v| v.to_string())
+                .unwrap_or_default()
+                != "true"
+            || env.service("TEST_CONTROL").is_err()
+        {
+            return text_error("Local test artifact: loopback harness required", 403);
+        }
+    }
     // FIRST boundary on every hostname/route, including health and version/preview URLs.
     if staging_mode(&env) {
         let expected = env
@@ -290,6 +332,13 @@ impl TaskLedger {
         Ok(())
     }
     async fn rearm(&self, preserve_earlier: bool) -> Result<()> {
+        #[cfg(feature = "runtime-tests")]
+        test_point(
+            &self.env,
+            "before_rearm",
+            json!({"preserve_earlier":preserve_earlier}),
+        )
+        .await?;
         let existing = self.state.storage().get_alarm().await?;
         let s = self.load()?;
         if staging_mode(&self.env)
@@ -336,7 +385,18 @@ impl TaskLedger {
         }
         self.save(&s)?;
         for d in messages {
+            #[cfg(feature = "runtime-tests")]
+            let reference = d.clone();
+            #[cfg(feature = "runtime-tests")]
+            test_point(
+                &self.env,
+                "before_publish",
+                serde_json::to_value(&reference)?,
+            )
+            .await?;
             self.env.queue("READY")?.send(d).await?;
+            #[cfg(feature = "runtime-tests")]
+            test_point(&self.env, "after_publish", serde_json::to_value(reference)?).await?;
         }
         self.rearm(false).await
     }
@@ -485,6 +545,8 @@ impl DurableObject for TaskLedger {
             .migrate_legacy_redrive_keys()
             .map_err(|_| Error::RustError("Invalid legacy redrive state".into()))?;
         s.ledger.reconcile(now());
+        #[cfg(feature = "runtime-tests")]
+        let enqueuing = matches!(&command, Some(crate::application::Command::Enqueue { .. }));
         let result = if let Some(d) = dispatch {
             match s.ledger.claim(&d, now()) {
                 Ok(t) => Response::from_json(&t),
@@ -542,6 +604,15 @@ impl DurableObject for TaskLedger {
             return text_error("Staging task budget exhausted", 429);
         }
         self.save(&s)?;
+        #[cfg(feature = "runtime-tests")]
+        if enqueuing && result.as_ref().is_ok_and(|r| r.status_code() == 201) {
+            test_point(
+                &self.env,
+                "accepted_commit",
+                json!({"id":format!("task_{:016x}",s.ledger.sequence)}),
+            )
+            .await?;
+        }
         self.rearm(true).await?;
         result
     }
@@ -566,6 +637,8 @@ pub async fn consume(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> 
             message.ack();
             continue;
         }
+        #[cfg(feature = "runtime-tests")]
+        test_point(&env, "before_claim", serde_json::to_value(d)?).await?;
         let mut claim = call(&env, &d.tenant, "/claim", serde_json::to_value(d)?, None).await?;
         if claim.status_code() == 429 {
             // A durable ready/outbox disposition and alarm were committed before this response.
@@ -623,6 +696,13 @@ pub async fn consume(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> 
         } else {
             400
         };
+        #[cfg(feature = "runtime-tests")]
+        test_point(
+            &env,
+            "callback_complete",
+            json!({"id":task.id,"fence":task.fence,"status":status}),
+        )
+        .await?;
         let done = call(
             &env,
             &d.tenant,
