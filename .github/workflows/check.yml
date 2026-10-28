@@ -34,3 +34,4 @@ jobs:
       - run: npm run test:funding
       - run: npm run test:delivery
       - run: npm run test:invitations
+      - run: npm run test:invitation-production

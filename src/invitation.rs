@@ -225,6 +225,14 @@ impl Registry {
         }
         Ok(())
     }
+    pub fn existing_ticket(&mut self, project: &str, now: i64) -> Result<Ticket, Error> {
+        self.route_existing(project, now)?;
+        self.tickets
+            .values()
+            .find(|t| t.project_id == project)
+            .cloned()
+            .ok_or(Error::Forbidden)
+    }
     pub fn revoke(&mut self, id: &str, now: i64) -> Result<Ticket, Error> {
         self.time(now)?;
         let t = self.tickets.get_mut(id).ok_or(Error::Forbidden)?;
@@ -315,6 +323,78 @@ pub struct Enrollment {
     clock_ms: i64,
 }
 impl Enrollment {
+    fn identity_policy(&self) -> Result<identity::Policy, identity::Error> {
+        let r = self.receipt.as_ref().ok_or(identity::Error::Forbidden)?;
+        if self.version != 1
+            || self.mode != Mode::Invitation
+            || self.ticket.as_ref().is_none_or(|t| t.revoked)
+        {
+            return Err(identity::Error::Forbidden);
+        }
+        Ok(identity::Policy {
+            project_id: r.project_id.clone(),
+            revision: 1,
+            revoked: false,
+            approvals: vec![identity::Approval {
+                public_key: r.public_key.clone(),
+                permissions: r.permissions.clone(),
+                expires_at_ms: r.expires_at_ms,
+            }],
+            revoked_keys: vec![],
+        })
+    }
+    /// Trusted application policy for this ticket's original grant. Never parse this from a request.
+    pub(crate) fn admission_policy(&self) -> Result<funding::Policy, identity::Error> {
+        let r = self.receipt.as_ref().ok_or(identity::Error::Forbidden)?;
+        self.identity_policy()?;
+        Ok(funding::Policy {
+            version: 1,
+            project_id: r.project_id.clone(),
+            revision: 1,
+            active_grant: Some(funding::GrantSpec {
+                grant_id: r.grant_id.clone(),
+                total_attempt_units: r.attempt_units,
+                admission_expires_at_ms: r.expires_at_ms,
+            }),
+            revoked_grants: vec![],
+        })
+    }
+    /// Signed project query using only authority committed by enrollment. No external approval list.
+    pub fn signed_query(
+        &self,
+        e: &crate::signed::Envelope,
+        signature: &str,
+        body: &[u8],
+        now: i64,
+    ) -> Result<serde_json::Value, crate::funded_tasks::Error> {
+        let p = self.identity_policy()?;
+        if crate::funded_tasks::route(&e.method, &e.path).is_some() {
+            self.project.task_query(&p, e, signature, body, now)
+        } else {
+            self.project
+                .query(&p, e, signature, body, now)
+                .map_err(Into::into)
+        }
+    }
+    /// Server-only readiness decides whether new admissions are possible; request input cannot set it.
+    /// Replay/cancellation use existing reservations even when fresh admission is unavailable.
+    pub fn signed_task_command(
+        &mut self,
+        e: &crate::signed::Envelope,
+        signature: &str,
+        body: &[u8],
+        new_admission_ready: bool,
+        now: i64,
+    ) -> Result<serde_json::Value, crate::funded_tasks::Error> {
+        let p = self.identity_policy()?;
+        let grant = if new_admission_ready {
+            Some(self.admission_policy()?)
+        } else {
+            None
+        };
+        self.project
+            .task_command(&p, grant.as_ref(), e, signature, body, now)
+    }
     pub fn new(mode: Mode) -> Self {
         Self {
             version: 1,
