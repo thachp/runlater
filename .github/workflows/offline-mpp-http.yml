@@ -1,0 +1,17 @@
+name: Offline MPP HTTP draft profile
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  offline-codec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+      - run: cargo fmt --manifest-path offline/mpp-http/Cargo.toml -- --check
+      - run: cargo test --locked --manifest-path offline/mpp-http/Cargo.toml
+      - run: cargo check --locked --manifest-path offline/mpp-http/Cargo.toml --target wasm32-unknown-unknown
+      - run: cargo test --locked --manifest-path offline/mpp-http/Cargo.toml --target wasm32-unknown-unknown --no-run
