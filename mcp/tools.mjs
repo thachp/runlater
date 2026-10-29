@@ -11,7 +11,7 @@ const result = (value, isError = false) => ({content: [{type: 'text', text: JSON
 function failure(code, action, acceptance = 'not_attempted') {
   return result({ok: false, error: {code, action}, task_acceptance: acceptance, automatic_retry: false}, true);
 }
-function taskResult(value, expectedId, canRead) {
+export function taskResult(value, expectedId, canRead) {
   const task = value?.result;
   if (!task || !/^task_[a-f0-9]{16}$/.test(task.id) || (expectedId && task.id !== expectedId)
     || !states.includes(task.status) || value.task_accepted !== true || typeof value.replayed !== 'boolean') throw new Error('invalid_response');

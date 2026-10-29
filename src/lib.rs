@@ -106,3 +106,9 @@ mod safe_egress;
 pub mod mcp_delegation;
 
 pub mod anonymous_trial;
+
+pub mod receiver_pairing;
+
+pub mod general_http;
+
+pub mod general_http_attempt;

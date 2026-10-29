@@ -32,7 +32,7 @@ fn queue_binding(env: &Env) -> &'static str {
     }
 }
 impl Configuration {
-    fn target(
+    pub(super) fn target(
         &self,
         raw: &str,
     ) -> std::result::Result<crate::destinations::Target, crate::destinations::Error> {
@@ -51,7 +51,7 @@ impl Configuration {
         Ok(target)
     }
 }
-fn configuration(env: &Env, project: &str) -> Result<Option<Configuration>> {
+pub(super) fn configuration(env: &Env, project: &str) -> Result<Option<Configuration>> {
     if public_runtime::mode(env) {
         if !public_runtime::configured(env) {
             return Ok(None);
@@ -160,7 +160,7 @@ fn configuration(env: &Env, project: &str) -> Result<Option<Configuration>> {
         material,
     }))
 }
-fn fail(e: crate::invitation_delivery::Error) -> Result<Response> {
+pub(super) fn fail(e: crate::invitation_delivery::Error) -> Result<Response> {
     match e {
         crate::invitation_delivery::Error::ReceiverRequired => json_response(
             &json!({"error":{"code":"receiver_required"},"task_accepted":false,"receiver_ready":false}),
@@ -349,7 +349,10 @@ impl InvitationProject {
         let Some(mut s) = load::<Enrollment>(&self.state)? else {
             return Ok(());
         };
-        let enabled = s
+        let general_enabled = !s.http.is_empty()
+            && self.env.var("GENERAL_HTTPS_ENABLED").map(|v|v.to_string()).unwrap_or_default() == "operator-approved"
+            && self.env.service("GENERAL_HTTPS_EGRESS").is_ok();
+        let enabled = general_enabled || s
             .project_id()
             .and_then(|p| configuration(&self.env, p).ok().flatten())
             .is_some_and(|c| s.outbound.sync_keys(c.keys.tenant(), &c.keys, &c).is_ok());
@@ -399,16 +402,13 @@ impl InvitationProject {
             save(&self.state, &s)?;
             return self.rearm().await;
         };
-        let Some(c) = configuration(&self.env, &project).ok().flatten() else {
-            save(&self.state, &s)?;
-            return self.rearm().await;
-        };
-        if s.outbound.sync_keys(&project, &c.keys, &c).is_err() {
-            save(&self.state, &s)?;
-            return self.rearm().await;
-        }
+        // Independent lanes: unavailable callback policy must not stall general tasks.
+        let callback_ready = configuration(&self.env, &project).ok().flatten()
+            .is_some_and(|c| s.outbound.sync_keys(&project, &c.keys, &c).is_ok());
+        let general_ready = self.env.var("GENERAL_HTTPS_ENABLED").map(|v|v.to_string()).unwrap_or_default() == "operator-approved"
+            && self.env.service("GENERAL_HTTPS_EGRESS").is_ok();
         let refs = s
-            .registered_outbox(&project, now())
+            .registered_outbox_lanes(&project, now(), callback_ready, general_ready)
             .map_err(|_| Error::RustError("Outbox rejected".into()))?;
         save(&self.state, &s)?;
         if crate::publication::publish_batch(refs, |d| async move {
@@ -427,11 +427,14 @@ impl InvitationProject {
             return json_response(&json!({"error":"invalid_dispatch"}), 400);
         }
         self.state.storage().set_alarm(1000).await?;
-        let Some(c) = configuration(&self.env, project).ok().flatten() else {
-            return json_response(&json!({"error":"delivery_not_ready"}), 503);
-        };
         let Some(mut s) = load::<Enrollment>(&self.state)? else {
             return json_response(&json!({"error":"task_not_found"}), 404);
+        };
+        if s.http.target(&d.id).is_some() {
+            return self.deliver_general(project, d).await;
+        }
+        let Some(c) = configuration(&self.env, project).ok().flatten() else {
+            return json_response(&json!({"error":"delivery_not_ready"}), 503);
         };
         s.outbound
             .sync_keys(project, &c.keys, &c)

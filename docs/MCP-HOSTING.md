@@ -8,8 +8,11 @@ endpoint. Do not activate discovery alone and call it a task-capable launch.
 [Anonymous agent trials](MCP-ANONYMOUS-TRIAL.md) are newly staged and disabled by
 default. They do not require human accounts or owner-key generation, but they use a
 **distinct capability principal**, not the owner-local key boundary below. Trial
-provisioning is explicit, bounded and immutable; receiver runtime setup and recovery
-are not implemented. Enabling that new authority requires separate security review,
+provisioning is explicit, bounded and immutable. A separate default-off
+[optional beta receiver pairing source](RECEIVER-PAIRING-WIRE.md) now provides private
+runtime-to-runtime installation; it does not deploy a receiver or configure recovery.
+The [product target](GENERAL-HTTPS-DESTINATIONS.md) remains customer-chosen HTTPS
+destinations without a mandatory RunLater receiver. Enabling new authority requires separate security review,
 activation approval and live verification. The owner-delegation path remains intact.
 
 ## Identity boundary — existing owner projects

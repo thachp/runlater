@@ -1,0 +1,10 @@
+# Source template only: supply an independently reviewed immutable official Node image digest.
+# No default prevents an accidental unpinned build. Not wired into any release.
+ARG NODE_IMAGE
+FROM ${NODE_IMAGE}
+WORKDIR /app
+COPY --chown=node:node egress /app/egress
+USER node
+ENV RUNLATER_NATIVE_EGRESS_ENABLED=false
+EXPOSE 8080
+CMD ["node", "egress/controller/container-main.mjs"]

@@ -95,6 +95,8 @@ pub struct State {
     trials: BTreeMap<String, crate::anonymous_trial::Grant>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     trial_tombstones: BTreeMap<String, crate::anonymous_trial::Descriptor>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    receiver_pins: BTreeMap<String, crate::receiver_pairing::Manifest>,
     clock_ms: i64,
     anonymous_operations: u32,
     client_operations: BTreeMap<String, u32>,
@@ -179,6 +181,7 @@ impl State {
             grants: BTreeMap::new(),
             trials: BTreeMap::new(),
             trial_tombstones: BTreeMap::new(),
+            receiver_pins: BTreeMap::new(),
             clock_ms: profile.opens_at_ms,
             anonymous_operations: 0,
             client_operations: BTreeMap::new(),
@@ -208,6 +211,22 @@ impl State {
         }
         for (project, state) in &self.mcp_revocations {
             if !self.grants.contains_key(project) || state.validate().is_err() {
+                return Err(Error::Invalid);
+            }
+        }
+        if self.receiver_pins.len() > PROJECTS {
+            return Err(Error::Invalid);
+        }
+        for (p, m) in &self.receiver_pins {
+            m.check().map_err(|_| Error::Invalid)?;
+            let g = self.trials.get(p).ok_or(Error::Invalid)?;
+            m.authorize(&g.descriptor, m.issued_at_ms)
+                .map_err(|_| Error::Invalid)?;
+            if m.project_id != *p
+                || m.release_id != profile.release_id
+                || m.expires_at_ms > g.descriptor.expires_at_ms
+                || !g.descriptor.allows(crate::auth::Permission::ReceiverSetup)
+            {
                 return Err(Error::Invalid);
             }
         }
@@ -389,6 +408,7 @@ impl State {
         self.grants
             .get(project)
             .map(|g| g.ticket.clone())
+            .or_else(|| self.trials.get(project).map(|g| g.ticket.clone()))
             .ok_or(Error::Forbidden)
     }
     pub fn client(
@@ -598,7 +618,8 @@ impl State {
         {
             return Err(Error::Invalid);
         }
-        if !lifecycle {
+        let pairing = e.path == crate::receiver_pairing::PIN;
+        if !lifecycle && !pairing {
             if !d.allows(crate::mcp_delegation::task_permission(e).map_err(|_| Error::Forbidden)?) {
                 return Err(Error::Forbidden);
             }
@@ -664,7 +685,37 @@ impl State {
             };
         };
         g.active(now).map_err(|_| Error::Forbidden)?;
-        if !lifecycle {
+        let new_pairing = pairing && !self.receiver_pins.contains_key(&e.project_id);
+        if !lifecycle
+            && (!pairing || new_pairing)
+            && self
+                .client_operations
+                .get(&e.project_id)
+                .copied()
+                .unwrap_or_default()
+                >= CLIENT_OPERATIONS
+        {
+            return Err(Error::Limited);
+        }
+        if pairing {
+            if e.method != "POST" {
+                return Err(Error::Invalid);
+            }
+            let m: crate::receiver_pairing::Manifest =
+                serde_json::from_slice(body).map_err(|_| Error::Invalid)?;
+            m.authorize(d, now).map_err(|_| Error::Forbidden)?;
+            if e.idempotency_key != m.pairing_id {
+                return Err(Error::Invalid);
+            }
+            if let Some(old) = self.receiver_pins.get(&e.project_id) {
+                if old != &m {
+                    return Err(Error::Conflict);
+                }
+            } else {
+                self.receiver_pins.insert(e.project_id.clone(), m);
+            }
+        }
+        if !lifecycle && (!pairing || new_pairing) {
             let n = self
                 .client_operations
                 .entry(e.project_id.clone())
@@ -675,6 +726,25 @@ impl State {
             *n += 1;
         }
         Ok(serde_json::json!({"grant":g}))
+    }
+    pub fn receiver_route(
+        &self,
+        r: &crate::receiver_pairing::Request,
+        now: i64,
+    ) -> Result<serde_json::Value, Error> {
+        if now < 0 || now > 9_007_199_254_740_991 || now < self.clock_ms {
+            return Err(Error::Clock);
+        }
+        let m = self
+            .receiver_pins
+            .get(&r.project_id)
+            .ok_or(Error::Forbidden)?;
+        let g = self.trials.get(&r.project_id).ok_or(Error::Forbidden)?;
+        g.active(now).map_err(|_| Error::Forbidden)?;
+        m.authorize(&g.descriptor, now)
+            .map_err(|_| Error::Forbidden)?;
+        r.verify(m, now).map_err(|_| Error::Forbidden)?;
+        Ok(serde_json::json!({"grant":g,"manifest":m}))
     }
     pub fn view(&self, now: i64) -> serde_json::Value {
         serde_json::json!({"mode":"public_free_beta","registration_open":now>=self.profile.opens_at_ms&&now<self.profile.closes_at_ms&&self.grants.len()+self.trials.len()<PROJECTS&&self.anonymous_operations<ANONYMOUS_OPERATIONS,"remaining_projects":PROJECTS-self.grants.len()-self.trials.len(),"trial":{"duration_ms":DURATION,"attempt_units":UNITS,"units_reserved_per_task":5},"limits":{"lifetime_projects":PROJECTS,"lifetime_tasks_per_project":16,"lifetime_publications_per_project":128,"client_operations_per_project":CLIENT_OPERATIONS,"receiver":"worker.account.workers.dev"},"payments":false})

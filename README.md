@@ -4,6 +4,10 @@ The [offline invitation enrollment component](docs/INVITATIONS.md) adds bounded 
 
 RunLater is a reusable HTTP task delivery API built in **Rust on Cloudflare Workers**. Submit work now for a later signed callback, with bounded retries and an inspectable record of each attempt.
 
+The product target is delivery to customer-chosen HTTPS endpoints, not a bot-specific
+receiver or permanently Workers.dev-only service. Current beta receiver restrictions
+are temporary safeguards. See the [general HTTPS destination design and safety gates](docs/GENERAL-HTTPS-DESTINATIONS.md).
+
 ## Status
 
 **Retained restricted alpha at [api.runlater.io](https://api.runlater.io/health), not customer general availability.** Only explicitly approved Ed25519 operators and RunLater's owned, side-effect-free synthetic receiver are enabled. The controlled cloud proof covered signed HTTPS success, retry across callback-key cutover, redirect rejection and timeout/cancel. No SLA, exact-time, ordering, exactly-once or verified capacity promise.

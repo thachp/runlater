@@ -16,11 +16,25 @@ and explicitly invoke `provision_trial` only when requested. Connect, initializa
 discovery and status never allocate a project. Existing owner-key projects remain a
 separate, locally approved linking option.
 
-**Connected does not mean ready to schedule.** This source milestone does not install
-a receiver or transfer its callback secret. It reports **receiver setup required**
-and refuses scheduling. A separately reviewed runtime setup path and authorized live
-proof are launch gates, not tasks to push onto the user as JSON/key instructions.
+**Connected does not mean ready to schedule.** The optional, default-off
+[beta receiver pairing path](RECEIVER-PAIRING-WIRE.md) adds an explicit `receiver_setup`
+permission and `pair_receiver` tool for a separately authorized runtime. Its private
+installation material flows directly from the API to that runtime, never through
+chat. Until `trial_status` confirms receiver readiness, the legacy `schedule_task`
+path is refused; this is not a requirement for general HTTPS scheduling.
+No receiver infrastructure is deployed by connecting or calling a tool. Source/local
+proof is not public activation; independent security QA, runtime setup and a bounded
+live proof remain launch gates.
 No recovery mechanism is configured: losing all OAuth credentials can lose access.
+
+RunLater's target is [customer-chosen HTTPS destinations](GENERAL-HTTPS-DESTINATIONS.md).
+The separate staged `schedule_http_request` tool accepts a customer URL, JSON
+payload, time and stable keys under newly consented `http_schedule` authority.
+It requires an available reviewed private egress adapter; flags/source alone do not
+permit admission. The initial profile is POST/JSON only, with no private endpoint
+auth, custom headers or completion callback. Never paste endpoint credentials into
+model-visible URLs or payloads. The managed receiver is an optional beta reference,
+not a requirement that every endpoint run RunLater code or wake a particular bot.
 
 The [hosted design](MCP-HOSTING.md) covers the existing owner-delegation path, true
 legacy SSE and separate Streamable HTTP. The remainder of this guide describes the

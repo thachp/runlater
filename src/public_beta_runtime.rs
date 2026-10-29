@@ -62,6 +62,21 @@ struct TrialRequest {
     signature: String,
     body_hex: String,
 }
+pub(super) fn pairing_enabled(env: &Env) -> bool {
+    trial_trust(env).ok().flatten().is_some()
+        && env
+            .var("MCP_RECEIVER_PAIRING_ENABLED")
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+            == "operator-approved"
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReceiverInput {
+    grant: crate::anonymous_trial::Grant,
+    manifest: crate::receiver_pairing::Manifest,
+    request: crate::receiver_pairing::Request,
+}
 pub(super) fn master(env: &Env) -> Result<Master> {
     Master::from_hex(&env.secret("BETA_CALLBACK_MASTER")?.to_string())
         .map_err(|_| Error::RustError("Invalid beta master".into()))
@@ -166,6 +181,16 @@ pub(super) async fn front(mut req: Request, env: Env) -> Result<Response> {
     }
     if req.method() == Method::Get && path == "/v1/beta" {
         return global(&env, "/public/view", &json!({})).await;
+    }
+    if path == crate::general_http::CREATE {
+        // Availability checked before registry/project admission or any quota/nonce writes.
+        if super::general_runtime::admission(&env).await.is_none() {
+            return json_response(&crate::general_http::unavailable(), 503);
+        }
+        return trial_front(req, &env).await;
+    }
+    if path.starts_with("/v1/mcp/receiver/") {
+        return receiver_front(req, &env).await;
     }
     if path.starts_with("/v1/mcp/trials/")
         || req.headers().get("RunLater-Trial-Bootstrap")?.is_some()
@@ -358,6 +383,88 @@ async fn signed(mut req: Request, env: &Env) -> Result<Response> {
     )
     .await
 }
+async fn receiver_front(mut req: Request, env: &Env) -> Result<Response> {
+    if !pairing_enabled(env)
+        || req.method() != Method::Post
+        || !matches!(
+            req.path().as_str(),
+            crate::receiver_pairing::PULL | crate::receiver_pairing::ACK
+        )
+        || req.url()?.query().is_some()
+    {
+        return err(inv::Error::Forbidden);
+    }
+    let h = req.headers().clone();
+    for name in [
+        "Authorization",
+        "Idempotency-Key",
+        "RunLater-Trial-Capability",
+        "RunLater-MCP-Delegation",
+        "RunLater-Trial-Revocation",
+    ] {
+        if h.get(name)?.is_some() {
+            return err(inv::Error::Forbidden);
+        }
+    }
+    if h.get("Content-Type")?.as_deref() != Some("application/json") {
+        return err(inv::Error::Invalid);
+    }
+    let Some(raw) = read_raw(&mut req).await? else {
+        return err(inv::Error::Invalid);
+    };
+    if raw.len() > 256 {
+        return err(inv::Error::Invalid);
+    }
+    let (Some(issued), Some(expires)) = (
+        h.get("RunLater-Issued-At")?.and_then(|v| decimal(&v)),
+        h.get("RunLater-Expires-At")?.and_then(|v| decimal(&v)),
+    ) else {
+        return err(inv::Error::Invalid);
+    };
+    let request = crate::receiver_pairing::Request {
+        project_id: h.get("RunLater-Project-Id")?.unwrap_or_default(),
+        public_key: h.get("RunLater-Public-Key")?.unwrap_or_default(),
+        pairing_id: h.get("RunLater-Pairing-Id")?.unwrap_or_default(),
+        method: "POST".into(),
+        path: req.path(),
+        body: String::from_utf8(raw)
+            .map_err(|_| Error::RustError("Invalid receiver body".into()))?,
+        issued_at_ms: issued,
+        expires_at_ms: expires,
+        nonce: h.get("RunLater-Nonce")?.unwrap_or_default(),
+        signature: h.get("RunLater-Request-Signature")?.unwrap_or_default(),
+    };
+    let mut route = global(
+        env,
+        "/public/receiver-route",
+        &serde_json::to_value(&request)?,
+    )
+    .await?;
+    if route.status_code() != 200 {
+        return Ok(route);
+    }
+    let value: Value = route.json().await?;
+    let input = ReceiverInput {
+        grant: serde_json::from_value(value["grant"].clone())?,
+        manifest: serde_json::from_value(value["manifest"].clone())?,
+        request,
+    };
+    let mut response = internal(
+        env,
+        "PROJECTS",
+        &input.request.project_id,
+        "/public/receiver-call",
+        &serde_json::to_value(&input)?,
+    )
+    .await?;
+    let status = response.status_code();
+    let value: Value = response.json().await?;
+    let mut fresh = json_response(&value, status)?;
+    fresh
+        .headers_mut()
+        .set("Cache-Control", "no-store, private")?;
+    Ok(fresh)
+}
 async fn trial_front(mut req: Request, env: &Env) -> Result<Response> {
     use crate::anonymous_trial::{PROVISION, REVOKE, STATUS, VALIDATE};
     if trial_trust(env)?.is_none()
@@ -375,7 +482,7 @@ async fn trial_front(mut req: Request, env: &Env) -> Result<Response> {
     let Some(raw) = read_raw(&mut req).await? else {
         return err(inv::Error::Invalid);
     };
-    if raw.len() > 2048 {
+    if raw.len() > if req.path() == crate::general_http::CREATE { crate::general_http::MAX_REQUEST_BYTES } else { 2048 } {
         return err(inv::Error::Invalid);
     }
     let h = req.headers();
@@ -427,6 +534,23 @@ async fn trial_front(mut req: Request, env: &Env) -> Result<Response> {
         signature: h.get("RunLater-Request-Signature")?.unwrap_or_default(),
         body_hex: hex::encode(&raw),
     };
+    if input.envelope.path == crate::receiver_pairing::PIN {
+        if !pairing_enabled(env) {
+            return err(inv::Error::Forbidden);
+        }
+        let m: crate::receiver_pairing::Manifest = match serde_json::from_slice(&raw) {
+            Ok(v) => v,
+            Err(_) => return err(inv::Error::Invalid),
+        };
+        if url::Url::parse(&m.url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .as_deref()
+            == Some(profile(env)?.self_host.as_str())
+        {
+            return err(inv::Error::Forbidden);
+        }
+    }
     let mut gate = global(env, "/public/trial-request", &serde_json::to_value(&input)?).await?;
     if gate.status_code() != 200 {
         return Ok(gate);
@@ -462,6 +586,8 @@ async fn trial_front(mut req: Request, env: &Env) -> Result<Response> {
         &signed.envelope.project_id,
         if validation {
             "/public/trial-validate"
+        } else if signed.envelope.path == crate::receiver_pairing::PIN {
+            "/public/receiver-pin"
         } else {
             "/signed"
         },
@@ -502,8 +628,27 @@ impl AdmissionRegistry {
         );
         s.validate(&p)
             .map_err(|_| Error::RustError("Public policy conflict".into()))?;
+        if req.path() == "/public/receiver-route" {
+            if !pairing_enabled(&self.env) {
+                return err(inv::Error::Forbidden);
+            }
+            let r: crate::receiver_pairing::Request = serde_json::from_value(v)?;
+            let before = serde_json::to_string(&s)?;
+            s.revoke(&revocations(&self.env)?, now())
+                .map_err(|_| Error::RustError("Invalid revocations".into()))?;
+            if before != serde_json::to_string(&s)? {
+                save(&self.state, &s)?;
+            }
+            return match s.receiver_route(&r, now()) {
+                Ok(v) => json_response(&v, 200),
+                Err(e) => err(e),
+            };
+        }
         if req.path() == "/public/trial-request" {
             let input: TrialRequest = serde_json::from_value(v)?;
+            if input.envelope.path == crate::receiver_pairing::PIN && !pairing_enabled(&self.env) {
+                return err(inv::Error::Forbidden);
+            }
             let Some((gateway, release)) = trial_trust(&self.env)? else {
                 return err(inv::Error::Forbidden);
             };
@@ -701,6 +846,189 @@ impl InvitationProject {
                 Ok(r)
             }
             Err(e) => task_error(e.into()),
+        }
+    }
+}
+
+impl InvitationProject {
+    pub(super) async fn receiver_pin(&self, value: Value) -> Result<Response> {
+        if !pairing_enabled(&self.env) {
+            return err(inv::Error::Forbidden);
+        }
+        let input: Signed = serde_json::from_value(value)?;
+        let Some((gateway, release)) = trial_trust(&self.env)? else {
+            return err(inv::Error::Forbidden);
+        };
+        let trust = Some((gateway, release));
+        let proof = match input.proof(trust.as_ref()) {
+            Ok(v) => v,
+            Err(_) => return err(inv::Error::Forbidden),
+        };
+        let raw = hex::decode(&input.body_hex)
+            .map_err(|_| Error::RustError("Invalid pairing body".into()))?;
+        let Some(config) =
+            delivery_transport::configuration(&self.env, &input.envelope.project_id)?
+        else {
+            return err(inv::Error::Forbidden);
+        };
+        let mut s: Enrollment =
+            load(&self.state)?.ok_or_else(|| Error::RustError("Missing trial".into()))?;
+        if input.ticket.revoked {
+            return err(inv::Error::Forbidden);
+        }
+        if let Err(e) = s.pairing_pin(&input.envelope, proof, &raw, &nonce()?, now()) {
+            return delivery_transport::fail(e);
+        }
+        let probe = match s.pairing_probe_begin(now()) {
+            Ok(v) => v,
+            Err(e) => return delivery_transport::fail(e),
+        };
+        save(&self.state, &s)?;
+        if let Some((url, body)) = probe {
+            let target = match config.target(&url) {
+                Ok(v) => v,
+                Err(_) => return err(inv::Error::Forbidden),
+            };
+            let fetched = crate::safe_egress::fetch(
+                target,
+                body,
+                "text/plain; charset=utf-8",
+                Default::default(),
+            )
+            .await;
+            // Revalidate current registry authority AFTER network, before proof/key state advances.
+            let d = input
+                .trial
+                .as_ref()
+                .ok_or_else(|| Error::RustError("Missing trial proof".into()))?;
+            let check = TrialRequest {
+                envelope: input.envelope.clone(),
+                descriptor: d.clone(),
+                secret: input.trial_capability.clone().unwrap_or_default(),
+                signature: input.signature.clone(),
+                body_hex: input.body_hex.clone(),
+            };
+            let gate = global(
+                &self.env,
+                "/public/trial-request",
+                &serde_json::to_value(check)?,
+            )
+            .await?;
+            if gate.status_code() != 200 {
+                return Ok(gate);
+            }
+            s = load(&self.state)?.ok_or_else(|| Error::RustError("Missing pairing".into()))?;
+            let signature = fetched
+                .ok()
+                .filter(|r| r.status == 200)
+                .and_then(|r| serde_json::from_slice::<Value>(&r.body).ok())
+                .and_then(|v| {
+                    v.get("signature")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                });
+            let Some(signature) = signature else {
+                return err(inv::Error::Forbidden);
+            };
+            if let Err(e) = s.pairing_probe_complete(&signature, &nonce()?, &config.egress, now()) {
+                return delivery_transport::fail(e);
+            }
+            save(&self.state, &s)?;
+        }
+        json_response(
+            &s.outbound
+                .pairing
+                .as_ref()
+                .ok_or_else(|| Error::RustError("Missing pairing".into()))?
+                .manifest
+                .status(s.outbound.pairing.as_ref().is_some_and(|p| p.ready)),
+            200,
+        )
+    }
+    pub(super) async fn receiver_call(&self, value: Value) -> Result<Response> {
+        if !pairing_enabled(&self.env) {
+            return err(inv::Error::Forbidden);
+        }
+        let input: ReceiverInput = serde_json::from_value(value)?;
+        let r = &input.request;
+        if input.grant.active(now()).is_err()
+            || input.grant.ticket.project_id != r.project_id
+            || input
+                .manifest
+                .authorize(&input.grant.descriptor, now())
+                .is_err()
+            || r.verify(&input.manifest, now()).is_err()
+        {
+            return err(inv::Error::Forbidden);
+        }
+        let Some(config) = delivery_transport::configuration(&self.env, &r.project_id)? else {
+            return err(inv::Error::Forbidden);
+        };
+        let mut s: Enrollment = load(&self.state)?
+            .ok_or_else(|| Error::RustError("Missing receiver project".into()))?;
+        if s.outbound
+            .pairing
+            .as_ref()
+            .is_none_or(|p| p.manifest != input.manifest)
+        {
+            return err(inv::Error::Forbidden);
+        }
+        if r.path == crate::receiver_pairing::PULL {
+            let result = s.pairing_pull(r, &config.keys, &config, now());
+            if result.is_ok() {
+                save(&self.state, &s)?;
+            }
+            return match result {
+                Ok(v) => json_response(&v, 200),
+                Err(e) => delivery_transport::fail(e),
+            };
+        }
+        let challenge = match s.pairing_ack_begin(r, &config.egress, now()) {
+            Ok(v) => v,
+            Err(e) => return delivery_transport::fail(e),
+        };
+        save(&self.state, &s)?;
+        let Some(challenge) = challenge else {
+            return json_response(&input.manifest.status(true), 200);
+        };
+        let target = match config.target(&challenge.url) {
+            Ok(v) => v,
+            Err(_) => return err(inv::Error::Forbidden),
+        };
+        let fetched = crate::safe_egress::fetch(
+            target,
+            challenge.body.clone(),
+            "text/plain; charset=utf-8",
+            Default::default(),
+        )
+        .await;
+        let gate = global(
+            &self.env,
+            "/public/receiver-route",
+            &serde_json::to_value(r)?,
+        )
+        .await?;
+        if gate.status_code() != 200 {
+            return Ok(gate);
+        }
+        s = load(&self.state)?
+            .ok_or_else(|| Error::RustError("Missing receiver project".into()))?;
+        let Ok(response) = fetched else {
+            return err(inv::Error::Forbidden);
+        };
+        match s.pairing_ack_complete(
+            r,
+            &challenge,
+            response.status,
+            &response.body,
+            &config.egress,
+            now(),
+        ) {
+            Ok(v) => {
+                save(&self.state, &s)?;
+                json_response(&v, 200)
+            }
+            Err(e) => delivery_transport::fail(e),
         }
     }
 }

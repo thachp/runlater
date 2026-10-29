@@ -43,7 +43,7 @@ for (const lane of ['sse', 'mcp']) test(`official SDK ${lane}: trial connection/
   const scheduled = await client.callTool({name: 'schedule_task', arguments: {idempotency_key: 'stable', endpoint_id: 'owned', body: '{}', operation_key: 'stable', run_at_ms: 0}});
   assert.equal(scheduled.structuredContent.error.code, 'receiver_setup_required'); assert.equal(calls.includes('UNSAFE_TASK'), false);
   assert.equal((await client.callTool({name: 'revoke_trial', arguments: {confirm: true}})).structuredContent.revoked, true);
-  assert.deepEqual(calls, ['status', 'provision', 'promote', 'revoke']);
+  assert.deepEqual(calls, ['status', 'provision', 'promote', 'status', 'revoke']);
   assert.ok(!JSON.stringify(provisioned).includes(p.trial.capability));
 });
 test('trial SSE partition cannot occupy reserved owner sessions; cross-trial session IDs never authorize', async t => {

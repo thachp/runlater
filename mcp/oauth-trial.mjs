@@ -1,4 +1,5 @@
 import {createHash, randomBytes} from 'node:crypto';
+import {TRIAL_SCOPES} from './oauth-consent.mjs';
 export const TRIAL_MS = 604800000;
 const hash = s => createHash('sha256').update(s).digest('hex');
 export function createTrialAuthority({releaseId, clientId, scopes, now = Date.now()}) {
@@ -19,7 +20,7 @@ export function validateTrialAuthority(props, {releaseId, clientId, now = Date.n
     || d.version !== 1 || d.release_id !== releaseId || !/^[a-f0-9]{64}$/.test(d.bootstrap_id)
     || !/^[a-f0-9]{64}$/.test(d.revocation_hash) || !Number.isSafeInteger(d.issued_at_ms)
     || d.issued_at_ms > now || d.expires_at_ms !== d.issued_at_ms + TRIAL_MS || d.expires_at_ms <= now
-    || !Array.isArray(d.permissions) || !d.permissions.length || d.permissions.some(s => !['cancel','enqueue','read'].includes(s))
+    || !Array.isArray(d.permissions) || !d.permissions.length || d.permissions.some(s => !TRIAL_SCOPES.includes(s))
     || JSON.stringify(d.permissions) !== JSON.stringify([...new Set(d.permissions)].sort())
     || d.capability_hash !== hash('RunLater anonymous trial capability v1\n' + JSON.stringify([1,d.release_id,d.bootstrap_id,props.capability]))) throw new Error('invalid_trial');
   const ticket = hash('RunLater anonymous trial project v1\n' + JSON.stringify([1,d.release_id,d.bootstrap_id]));

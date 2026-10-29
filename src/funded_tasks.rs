@@ -51,7 +51,7 @@ pub fn route<'a>(method: &str, path: &'a str) -> Option<Route<'a>> {
     }
 }
 impl Project {
-    fn task_result(
+    pub(crate) fn task_result(
         &self,
         e: &Envelope,
         t: &Task,

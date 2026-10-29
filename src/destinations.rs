@@ -346,6 +346,18 @@ impl State {
         policy: &EgressPolicy,
         now: i64,
     ) -> Result<Proof, Error> {
+        self.prepare_bound(project, id, version, nonce, policy, now, None)
+    }
+    pub(crate) fn prepare_bound(
+        &mut self,
+        project: &str,
+        id: &str,
+        version: u32,
+        nonce: &str,
+        policy: &EgressPolicy,
+        now: i64,
+        expiry: Option<i64>,
+    ) -> Result<Proof, Error> {
         self.tenant(project)?;
         self.clock(now)?;
         if !hex_digest(nonce) {
@@ -369,6 +381,18 @@ impl State {
                 PROOF_TTL_MS
             })
             .ok_or(Error::Invalid)?;
+        let expires = expiry.unwrap_or(expires);
+        if expires <= now
+            || expires
+                > now
+                    + if policy.managed_workers_dev {
+                        300000
+                    } else {
+                        PROOF_TTL_MS
+                    }
+        {
+            return Err(Error::Invalid);
+        }
         let body = format!(
             "RunLater destination proof v1\n{}",
             serde_json::to_string(&(
@@ -412,6 +436,27 @@ impl State {
         policy: &EgressPolicy,
         now: i64,
     ) -> Result<Challenge, Error> {
+        self.begin_inner(project, id, version, policy, now, false)
+    }
+    pub(crate) fn pairing_resume(
+        &mut self,
+        project: &str,
+        id: &str,
+        version: u32,
+        policy: &EgressPolicy,
+        now: i64,
+    ) -> Result<Challenge, Error> {
+        self.begin_inner(project, id, version, policy, now, true)
+    }
+    fn begin_inner(
+        &mut self,
+        project: &str,
+        id: &str,
+        version: u32,
+        policy: &EgressPolicy,
+        now: i64,
+        resume: bool,
+    ) -> Result<Challenge, Error> {
         self.tenant(project)?;
         self.clock(now)?;
         let r = self.record(id, version)?;
@@ -420,7 +465,7 @@ impl State {
         }
         policy.target(&r.endpoint.url)?;
         let p = r.pending.as_ref().ok_or(Error::Conflict)?;
-        if p.started {
+        if p.started && !resume {
             return Err(Error::Conflict);
         }
         if now >= p.expires_at_ms {

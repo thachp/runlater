@@ -27,7 +27,10 @@ export class McpHub extends DurableObject {
       if (delegationPublicKey(key) !== env.MCP_GATEWAY_PUBLIC_KEY) return;
       const trialClient = authority => new AnonymousTrialClientV1({privateKey: key, ...authority,
         releaseId: env.MCP_RELEASE_ID, fetchImpl: (url, init) => fetch(url, init)});
-      this.protocol = createHostedProtocol({setup, makeClient: principal => principal.kind === 'trial'
+      this.protocol = createHostedProtocol({setup,
+        receiverPairingEnabled: env.MCP_ANONYMOUS_TRIAL_ENABLED === 'operator-approved' && env.MCP_RECEIVER_PAIRING_ENABLED === 'operator-approved',
+        generalHttpEnabled: env.MCP_ANONYMOUS_TRIAL_ENABLED === 'operator-approved' && env.GENERAL_HTTPS_ENABLED === 'operator-approved',
+        makeClient: principal => principal.kind === 'trial'
         ? trialClient(principal.trial) : new DelegatedPublicBetaClientV1({privateKey: key,
           delegation: principal.delegation, releaseId: env.MCP_RELEASE_ID, fetchImpl: (url, init) => fetch(url, init)})});
       this.oauth = createRunLaterOAuth({env, storage: ctx.storage,
@@ -86,6 +89,8 @@ export default {
         service: 'runlater-mcp', configured: gatewayReady(env), source_sha: env.MCP_SOURCE_SHA || null,
         version_id: env.MCP_RELEASE_VERSION?.id || null, mode: 'delegated_public_beta',
         anonymous_trial_source_enabled: env.MCP_ANONYMOUS_TRIAL_ENABLED === 'operator-approved',
+        receiver_pairing_source_enabled: env.MCP_RECEIVER_PAIRING_ENABLED === 'operator-approved' && env.MCP_ANONYMOUS_TRIAL_ENABLED === 'operator-approved',
+        general_https_source_enabled: env.GENERAL_HTTPS_ENABLED === 'operator-approved' && env.MCP_ANONYMOUS_TRIAL_ENABLED === 'operator-approved',
       }, {headers: {'Cache-Control': 'no-store'}});
       if (!paths.has(url.pathname)) return response(404, 'not_found');
       if (!gatewayReady(env) || !env.MCP_HUB || !env.MCP_IP_RATE || !env.MCP_AUTH_RATE) return response(503, 'mcp_unavailable');

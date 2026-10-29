@@ -4,11 +4,13 @@ import {delegationBytes, verifyDelegation} from './delegation.mjs';
 
 export const MCP_RESOURCE = 'https://mcp.runlater.io';
 export const MCP_SCOPES = Object.freeze(['cancel', 'enqueue', 'read']);
+export const TRIAL_SCOPES = Object.freeze([...MCP_SCOPES, 'http_schedule', 'receiver_setup'].sort());
 const hash = value => createHash('sha256').update(value).digest('hex');
 const exact = (value, keys) => value && !Array.isArray(value) && typeof value === 'object'
   && Object.keys(value).sort().join() === [...keys].sort().join();
 function requireValue(value) {if (!value) throw new Error('invalid_owner_consent');}
-export function normalizedAuthRequest(request) {
+export function normalizedAuthRequest(request, {receiverPairingEnabled = false, generalHttpEnabled = false} = {}) {
+  const scopes = [...MCP_SCOPES, ...(receiverPairingEnabled ? ['receiver_setup'] : []), ...(generalHttpEnabled ? ['http_schedule'] : [])];
   requireValue(exact(request, ['responseType', 'clientId', 'redirectUri', 'scope', 'state', 'codeChallenge', 'codeChallengeMethod', 'resource', 'issuer'])
     && request.responseType === 'code' && request.resource === MCP_RESOURCE
     && request.issuer === MCP_RESOURCE && request.codeChallengeMethod === 'S256'
@@ -16,16 +18,24 @@ export function normalizedAuthRequest(request) {
     && typeof request.clientId === 'string' && request.clientId.length > 0 && request.clientId.length <= 2048
     && typeof request.redirectUri === 'string' && request.redirectUri.length <= 2048
     && typeof request.state === 'string' && request.state.length <= 2048
-    && Array.isArray(request.scope) && request.scope.length > 0 && request.scope.length <= 3
+    && Array.isArray(request.scope) && request.scope.length > 0 && request.scope.length <= scopes.length
     && new Set(request.scope).size === request.scope.length
-    && request.scope.every(scope => MCP_SCOPES.includes(scope)));
+    && request.scope.every(scope => scopes.includes(scope)));
   const redirect = new URL(request.redirectUri);
-  requireValue(redirect.href === request.redirectUri && !redirect.username && !redirect.password && !redirect.hash
+  requireValue(redirect.href === request.redirectUri && !redirect.username && !redirect.password && !request.redirectUri.includes('#')
     && (redirect.protocol === 'https:' || (redirect.protocol === 'http:'
       && (redirect.hostname === 'localhost' || redirect.hostname === '[::1]' || /^127\.(?:\d{1,3}\.){2}\d{1,3}$/.test(redirect.hostname)))));
   return {responseType: 'code', clientId: request.clientId, redirectUri: request.redirectUri,
     scope: [...request.scope].sort(), state: request.state, codeChallenge: request.codeChallenge,
     codeChallengeMethod: 'S256', resource: MCP_RESOURCE, issuer: MCP_RESOURCE};
+}
+export function ownerTaskAuthorizationUrl(request) {
+  const r = normalizedAuthRequest(request, {receiverPairingEnabled: true, generalHttpEnabled: true});
+  const scope = r.scope.filter(value => MCP_SCOPES.includes(value));
+  if (!scope.length || scope.length === r.scope.length) return null;
+  return MCP_RESOURCE + '/authorize?' + new URLSearchParams({response_type: r.responseType,
+    client_id: r.clientId, redirect_uri: r.redirectUri, scope: scope.join(' '), state: r.state,
+    code_challenge: r.codeChallenge, code_challenge_method: r.codeChallengeMethod, resource: r.resource});
 }
 export function ownerChallenge(request, handle, config) {
   requireValue(typeof handle === 'string' && /^[A-Za-z0-9_-]{16,256}$/.test(handle));

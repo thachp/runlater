@@ -64,6 +64,12 @@ impl Envelope {
         Ok(bytes)
     }
     fn permission(&self) -> Result<Permission, Error> {
+        if self.method == "POST" && self.path == crate::general_http::CREATE {
+            return Ok(Permission::HttpSchedule);
+        }
+        if self.method == "POST" && self.path == crate::receiver_pairing::PIN {
+            return Ok(Permission::ReceiverSetup);
+        }
         if self.method == "POST" && self.path == crate::mcp_delegation::REVOKE_PATH {
             return Ok(Permission::Cancel);
         }
@@ -133,7 +139,12 @@ impl Envelope {
                 !hex_valid(&self.public_key, 32)
             }
             || !hex_valid(&self.body_sha256, 32)
-            || body.len() > 2048
+            || body.len()
+                > if trial && self.path == crate::general_http::CREATE {
+                    crate::general_http::MAX_REQUEST_BYTES
+                } else {
+                    2048
+                }
         {
             return Err(Error::Invalid);
         }
@@ -161,7 +172,10 @@ impl Envelope {
                 || trial
                     && matches!(
                         self.path.as_str(),
-                        crate::anonymous_trial::PROVISION | crate::anonymous_trial::REVOKE
+                        crate::anonymous_trial::PROVISION
+                            | crate::anonymous_trial::REVOKE
+                            | crate::receiver_pairing::PIN
+                            | crate::general_http::CREATE
                     )
             {
                 if !key_valid(&self.idempotency_key) {
