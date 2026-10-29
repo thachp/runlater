@@ -1,0 +1,171 @@
+{
+  "observation": "Anonymized Cloudflare latest-uploaded settings; active deployment stayed on the previous version.",
+  "before": {
+    "placement": {},
+    "compatibility_date": "2026-10-27",
+    "compatibility_flags": [
+      "global_fetch_strictly_public"
+    ],
+    "usage_model": "standard",
+    "tags": [],
+    "tail_consumers": [],
+    "logpush": false,
+    "limits": {
+      "cpu_ms": 50
+    },
+    "annotations": {
+      "workers/triggered_by": "upload"
+    },
+    "bindings": [
+      {
+        "class_name": "AdmissionRegistry",
+        "name": "ADMISSION",
+        "namespace_id": "11111111111111111111111111111111",
+        "type": "durable_object_namespace"
+      },
+      {
+        "name": "BETA_CALLBACK_MASTER",
+        "type": "secret_text"
+      },
+      {
+        "name": "BETA_IP_RATE",
+        "namespace_id": "1001",
+        "simple": {
+          "limit": 60,
+          "period": 60
+        },
+        "type": "ratelimit"
+      },
+      {
+        "name": "BETA_READY",
+        "queue_name": "runlater-public-ready",
+        "type": "queue"
+      },
+      {
+        "name": "BETA_READY_QUEUE",
+        "text": "runlater-public-ready",
+        "type": "plain_text"
+      },
+      {
+        "name": "BETA_REG_IP_RATE",
+        "namespace_id": "1002",
+        "simple": {
+          "limit": 6,
+          "period": 60
+        },
+        "type": "ratelimit"
+      },
+      {
+        "name": "BETA_REVOKED_PROJECTS",
+        "text": "[]",
+        "type": "plain_text"
+      },
+      {
+        "class_name": "InvitationProject",
+        "name": "PROJECTS",
+        "namespace_id": "22222222222222222222222222222222",
+        "type": "durable_object_namespace"
+      },
+      {
+        "name": "PUBLIC_BETA_ENABLED",
+        "text": "operator-approved",
+        "type": "plain_text"
+      },
+      {
+        "name": "PUBLIC_BETA_PROFILE",
+        "text": "{\"release_id\":\"beta_fixture\",\"opens_at_ms\":1000,\"closes_at_ms\":2000,\"callback_end_sec\":1000000,\"self_host\":\"runlater-public-api.example.workers.dev\"}",
+        "type": "plain_text"
+      },
+      {
+        "name": "RUNLATER_RELEASE_RUN",
+        "text": "beta_fixture",
+        "type": "plain_text"
+      }
+    ]
+  },
+  "staged": {
+    "placement": {},
+    "compatibility_date": "2026-10-27",
+    "compatibility_flags": [
+      "global_fetch_strictly_public"
+    ],
+    "usage_model": "standard",
+    "tags": [],
+    "tail_consumers": [],
+    "logpush": false,
+    "limits": {
+      "cpu_ms": 50
+    },
+    "annotations": {
+      "workers/message": "Reviewed main cccccccccccccccccccccccccccccccccccccccc",
+      "workers/tag": "cccccccccccc",
+      "workers/triggered_by": "version_upload"
+    },
+    "bindings": [
+      {
+        "class_name": "AdmissionRegistry",
+        "name": "ADMISSION",
+        "namespace_id": "11111111111111111111111111111111",
+        "type": "durable_object_namespace"
+      },
+      {
+        "name": "BETA_CALLBACK_MASTER",
+        "type": "secret_text"
+      },
+      {
+        "name": "BETA_IP_RATE",
+        "namespace_id": "1001",
+        "simple": {
+          "limit": 60,
+          "period": 60
+        },
+        "type": "ratelimit"
+      },
+      {
+        "name": "BETA_READY",
+        "queue_name": "runlater-public-ready",
+        "type": "queue"
+      },
+      {
+        "name": "BETA_READY_QUEUE",
+        "text": "runlater-public-ready",
+        "type": "plain_text"
+      },
+      {
+        "name": "BETA_REG_IP_RATE",
+        "namespace_id": "1002",
+        "simple": {
+          "limit": 6,
+          "period": 60
+        },
+        "type": "ratelimit"
+      },
+      {
+        "name": "BETA_REVOKED_PROJECTS",
+        "text": "[]",
+        "type": "plain_text"
+      },
+      {
+        "class_name": "InvitationProject",
+        "name": "PROJECTS",
+        "namespace_id": "22222222222222222222222222222222",
+        "type": "durable_object_namespace"
+      },
+      {
+        "name": "PUBLIC_BETA_ENABLED",
+        "text": "operator-approved",
+        "type": "plain_text"
+      },
+      {
+        "name": "PUBLIC_BETA_PROFILE",
+        "text": "{\"release_id\":\"beta_fixture\",\"opens_at_ms\":1000,\"closes_at_ms\":2000,\"callback_end_sec\":1000000,\"self_host\":\"runlater-public-api.example.workers.dev\"}",
+        "type": "plain_text"
+      },
+      {
+        "name": "RELEASE_VERSION",
+        "type": "version_metadata"
+      }
+    ]
+  },
+  "expected_staged_runtime_sha256": "6f6e82ec64bf2738d892f140226b0aeacbb8ba46e3319f2088e510e9d019c778"
+}

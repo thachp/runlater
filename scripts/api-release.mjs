@@ -7,9 +7,19 @@ import {pathToFileURL} from 'node:url';
 export function canonical(v) { return JSON.stringify(Array.isArray(v) ? v.map(x=>JSON.parse(canonical(x))) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])) : v); }
 export const digest = v => createHash('sha256').update(canonical(v)).digest('hex');
 function guard(ok) { if (!ok) throw new Error('release guard rejected configuration or provider state'); }
+export function settingsDigest(settings) {
+  guard(settings&&typeof settings==='object'&&!Array.isArray(settings));
+  const value=structuredClone(settings),annotations=value.annotations??{};
+  guard(typeof annotations==='object'&&!Array.isArray(annotations));
+  // These observed version-identity labels vary on every upload. Code identity
+  // is bound separately by current main, the upload receipt and active version.
+  for(const key of ['workers/message','workers/tag','workers/triggered_by'])delete annotations[key];
+  if(Object.keys(annotations).length)value.annotations=annotations;else delete value.annotations;
+  return digest(value);
+}
 export function validate(c,a,e) {
   guard(e.RUNLATER_RELEASE_ENABLED === 'true' && e.GITHUB_REPOSITORY === 'thachp/runlater' && /^[a-f0-9]{40}$/.test(e.RELEASE_SHA ?? ''));
-  guard(a.worker === 'runlater-public-api' && /^[a-f0-9]{32}$/.test(a.account_id ?? '') && /^[a-f0-9]{32}$/.test(a.worker_tag ?? '') && /^[a-f0-9]{64}$/.test(a.settings_sha256 ?? '') && digest(c) === a.config_sha256);
+  guard(a.worker === 'runlater-public-api' && /^[a-f0-9]{32}$/.test(a.account_id ?? '') && /^[a-f0-9]{32}$/.test(a.worker_tag ?? '') && a.settings_schema==='runtime-v1' && /^[a-f0-9]{64}$/.test(a.settings_sha256 ?? '') && digest(c) === a.config_sha256);
   guard(Object.keys(c).every(k=>['name','main','compatibility_date','compatibility_flags','workers_dev','preview_urls','limits','observability','durable_objects','queues','ratelimits','vars','version_metadata'].includes(k)));
   guard(c.name === a.worker && c.main === 'build/worker/shim.mjs' && c.workers_dev === false && c.preview_urls === false && canonical(c.limits) === '{"cpu_ms":50}' && canonical(c.observability) === '{"enabled":false}');
   guard(canonical(c.compatibility_flags) === '["global_fetch_strictly_public"]' && /^\d{4}-\d{2}-\d{2}$/.test(c.compatibility_date ?? ''));
@@ -68,7 +78,7 @@ export async function deployExisting(a,get,upload,promote,stillCurrent=async()=>
   guard(await stillCurrent());
   onStage('settings_preflight');
   const s=await get('/settings');
-  guard(digest(s)===a.settings_sha256 && s.bindings?.some(b=>b.name==='BETA_CALLBACK_MASTER' && b.type==='secret_text'));
+  guard(settingsDigest(s)===a.settings_sha256 && s.bindings?.some(b=>b.name==='BETA_CALLBACK_MASTER' && b.type==='secret_text'));
   onStage('secret_preflight');
   const secrets=await get('/secrets');
   guard(Array.isArray(secrets)&&secrets.some(b=>b?.name==='BETA_CALLBACK_MASTER'));
@@ -79,7 +89,7 @@ export async function deployExisting(a,get,upload,promote,stillCurrent=async()=>
   const id=uploadedVersion(await upload(),a.worker_tag,onUploaded);
   onStage('settings_post_upload');
   const afterSettings=await get('/settings');
-  guard(digest(afterSettings)===a.settings_sha256);
+  guard(settingsDigest(afterSettings)===a.settings_sha256);
   onStage('secret_post_upload');
   guard(digest(checkSecretCollisions(config,afterSettings,await get('/secrets')))===digest(secretNames));
   onStage('deployment_post_upload');
