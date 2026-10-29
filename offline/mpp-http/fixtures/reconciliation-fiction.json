@@ -1,0 +1,19 @@
+{
+  "fixture_only": true,
+  "warning": "OFFLINE FICTION ONLY. Not provider receipts, credentials, settlement or credit activation.",
+  "project": "offline_project_a",
+  "principal": "offline_buyer_a",
+  "challenge_id": "offline_durable_challenge_a",
+  "token": "spt_OFFLINE_DURABLE_FICTION_NEVER_SEND",
+  "body": "OFFLINE request body; not a real purchase request",
+  "issued_at_ms": 1800000000000,
+  "bound_at_ms": 1800000001000,
+  "paid_at_ms": 1800000002000,
+  "reconciled_at_ms": 1800000120000,
+  "payment_id": "pi_OFFLINE_DURABLE_FICTION",
+  "events": {
+    "settled": {"id": "offline_late_settlement", "proof": "OFFLINE_ALLOWLIST_SETTLEMENT_V1"},
+    "reversed": {"id": "offline_early_reversal", "proof": "OFFLINE_ALLOWLIST_REVERSAL_V1"},
+    "unpaid": {"id": "offline_definitive_no_payment", "proof": "OFFLINE_ALLOWLIST_NO_PAYMENT_V1"}
+  }
+}
