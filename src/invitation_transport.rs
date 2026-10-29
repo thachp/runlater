@@ -162,6 +162,10 @@ fn configuration(env: &Env, project: &str) -> Result<Option<Configuration>> {
 }
 fn fail(e: crate::invitation_delivery::Error) -> Result<Response> {
     match e {
+        crate::invitation_delivery::Error::ReceiverRequired => json_response(
+            &json!({"error":{"code":"receiver_required"},"task_accepted":false,"receiver_ready":false}),
+            409,
+        ),
         crate::invitation_delivery::Error::BetaCapacity => json_response(
             &json!({"error":{"code":"beta_lifetime_task_capacity"},"task_accepted":false,"retryable":false,"payments":false}),
             429,
@@ -197,7 +201,9 @@ impl InvitationProject {
         raw: Vec<u8>,
     ) -> Result<Response> {
         let project = input.envelope.project_id.clone();
-        let trust = if input.delegation.is_some() {
+        let trust = if input.trial.is_some() {
+            public_runtime::trial_trust(&self.env)?
+        } else if input.delegation.is_some() {
             public_runtime::mcp_trust(&self.env)?
         } else {
             None
@@ -206,7 +212,7 @@ impl InvitationProject {
             Ok(v) => v,
             Err(e) => return task_error(e.into()),
         };
-        if input.delegation.is_some()
+        if (input.delegation.is_some() || input.trial.is_some())
             && crate::mcp_delegation::task_permission(&input.envelope).is_err()
         {
             return rejected(inv::Error::Forbidden);

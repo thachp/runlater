@@ -87,7 +87,7 @@ test('SDK client connects via SSE, reads setup and discovers tools without API r
   const client = await app.connect();
   assert.deepEqual((await client.listTools()).tools.map(t => t.name), TOOLS.map(t => t.name));
   assert.equal((await client.listResources()).resources.length, 2);
-  assert.match((await client.readResource({uri: 'runlater://setup'})).contents[0].text, /Not deployed or verified/);
+  assert.match((await client.readResource({uri: 'runlater://setup'})).contents[0].text, /default-off source milestone/);
   assert.equal(JSON.parse((await client.readResource({uri: 'runlater://service'})).contents[0].text).intended_endpoint, ENDPOINT);
   assert.equal(value(await client.callTool({name: 'service_status', arguments: {}})).mode, 'public_free_beta');
   assert.equal(value(await client.callTool({name: 'schedule_task', arguments: input})).error.code, 'credentials_required');

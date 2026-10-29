@@ -42,6 +42,26 @@ pub(super) fn mcp_trust(env: &Env) -> Result<Option<(String, String)>> {
     }
     Ok(Some((key, profile(env)?.release_id)))
 }
+pub(super) fn trial_trust(env: &Env) -> Result<Option<(String, String)>> {
+    if env
+        .var("MCP_ANONYMOUS_TRIAL_ENABLED")
+        .map(|v| v.to_string())
+        .unwrap_or_default()
+        != "operator-approved"
+    {
+        return Ok(None);
+    }
+    mcp_trust(env)
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrialRequest {
+    envelope: crate::signed::Envelope,
+    descriptor: crate::anonymous_trial::Descriptor,
+    secret: String,
+    signature: String,
+    body_hex: String,
+}
 pub(super) fn master(env: &Env) -> Result<Master> {
     Master::from_hex(&env.secret("BETA_CALLBACK_MASTER")?.to_string())
         .map_err(|_| Error::RustError("Invalid beta master".into()))
@@ -146,6 +166,13 @@ pub(super) async fn front(mut req: Request, env: Env) -> Result<Response> {
     }
     if req.method() == Method::Get && path == "/v1/beta" {
         return global(&env, "/public/view", &json!({})).await;
+    }
+    if path.starts_with("/v1/mcp/trials/")
+        || req.headers().get("RunLater-Trial-Bootstrap")?.is_some()
+        || req.headers().get("RunLater-Trial-Capability")?.is_some()
+        || req.headers().get("RunLater-Trial-Revocation")?.is_some()
+    {
+        return trial_front(req, &env).await;
     }
     if crate::funded_tasks::route(req.method().as_ref(), &path).is_some()
         || crate::invitation_delivery::destination_route(req.method().as_ref(), &path)
@@ -315,6 +342,8 @@ async fn signed(mut req: Request, env: &Env) -> Result<Response> {
         signature,
         body_hex: hex::encode(raw),
         delegation,
+        trial: None,
+        trial_capability: None,
     };
     internal(
         env,
@@ -326,6 +355,117 @@ async fn signed(mut req: Request, env: &Env) -> Result<Response> {
             "/signed"
         },
         &serde_json::to_value(&input)?,
+    )
+    .await
+}
+async fn trial_front(mut req: Request, env: &Env) -> Result<Response> {
+    use crate::anonymous_trial::{PROVISION, REVOKE, STATUS, VALIDATE};
+    if trial_trust(env)?.is_none()
+        || req.url()?.query().is_some()
+        || req.headers().get("RunLater-Public-Key")?.is_some()
+        || req.headers().get("RunLater-MCP-Delegation")?.is_some()
+    {
+        return err(inv::Error::Forbidden);
+    }
+    if req.method() != Method::Get
+        && req.headers().get("Content-Type")?.as_deref() != Some("application/json")
+    {
+        return err(inv::Error::Invalid);
+    }
+    let Some(raw) = read_raw(&mut req).await? else {
+        return err(inv::Error::Invalid);
+    };
+    if raw.len() > 2048 {
+        return err(inv::Error::Invalid);
+    }
+    let h = req.headers();
+    let descriptor = match crate::anonymous_trial::Descriptor::from_header(
+        &h.get("RunLater-Trial-Bootstrap")?.unwrap_or_default(),
+    ) {
+        Ok(v) => v,
+        Err(_) => return err(inv::Error::Invalid),
+    };
+    let revoke = req.path() == REVOKE;
+    if h.get(if revoke {
+        "RunLater-Trial-Capability"
+    } else {
+        "RunLater-Trial-Revocation"
+    })?
+    .is_some()
+    {
+        return err(inv::Error::Forbidden);
+    }
+    let (Some(issued), Some(expires)) = (
+        h.get("RunLater-Issued-At")?.and_then(|v| decimal(&v)),
+        h.get("RunLater-Expires-At")?.and_then(|v| decimal(&v)),
+    ) else {
+        return err(inv::Error::Invalid);
+    };
+    let input = TrialRequest {
+        envelope: crate::signed::Envelope {
+            version: 1,
+            origin: crate::identity::ORIGIN.into(),
+            project_id: h.get("RunLater-Project-Id")?.unwrap_or_default(),
+            public_key: String::new(),
+            method: req.method().to_string(),
+            path: req.path(),
+            query: String::new(),
+            body_sha256: crate::security::digest(&raw),
+            idempotency_key: h.get("Idempotency-Key")?.unwrap_or_default(),
+            issued_at_ms: issued,
+            expires_at_ms: expires,
+            nonce: h.get("RunLater-Nonce")?.unwrap_or_default(),
+        },
+        descriptor,
+        secret: h
+            .get(if revoke {
+                "RunLater-Trial-Revocation"
+            } else {
+                "RunLater-Trial-Capability"
+            })?
+            .unwrap_or_default(),
+        signature: h.get("RunLater-Request-Signature")?.unwrap_or_default(),
+        body_hex: hex::encode(&raw),
+    };
+    let mut gate = global(env, "/public/trial-request", &serde_json::to_value(&input)?).await?;
+    if gate.status_code() != 200 {
+        return Ok(gate);
+    }
+    let v: Value = gate.json().await?;
+    let Some(grant) = v.get("grant") else {
+        return json_response(&v, 200);
+    };
+    let grant: crate::anonymous_trial::Grant = serde_json::from_value(grant.clone())?;
+    if input.envelope.path == PROVISION {
+        return internal(
+            env,
+            "PROJECTS",
+            &input.envelope.project_id,
+            "/public/trial-install",
+            &json!({"grant":grant,"request":input}),
+        )
+        .await;
+    }
+    let validation = matches!(input.envelope.path.as_str(), VALIDATE | STATUS);
+    let signed = Signed {
+        ticket: grant.ticket,
+        envelope: input.envelope,
+        signature: input.signature,
+        body_hex: input.body_hex,
+        delegation: None,
+        trial: Some(input.descriptor),
+        trial_capability: Some(input.secret),
+    };
+    internal(
+        env,
+        "PROJECTS",
+        &signed.envelope.project_id,
+        if validation {
+            "/public/trial-validate"
+        } else {
+            "/signed"
+        },
+        &serde_json::to_value(&signed)?,
     )
     .await
 }
@@ -362,6 +502,40 @@ impl AdmissionRegistry {
         );
         s.validate(&p)
             .map_err(|_| Error::RustError("Public policy conflict".into()))?;
+        if req.path() == "/public/trial-request" {
+            let input: TrialRequest = serde_json::from_value(v)?;
+            let Some((gateway, release)) = trial_trust(&self.env)? else {
+                return err(inv::Error::Forbidden);
+            };
+            let raw = hex::decode(&input.body_hex)
+                .map_err(|_| Error::RustError("Invalid trial request".into()))?;
+            let before = serde_json::to_string(&s)?;
+            s.revoke(&revocations(&self.env)?, now())
+                .map_err(|_| Error::RustError("Invalid revocation config".into()))?;
+            let result = s.trial_request(
+                &input.envelope,
+                &input.descriptor,
+                &input.secret,
+                &input.signature,
+                crate::mcp_delegation::Trust {
+                    gateway_public_key: &gateway,
+                    release_id: &release,
+                },
+                &raw,
+                now(),
+            );
+            let readonly = matches!(
+                input.envelope.path.as_str(),
+                crate::anonymous_trial::STATUS | crate::anonymous_trial::VALIDATE
+            );
+            if !readonly && before != serde_json::to_string(&s)? {
+                save(&self.state, &s)?;
+            }
+            return match result {
+                Ok(v) => json_response(&v, 200),
+                Err(e) => err(e),
+            };
+        }
         if req.path() == "/public/mcp-validate" {
             #[derive(Deserialize)]
             #[serde(deny_unknown_fields)]
@@ -416,6 +590,58 @@ impl AdmissionRegistry {
     }
 }
 impl InvitationProject {
+    pub(super) fn trial_install(&self, value: Value, project: &str) -> Result<Response> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct InstallTrial {
+            grant: crate::anonymous_trial::Grant,
+            request: TrialRequest,
+        }
+        let v: InstallTrial = serde_json::from_value(value)?;
+        let Some((gateway, release)) = trial_trust(&self.env)? else {
+            return err(inv::Error::Forbidden);
+        };
+        if v.request.envelope.method != "POST"
+            || v.request.body_hex != "7b7d"
+            || v.request
+                .envelope
+                .validate_trial_request(b"{}", now())
+                .is_err()
+        {
+            return err(inv::Error::Forbidden);
+        }
+        if v.grant.descriptor != v.request.descriptor
+            || v.grant.ticket.project_id != project
+            || v.request.envelope.path != crate::anonymous_trial::PROVISION
+        {
+            return err(inv::Error::Forbidden);
+        }
+        if v.request
+            .descriptor
+            .verify(
+                &v.request.envelope,
+                &v.request.secret,
+                &v.request.signature,
+                crate::mcp_delegation::Trust {
+                    gateway_public_key: &gateway,
+                    release_id: &release,
+                },
+                now(),
+            )
+            .is_err()
+        {
+            return err(inv::Error::Forbidden);
+        }
+        let mut s: Enrollment =
+            load(&self.state)?.unwrap_or_else(|| Enrollment::new(Mode::Invitation));
+        match s.install_trial(&v.grant, now()) {
+            Ok(()) => {
+                save(&self.state, &s)?;
+                json_response(&v.grant.descriptor.status(true), 200)
+            }
+            Err(e) => err(e),
+        }
+    }
     pub(super) fn public_install(&self, value: Value, project: &str) -> Result<Response> {
         let v: Install = serde_json::from_value(value)?;
         let p = profile(&self.env)?;

@@ -1,10 +1,18 @@
 # Hosted MCP delegated authorization — source milestone
 
-**Not deployed or verified.** This document describes the staged multi-tenant source,
-not a live service. `https://mcp.runlater.io/sse` remains the required publication
+**The existing delegated gateway is deployed; genuine-client live end-to-end verification remains incomplete.** This document describes its source and rollout gates, not proof of a task-capable launch. `https://mcp.runlater.io/sse` remains the required publication
 endpoint. Do not activate discovery alone and call it a task-capable launch.
 
-## Identity boundary
+## Separate no-account trial milestone
+
+[Anonymous agent trials](MCP-ANONYMOUS-TRIAL.md) are newly staged and disabled by
+default. They do not require human accounts or owner-key generation, but they use a
+**distinct capability principal**, not the owner-local key boundary below. Trial
+provisioning is explicit, bounded and immutable; receiver runtime setup and recovery
+are not implemented. Enabling that new authority requires separate security review,
+activation approval and live verification. The owner-delegation path remains intact.
+
+## Identity boundary — existing owner projects
 
 The local single-project gateway in [MCP.md](MCP.md) is not the public hosting model.
 The hosted source uses a separate OAuth access token for every owner/client grant:

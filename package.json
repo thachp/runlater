@@ -35,7 +35,8 @@
     "mcp": "node mcp/server.mjs",
     "test:mcp": "node scripts/mcp-validators.mjs --check && node --test mcp/*.test.mjs",
     "test:mcp-delegation": "./scripts/test-mcp-delegation.sh",
-    "build:mcp": "node scripts/mcp-validators.mjs --check && node scripts/build-mcp.mjs && wrangler deploy --dry-run --config mcp/wrangler.example.jsonc"
+    "build:mcp": "node scripts/mcp-validators.mjs --check && node scripts/build-mcp.mjs && wrangler deploy --dry-run --config mcp/wrangler.example.jsonc",
+    "test:anonymous-trial": "./scripts/test-anonymous-trial.sh"
   },
   "devDependencies": {
     "wrangler": "4.154.0"

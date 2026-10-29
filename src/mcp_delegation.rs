@@ -32,6 +32,12 @@ pub struct Trust<'a> {
 }
 #[derive(Clone, Copy)]
 pub enum Proof<'a> {
+    Trial {
+        signature: &'a str,
+        descriptor: &'a crate::anonymous_trial::Descriptor,
+        capability: &'a str,
+        trust: Trust<'a>,
+    },
     Owner(&'a str),
     Delegated {
         signature: &'a str,
@@ -135,42 +141,23 @@ impl Certificate {
     }
     /// Unpadded base64url, bounded and canonical JSON: no alternate encodings/unknown fields.
     pub fn from_header(header: &str) -> Result<Self, Error> {
-        if header.is_empty() || header.len() > 4096 || header.len() % 4 == 1 {
-            return Err(Error::Invalid);
-        }
-        let mut bytes = Vec::new();
-        let mut accumulator = 0u32;
-        let mut bits = 0u32;
-        for c in header.bytes() {
-            let v = match c {
-                b'A'..=b'Z' => c - b'A',
-                b'a'..=b'z' => c - b'a' + 26,
-                b'0'..=b'9' => c - b'0' + 52,
-                b'-' => 62,
-                b'_' => 63,
-                _ => return Err(Error::Invalid),
-            };
-            accumulator = (accumulator << 6) | u32::from(v);
-            bits += 6;
-            if bits >= 8 {
-                bits -= 8;
-                bytes.push((accumulator >> bits) as u8);
-                accumulator &= (1 << bits) - 1;
-            }
-        }
-        if accumulator != 0 || bytes.len() > 3072 {
-            return Err(Error::Invalid);
-        }
-        let certificate: Self = serde_json::from_slice(&bytes).map_err(|_| Error::Invalid)?;
-        if serde_json::to_vec(&certificate).map_err(|_| Error::Invalid)? != bytes {
-            return Err(Error::Invalid);
-        }
-        Ok(certificate)
+        canonical_header(header)
     }
 }
 impl Proof<'_> {
     pub(crate) fn verify(&self, e: &Envelope, catalog: &Catalog, now: i64) -> Result<(), Error> {
         match self {
+            Self::Trial {
+                signature,
+                descriptor,
+                capability,
+                trust,
+            } => {
+                if catalog.trial.as_ref() != Some(descriptor) {
+                    return Err(Error::Forbidden);
+                }
+                descriptor.verify(e, capability, signature, *trust, now)
+            }
             Self::Owner(signature) => {
                 if identity::verify_ed25519(&e.public_key, &e.bytes()?, signature) {
                     Ok(())
@@ -196,6 +183,7 @@ impl Proof<'_> {
     pub(crate) fn permits_read(&self) -> bool {
         match self {
             Self::Owner(_) => true,
+            Self::Trial { descriptor, .. } => descriptor.allows(Permission::Read),
             Self::Delegated { certificate, .. } => certificate.allows(Permission::Read),
         }
     }
@@ -221,4 +209,40 @@ impl Revocations {
         }
         Ok(())
     }
+}
+
+pub(crate) fn canonical_header<T: serde::de::DeserializeOwned + Serialize>(
+    header: &str,
+) -> Result<T, Error> {
+    if header.is_empty() || header.len() > 4096 || header.len() % 4 == 1 {
+        return Err(Error::Invalid);
+    }
+    let mut bytes = Vec::new();
+    let mut accumulator = 0u32;
+    let mut bits = 0u32;
+    for c in header.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            _ => return Err(Error::Invalid),
+        };
+        accumulator = (accumulator << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((accumulator >> bits) as u8);
+            accumulator &= (1 << bits) - 1;
+        }
+    }
+    if accumulator != 0 || bytes.len() > 3072 {
+        return Err(Error::Invalid);
+    }
+    let certificate: T = serde_json::from_slice(&bytes).map_err(|_| Error::Invalid)?;
+    if serde_json::to_vec(&certificate).map_err(|_| Error::Invalid)? != bytes {
+        return Err(Error::Invalid);
+    }
+    Ok(certificate)
 }

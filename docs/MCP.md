@@ -1,19 +1,35 @@
-# RunLater MCP server — source and local verification
+# RunLater MCP server
 
-**Intended publication endpoint: `https://mcp.runlater.io/sse`. Not deployed or verified by this change.** Source, tests and discovery links do not establish hosted availability. Issue #57 remains open until separately authorized publication and a live end-to-end proof are completed.
+**Required legacy endpoint: `https://mcp.runlater.io/sse`. Streamable HTTP: `https://mcp.runlater.io/mcp`.**
 
-## Hosted multi-tenant milestone
+The existing delegated gateway has been deployed, but its genuine-client live
+end-to-end proof is incomplete. Deployment is not a verified, everyday-user launch.
+The no-account agent trial described below is a **new, default-off source milestone**;
+this change does not activate it or create production credentials or projects.
 
-The separately staged [hosted delegation design and rollout gates](MCP-HOSTING.md)
-adds standard remote OAuth authorization while keeping owner private keys local,
-with true legacy `/sse` and separate Streamable HTTP `/mcp`. It is **not deployed
-or verified**. The single-project Node configuration below remains a local option,
-not the multi-tenant public hosting model. Do not expose one owner's signer as a
-public service or treat source tests as hosted acceptance.
+## Agent-first onboarding — staged, not active
+
+The [anonymous trial design](MCP-ANONYMOUS-TRIAL.md) removes mandatory human accounts,
+sign-in and private-key handling from the new-project flow. A standard OAuth client
+would display **Start free agent project**, receive ordinary scoped OAuth credentials,
+and explicitly invoke `provision_trial` only when requested. Connect, initialization,
+discovery and status never allocate a project. Existing owner-key projects remain a
+separate, locally approved linking option.
+
+**Connected does not mean ready to schedule.** This source milestone does not install
+a receiver or transfer its callback secret. It reports **receiver setup required**
+and refuses scheduling. A separately reviewed runtime setup path and authorized live
+proof are launch gates, not tasks to push onto the user as JSON/key instructions.
+No recovery mechanism is configured: losing all OAuth credentials can lose access.
+
+The [hosted design](MCP-HOSTING.md) covers the existing owner-delegation path, true
+legacy SSE and separate Streamable HTTP. The remainder of this guide describes the
+**local single-project Node option**, not the hosted multi-tenant implementation.
+Never publish one owner's signer as a public service.
 
 ## Transport and distribution
 
-This repository contains a Node.js 22+ server using the pinned official MCP TypeScript SDK. It supports **legacy HTTP+SSE**: a client opens `GET /sse`, receives the relative `/messages?sessionId=…` endpoint, and sends JSON-RPC messages there with POST. This is an actual MCP transport, separate from the custom discovery/tool-schema artifacts. Streamable HTTP is preferred for new MCP integrations but is not implemented here; legacy SSE was chosen for the issue's requested endpoint/client contract. Clients must support SSE and header-based credentials on both GET and POST. No OAuth issuer or dynamic client registration is provided; OAuth-only clients are not supported by this initial slice.
+This repository contains a Node.js 22+ server using the pinned official MCP TypeScript SDK. It supports **legacy HTTP+SSE**: a client opens `GET /sse`, receives the relative `/messages?sessionId=…` endpoint, and sends JSON-RPC messages there with POST. This is an actual MCP transport, separate from the custom discovery/tool-schema artifacts. The hosted Worker supports Streamable HTTP at `/mcp`; this local Node option does not. For this local option, legacy SSE was chosen for the issue's requested endpoint/client contract. Clients must support SSE and header-based credentials on both GET and POST. The local Node option has no OAuth issuer or dynamic client registration; OAuth-only clients must use the separately reviewed hosted Worker.
 
 The Node process binds only `127.0.0.1` (default port 8790). A future separately reviewed deployment must terminate TLS at `mcp.runlater.io`, forward `/sse` and `/messages` to this process, preserve `Host: mcp.runlater.io`, disable buffering and request/authorization/body logging, and enforce edge rate and connection limits. The server rejects other Host/Origin values and does not trust forwarded headers. Do not expose its raw HTTP port. Sessions are process-local: use one instance or sticky routing. A restart loses sessions, **not** the authoritative API's idempotency records. Reconnect, then explicitly recover any uncertain command using the original key and identical input.
 
@@ -87,6 +103,6 @@ Supported profile is `public_free_beta`: existing seven-day identity/grant, 100 
 
 `npm run test:mcp` uses the real SDK client over loopback HTTP+SSE and a deterministic fake signed API. It covers initialization/resources/tool discovery; create → inspect attempts → cancel; strict inputs; credentials/expiry/scopes/project substitution; bounded errors and exhausted limits; unavailable operations; bearer binding on both channels; stable idempotency recovery after a lost response; and output redaction. Fake success is **not** hosted integration evidence. Existing public-beta client tests cover canonical signing/receipt boundaries and remain part of the relevant regression suite.
 
-No DNS, TLS, proxy, resource, credential, receiver, release workflow, service policy or deployment was changed. Hosted connection at the exact required URL and an authorized live create/status/cancel using an already verified permitted receiver are **pending**. Do not check those issue acceptance boxes or close #57 from this source/local result. A deployment reviewer must also assess multi-principal needs, token lifecycle, proxy logging/redaction, abuse limits, long-lived SSE/reconnect behavior, resource budget and rollback before publication.
+This source change does not itself change DNS, TLS, proxy, resource, credential, receiver, release workflow, service policy or deployment. Hosted connection at the exact required URL and an authorized live create/status/cancel using an already verified permitted receiver are **pending**. Do not check those issue acceptance boxes or close #57 from this source/local result. A deployment reviewer must also assess multi-principal needs, token lifecycle, proxy logging/redaction, abuse limits, long-lived SSE/reconnect behavior, resource budget and rollback before publication.
 
-Protocol references: [official TypeScript SDK server documentation](https://ts.sdk.modelcontextprotocol.io/server) and [MCP transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports). The pinned SDK retains legacy SSE compatibility; no claim of Streamable HTTP support is made.
+Protocol references: [official TypeScript SDK server documentation](https://ts.sdk.modelcontextprotocol.io/server) and [MCP transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports). The pinned SDK retains legacy SSE compatibility. The local Node option is SSE-only; the hosted Worker separately implements Streamable HTTP.

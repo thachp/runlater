@@ -104,3 +104,5 @@ pub mod destinations;
 mod safe_egress;
 
 pub mod mcp_delegation;
+
+pub mod anonymous_trial;

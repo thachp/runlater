@@ -62,10 +62,15 @@ impl Project {
     ) -> Result<Value, Error> {
         self.funding.reservation(&t.id)?;
         let can_read = delegated_read
-            && self
-                .catalog
-                .authorize(&e.project_id, &e.public_key, Permission::Read, now)
-                .is_ok();
+            && if e.public_key.is_empty() {
+                self.catalog
+                    .authorize_trial(&e.project_id, Permission::Read, now)
+                    .is_ok()
+            } else {
+                self.catalog
+                    .authorize(&e.project_id, &e.public_key, Permission::Read, now)
+                    .is_ok()
+            };
         let result = CommandResult {
             status: if created { 201 } else { 200 },
             body: serde_json::to_value(t).map_err(|_| identity::Error::Invalid)?,

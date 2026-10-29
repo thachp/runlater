@@ -41,4 +41,5 @@ jobs:
       - run: npm run test:invitations
       - run: npm run test:public-beta
       - run: npm run test:mcp-delegation
+      - run: npm run test:anonymous-trial
       - run: npm run test:invitation-production

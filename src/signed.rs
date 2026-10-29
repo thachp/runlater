@@ -105,18 +105,33 @@ impl Envelope {
         body: &[u8],
         now: i64,
     ) -> Result<(), Error> {
+        if let crate::mcp_delegation::Proof::Trial { .. } = proof {
+            self.validate_trial_request(body, now)?;
+            catalog.authorize_trial(&self.project_id, self.permission()?, now)?;
+            return proof.verify(self, catalog, now);
+        }
         self.validate_request(body, now)?;
         catalog.authorize(&self.project_id, &self.public_key, self.permission()?, now)?;
         proof.verify(self, catalog, now)
     }
     /// Full canonical-envelope validation, shared by task auth and registry-owned control commands.
     pub(crate) fn validate_request(&self, body: &[u8], now: i64) -> Result<(), Error> {
+        self.validate_request_inner(body, now, false)
+    }
+    pub(crate) fn validate_trial_request(&self, body: &[u8], now: i64) -> Result<(), Error> {
+        self.validate_request_inner(body, now, true)
+    }
+    fn validate_request_inner(&self, body: &[u8], now: i64, trial: bool) -> Result<(), Error> {
         if self.version != 1
             || self.origin != ORIGIN
             || !tenant_valid(&self.project_id)
             || !self.query.is_empty()
             || !hex_valid(&self.nonce, 32)
-            || !hex_valid(&self.public_key, 32)
+            || if trial {
+                !self.public_key.is_empty()
+            } else {
+                !hex_valid(&self.public_key, 32)
+            }
             || !hex_valid(&self.body_sha256, 32)
             || body.len() > 2048
         {
@@ -136,11 +151,19 @@ impl Envelope {
             return Err(Error::Invalid);
         }
         if self.method == "POST" {
-            if self.path == crate::mcp_delegation::VALIDATE_PATH {
+            if self.path == crate::mcp_delegation::VALIDATE_PATH
+                || trial && self.path == crate::anonymous_trial::VALIDATE
+            {
                 if !self.idempotency_key.is_empty() {
                     return Err(Error::Invalid);
                 }
-            } else if self.path == crate::mcp_delegation::REVOKE_PATH {
+            } else if self.path == crate::mcp_delegation::REVOKE_PATH
+                || trial
+                    && matches!(
+                        self.path.as_str(),
+                        crate::anonymous_trial::PROVISION | crate::anonymous_trial::REVOKE
+                    )
+            {
                 if !key_valid(&self.idempotency_key) {
                     return Err(Error::Invalid);
                 }
