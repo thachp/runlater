@@ -282,3 +282,51 @@ test('private egress binding cannot collide with a provider secret',()=>{
  const c=fixture().c;c.services=[{binding:'GENERAL_HTTPS_EGRESS',service:'runlater-general-egress',entrypoint:'EgressBinding'}];
  assert.throws(()=>checkSecretCollisions(c,{bindings:[{name:'GENERAL_HTTPS_EGRESS',type:'secret_text'}]},[{name:'GENERAL_HTTPS_EGRESS',type:'secret_text'}]));
 });
+
+const nativeEgress={binding:'GENERAL_HTTPS_EGRESS',service:'runlater-general-egress',entrypoint:'EgressBinding'};
+const workerEgress={binding:'GENERAL_HTTPS_EGRESS',service:'runlater-public-fetch-candidate',entrypoint:'PublicFetchBinding'};
+function egressFixture(target=workerEgress){
+ const f=fixture();f.c.services=[{...target}];f.c.vars.GENERAL_HTTPS_EGRESS_REVIEW_REVISION='b'.repeat(64);f.a.config_sha256=digest(f.c);return f;
+}
+test('reviewed Worker egress binding is an explicit optional alternative with admission still off',()=>{
+ const {c,a,e}=egressFixture();assert.equal(c.vars.GENERAL_HTTPS_ENABLED,undefined);validate(c,a,e);
+ c.vars.GENERAL_HTTPS_ENABLED='disabled';a.config_sha256=digest(c);validate(c,a,e);
+});
+test('Worker egress admission still requires trial authority, revision and the reviewed complete profile',()=>{
+ const {c,a,e}=egressFixture();c.vars.GENERAL_HTTPS_ENABLED='operator-approved';a.config_sha256=digest(c);assert.throws(()=>validate(c,a,e));
+ c.vars.MCP_ANONYMOUS_TRIAL_ENABLED='operator-approved';a.config_sha256=digest(c);assert.throws(()=>validate(c,a,e));
+ c.vars.MCP_DELEGATION_GATEWAY_PUBLIC_KEY='a'.repeat(64);assert.throws(()=>validate(c,a,e));
+ a.config_sha256=digest(c);validate(c,a,e);
+ for(const revision of [undefined,'0'.repeat(64),'A'.repeat(64),'UNVERIFIED',true]){
+  const changed=structuredClone(c);if(revision===undefined)delete changed.vars.GENERAL_HTTPS_EGRESS_REVIEW_REVISION;else changed.vars.GENERAL_HTTPS_EGRESS_REVIEW_REVISION=revision;
+  assert.throws(()=>validate(changed,{...a,config_sha256:digest(changed)},e));
+ }
+});
+test('native and Worker targets cannot be interchanged under an existing config approval',()=>{
+ const {c,a,e}=egressFixture(nativeEgress);validate(c,a,e);c.services=[{...workerEgress}];assert.throws(()=>validate(c,a,e));
+ a.config_sha256=digest(c);validate(c,a,e);c.services=[{...nativeEgress}];assert.throws(()=>validate(c,a,e));
+});
+test('Worker egress rejects aliases, crossed entrypoints, extra authority and fallback lists even after digest approval',()=>{
+ const {c,a,e}=egressFixture();
+ for(const services of [null,[],[workerEgress,nativeEgress],[workerEgress,workerEgress],
+  [{...workerEgress,service:'runlater-general-egress'}],[{...workerEgress,entrypoint:'EgressBinding'}],
+  [{...nativeEgress,entrypoint:'PublicFetchBinding'}],[{...workerEgress,entrypoint:'default'}],
+  [{...workerEgress,service:'other-worker'}],[{...workerEgress,binding:'OTHER'}],
+  [{...workerEgress,environment:'production'}],[{...workerEgress,namespace:'other'}],
+  [{...workerEgress,service:'runlater-fetch-proof-20261029a'}]]){
+  const changed={...c,services};assert.throws(()=>validate(changed,{...a,config_sha256:digest(changed)},e));
+ }
+ const changed=structuredClone(c);delete changed.services;assert.throws(()=>validate(changed,{...a,config_sha256:digest(changed)},e));
+});
+test('Worker profile cannot bypass approved settings drift or secret collision guards',async()=>{
+ const {c,a,e}=egressFixture();validate(c,a,e);
+ const master={name:'BETA_CALLBACK_MASTER',type:'secret_text'};
+ const settings={bindings:[master,workerEgress]};let uploads=0,promotes=0;
+ a.settings_sha256=settingsDigest({bindings:[master,nativeEgress]});
+ await assert.rejects(deployExisting(a,async path=>path==='/settings'?settings:path==='/secrets'?[master]:{deployments:['old']},async()=>{uploads++;return JSON.stringify(record);},async()=>{promotes++;},undefined,undefined,undefined,c));
+ assert.equal(uploads,0);assert.equal(promotes,0);
+ for(const name of ['GENERAL_HTTPS_EGRESS','GENERAL_HTTPS_EGRESS_REVIEW_REVISION']){
+  assert.throws(()=>checkSecretCollisions(c,{bindings:[master,{name,type:'secret_text'}]},[master]));
+  assert.throws(()=>checkSecretCollisions(c,{bindings:[master]},[master,{name,type:'secret_text'}]));
+ }
+});

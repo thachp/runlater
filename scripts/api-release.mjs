@@ -8,6 +8,11 @@ import {verifyPublicHealth} from './api-release-health.mjs';
 export function canonical(v) { return JSON.stringify(Array.isArray(v) ? v.map(x=>JSON.parse(canonical(x))) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])) : v); }
 export const digest = v => createHash('sha256').update(canonical(v)).digest('hex');
 function guard(ok) { if (!ok) throw new Error('release guard rejected configuration or provider state'); }
+// One exact private binding selects one transport. No aliases, fallback list or default switch.
+const EGRESS_TARGETS = [
+  {binding:'GENERAL_HTTPS_EGRESS',service:'runlater-general-egress',entrypoint:'EgressBinding'},
+  {binding:'GENERAL_HTTPS_EGRESS',service:'runlater-public-fetch-candidate',entrypoint:'PublicFetchBinding'}
+];
 export function settingsDigest(settings) {
   guard(settings&&typeof settings==='object'&&!Array.isArray(settings));
   const value=structuredClone(settings),annotations=value.annotations??{};
@@ -39,7 +44,7 @@ export function validate(c,a,e) {
   guard(optionalPairing === undefined || optionalPairing === 'disabled'
     || (optionalPairing === 'operator-approved' && optionalTrial === 'operator-approved'));
   const optionalEgress = c.services;
-  guard(optionalEgress === undefined || canonical(optionalEgress) === canonical([{binding:'GENERAL_HTTPS_EGRESS',service:'runlater-general-egress',entrypoint:'EgressBinding'}]));
+  guard(optionalEgress === undefined || EGRESS_TARGETS.some(target=>canonical(optionalEgress) === canonical([target])));
   const egressRevision = c.vars.GENERAL_HTTPS_EGRESS_REVIEW_REVISION;
   guard(egressRevision === undefined || (optionalEgress !== undefined && typeof egressRevision === 'string' && /^[a-f0-9]{64}$/.test(egressRevision) && egressRevision !== '0'.repeat(64)));
   guard(optionalEgress === undefined || egressRevision !== undefined);
