@@ -330,3 +330,114 @@ fn mixed_lanes_reserve_only_publishable_references_without_quota_reset() {
         2
     );
 }
+
+fn schedule(p: &mut Enrollment, d: &Descriptor, operation: &str, now: i64) -> String {
+    let raw = serde_json::to_vec(&json!({"url":"https://customer.example.com/hook","payload":{},"run_at_ms":0,"operation_key":operation})).unwrap();
+    let mut e = envelope(d, crate::general_http::CREATE, &raw, now);
+    e.idempotency_key = operation.into();
+    let sign = sig(d, &e);
+    let k = public();
+    let permit = super::AdmissionPermit::from_reviewed_revision(&"c".repeat(64)).unwrap();
+    p.schedule_http(
+        &e,
+        Proof::Trial {
+            signature: &sign,
+            descriptor: d,
+            capability: CAP,
+            trust: trust(&k),
+        },
+        &raw,
+        Some(&permit),
+        now,
+    )
+    .unwrap()["result"]["id"]
+        .as_str()
+        .unwrap()
+        .into()
+}
+fn assert_reload(p: &Enrollment) {
+    let restored: Enrollment = serde_json::from_slice(&serde_json::to_vec(p).unwrap()).unwrap();
+    restored.http.validate(&restored.project).unwrap();
+    restored.outbound.validate(restored.project_id()).unwrap();
+}
+#[test]
+fn retention_maintenance_prunes_only_removed_http_targets_and_is_reloadable() {
+    for (callback, general) in [(true, true), (false, true), (true, false), (false, false)] {
+        let (_, d, _, mut p, _, _, _) = fixture();
+        let old = schedule(&mut p, &d, "old", 30);
+        let live = schedule(&mut p, &d, "live", 31);
+        p.project.ledger.cancel(&old, 40).unwrap();
+        let boundary = 40 + crate::core::RETENTION;
+        p.registered_outbox_lanes(&d.project_id().unwrap(), boundary - 1, callback, general)
+            .unwrap();
+        assert!(p.http.target(&old).is_some());
+        assert_reload(&p);
+        p.registered_outbox_lanes(&d.project_id().unwrap(), boundary, callback, general)
+            .unwrap();
+        assert!(p.http.target(&old).is_none());
+        assert!(p.http.target(&live).is_some());
+        assert_reload(&p);
+        let snapshot = serde_json::to_value(&p).unwrap();
+        p.registered_outbox_lanes(&d.project_id().unwrap(), boundary, callback, general)
+            .unwrap();
+        assert_eq!(snapshot, serde_json::to_value(&p).unwrap());
+    }
+}
+#[test]
+fn invalid_identity_claim_prunes_expired_http_targets() {
+    let (_, d, _, mut p, _, material, policy) = fixture();
+    let old = schedule(&mut p, &d, "old", 30);
+    let live = schedule(&mut p, &d, "live", 31);
+    let dispatch = p
+        .registered_outbox(&d.project_id().unwrap(), 32)
+        .unwrap()
+        .into_iter()
+        .find(|x| x.id == live)
+        .unwrap();
+    p.project.ledger.cancel(&old, 40).unwrap();
+    let mut snapshot = serde_json::to_value(&p).unwrap();
+    snapshot["ticket"]["revoked"] = json!(true);
+    p = serde_json::from_value(snapshot).unwrap();
+    assert!(p
+        .registered_claim(&dispatch, &policy, 40 + crate::core::RETENTION, &material)
+        .unwrap()
+        .is_none());
+    assert!(p.http.target(&old).is_none());
+    assert!(p.http.target(&live).is_some());
+    assert_reload(&p);
+}
+
+#[test]
+fn maintenance_preserves_live_target_and_finishes_retention_idempotently() {
+    let (_, d, _, mut p, _, _, _) = fixture();
+    let old = schedule(&mut p, &d, "old", 30);
+    let live = schedule(&mut p, &d, "live", 31);
+    p.project.ledger.cancel(&old, 40).unwrap();
+    let boundary = 40 + crate::core::RETENTION;
+    // Model a newer scheduled task alongside the retention-expired terminal task.
+    let task = p.project.ledger.tasks.get_mut(&live).unwrap();
+    task.initial_due_ms = boundary;
+    task.due_ms = boundary + 1000;
+    p.registered_maintenance(boundary).unwrap();
+    assert!(p.http.target(&old).is_none());
+    assert!(p.http.target(&live).is_some());
+    assert!(!p.project.ledger.get(&live).unwrap().status.terminal());
+    assert_reload(&p);
+    p.project.ledger.cancel(&live, boundary).unwrap();
+    let end = boundary + crate::core::RETENTION;
+    p.registered_maintenance(end).unwrap();
+    assert!(p.http.is_empty());
+    assert_reload(&p);
+    assert!(p.project.delivery_next_wake(end).is_none_or(|at| at > end));
+    let snapshot = serde_json::to_value(&p).unwrap();
+    p.registered_maintenance(end).unwrap();
+    assert_eq!(snapshot, serde_json::to_value(&p).unwrap());
+}
+
+#[test]
+fn callback_only_enrollment_maintenance_remains_reloadable() {
+    let (_, _, _, mut p, _, _, _) = fixture();
+    p.registered_maintenance(crate::core::RETENTION).unwrap();
+    assert!(p.http.is_empty());
+    assert_reload(&p);
+}

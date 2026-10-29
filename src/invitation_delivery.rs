@@ -449,7 +449,7 @@ impl Enrollment {
                         .ledger
                         .cancel(&d.id, now)
                         .map_err(funded_tasks::Error::from)?;
-                    next.project.funded_maintenance(now)?;
+                    next.registered_maintenance(now)?;
                 }
             }
             *self = next;
@@ -529,6 +529,13 @@ impl Enrollment {
             }
         }
     }
+    /// Keep Enrollment metadata consistent with ledger retention before persistence.
+    pub(crate) fn registered_maintenance(&mut self, now: i64) -> Result<(), Error> {
+        self.project.funded_maintenance(now)?;
+        self.project.delivery.prune(&self.project.ledger);
+        self.http.prune(&self.project.ledger);
+        Ok(())
+    }
     pub fn registered_outbox(&mut self, project: &str, now: i64) -> Result<Vec<Dispatch>, Error> {
         self.registered_outbox_lanes(project, now, true, true)
     }
@@ -555,8 +562,7 @@ impl Enrollment {
                     .map_err(funded_tasks::Error::from)?;
             }
         }
-        self.project.funded_maintenance(now)?;
-        self.project.delivery.prune(&self.project.ledger);
+        self.registered_maintenance(now)?;
         let mut refs = self.project.ledger.outbox(project, now);
         refs.retain(|d| {
             if self.http.target(&d.id).is_some() {

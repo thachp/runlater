@@ -400,8 +400,7 @@ impl InvitationProject {
         let Some(mut s) = load::<Enrollment>(&self.state)? else {
             return self.state.storage().delete_alarm().await.map(|_| ());
         };
-        s.project
-            .funded_maintenance(now())
+        s.registered_maintenance(now())
             .map_err(|_| Error::RustError("Funding maintenance rejected".into()))?;
         let Some(project) = s.project_id().map(str::to_owned) else {
             save(&self.state, &s)?;
