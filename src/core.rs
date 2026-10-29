@@ -89,6 +89,9 @@ pub struct Ledger {
     pub limits: QueueLimits,
     #[serde(default)]
     pub bucket: Option<Bucket>,
+    /// Last selected ID, committed before Queue I/O. Missing in older snapshots.
+    #[serde(default)]
+    pub publication_cursor: Option<String>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Fault {
@@ -402,16 +405,38 @@ impl Ledger {
         if self.limits.paused {
             return Vec::new();
         }
-        self.tasks
+        let eligible: Vec<_> = self
+            .tasks
             .values()
             .filter(|t| t.status == Status::Ready && t.due_ms <= now)
-            .take(32)
+            .collect();
+        // Rotate only when bounded publication would omit eligible work. Small
+        // cohorts retain stable replay order. A deleted cursor ID is harmless:
+        // resume at the next greater ID, wrapping when none remains.
+        let start = if eligible.len() > 32 {
+            self.publication_cursor.as_ref().map_or(0, |cursor| {
+                eligible.iter().position(|t| t.id > *cursor).unwrap_or(0)
+            })
+        } else {
+            0
+        };
+        let messages: Vec<_> = eligible
+            .iter()
+            .cycle()
+            .skip(start)
+            .take(eligible.len().min(32))
             .map(|t| Dispatch {
                 tenant: tenant.into(),
                 id: t.id.clone(),
                 generation: t.generation,
             })
-            .collect()
+            .collect();
+        self.publication_cursor = if eligible.len() > 32 {
+            messages.last().map(|d| d.id.clone())
+        } else {
+            None
+        };
+        messages
     }
     pub fn claim(&mut self, d: &Dispatch, now: i64) -> Result<Option<Task>, Fault> {
         self.reconcile(now);
