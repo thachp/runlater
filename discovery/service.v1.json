@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.runlater.io/agent/service.v1.schema.json",
-  "descriptor_version": "1.2.0",
+  "descriptor_version": "1.3.0",
   "service": "RunLater",
   "format_owner": "RunLater",
   "protocol_status": "custom_metadata_not_an_industry_standard",
@@ -31,7 +31,8 @@
     "hosted_beta_contract": "https://docs.runlater.io/agent/public-beta.v1.json",
     "public_beta_client": "https://docs.runlater.io/agent/public-beta-client.v1.mjs",
     "receiver_example": "https://docs.runlater.io/agent/public-beta-receiver/README.md",
-    "release_metadata": "https://docs.runlater.io/agent/public-beta-release.v1.json"
+    "release_metadata": "https://docs.runlater.io/agent/public-beta-release.v1.json",
+    "mcp_setup": "https://docs.runlater.io/agent/mcp.md"
   },
   "link_availability": "published_asset_locations_verify_http_before_use",
   "capabilities": {

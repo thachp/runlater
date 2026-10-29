@@ -16,6 +16,8 @@ Published configuration metadata is not a live eligibility probe. These RunLater
 - [Local OpenAPI](https://docs.runlater.io/openapi.json): Loopback fixture contract only, not the hosted API.
 - [Local/proposed tool metadata](https://docs.runlater.io/agent/tools.v1.json): Non-executable local bindings and disabled proposals; use the separate hosted beta contract.
 
+- [MCP setup](https://docs.runlater.io/agent/mcp.md): Source/local SSE server; intended `https://mcp.runlater.io/sse` endpoint is not yet verified. Discovery does not grant task authority.
+
 ## Source
 
 - [Repository](https://github.com/thachp/runlater): Reviewed implementation, examples and remaining launch/security/payment gates.
