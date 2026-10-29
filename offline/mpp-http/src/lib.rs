@@ -1,5 +1,6 @@
 //! Offline draft-profile codec. No HTTP client, secrets, payment verification, or runtime routes.
 //! Parsed credentials/receipts are untrusted; an unexecuted plan never entitles service.
+pub mod journal;
 mod json;
 pub mod stripe;
 use base64::{
@@ -402,7 +403,8 @@ struct StripeChargeRequest {
     method_details: MethodDetails,
 }
 /// Trusted offline issuance snapshot, to be stored and looked up by the future host.
-/// Not serializable/deserializable request authority. No challenge store is implemented.
+/// Not serializable/deserializable request authority. `journal` adds a bounded
+/// trusted-storage fixture contract, not a production challenge database.
 pub struct IssuedChallenge {
     challenge: Challenge,
     intent: Intent,

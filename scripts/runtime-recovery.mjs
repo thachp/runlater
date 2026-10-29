@@ -20,7 +20,7 @@ for(const [signal,code]of [['SIGINT',130],['SIGTERM',143]])process.once(signal,(
 const timeout=(ms,message)=>new Promise((_,reject)=>{const t=setTimeout(()=>reject(Error(message)),ms);t.unref();});
 async function start(scenario,{holds=[],fail=()=>false,mode='enabled'}={}){
  assert.ok(!cleaning,'Local harness is stopping');
- assert.ok(++started<=8,'Subprocess budget');
+ assert.ok(++started<=10,'Subprocess budget');
  const child=spawn(process.execPath,['scripts/runtime-recovery-child.mjs',path.join(root,scenario),mode],{cwd:repo,detached:true,stdio:['ignore','pipe','pipe','ipc']});child.spawnedAtMs=Date.now();children.add(child);recordChildren();
  const bus=new EventEmitter(),events=[],held=new Map(),hold=new Set(holds);let log='',rpcId=0;
  for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{log=(log+chunk).slice(-16000);});
@@ -74,7 +74,24 @@ try{
  const stale=await c.rpc('finish',{value:{id:first.id,fence:effect.metadata.fence,status:204}});assert.equal(stale.status,409);
  c.release('callback_complete');const final=await settle(c,first.id);assert.equal(final.attempts.length,2);assert.equal(final.attempts[0].outcome,'lease_expired_unknown');assert.equal(final.input.operation_key,input.operation_key);await c.stop();
  console.log('PASS actual SIGKILL + real lease deadline: fixture may repeat, old result fenced, business identity preserved');
- // 4. Exception before final pump re-arm, while the earlier durable watchdog exists.
+ // 4. Actual process death AFTER durable finish, BEFORE Queue acknowledgement.
+ let ack=await start('ack',{holds:['after_finish']});
+ const ackTask=await ack.api('/v1/tasks',{method:'POST',body:input,key:'ack',expected:201});
+ const committed=await ack.point('after_finish');assert.equal(committed.metadata.id,ackTask.id);assert.equal(committed.metadata.status,200);
+ const sentAck=await ack.point('after_publish');
+ const beforeKill=await ack.api('/v1/tasks/'+ackTask.id);assert.equal(beforeKill.status,'succeeded');assert.equal(beforeKill.attempts.length,1);assert.equal(beforeKill.attempts[0].outcome,'http_204');
+ await ack.kill();ack=await start('ack');
+ // Explicitly replay even if the emulator does not retain its in-flight Queue message.
+ const ignoredBefore=(await ack.api('/v1/queue/metrics')).totals.counts.claim_ignored;
+ await ack.rpc('publish',{reference:sentAck.metadata,copies:3});
+ let ignoredAfter=ignoredBefore;
+ for(let i=0;i<80&&ignoredAfter<ignoredBefore+3;i++){ignoredAfter=(await ack.api('/v1/queue/metrics')).totals.counts.claim_ignored;if(ignoredAfter<ignoredBefore+3)await new Promise(r=>setTimeout(r,100));}
+ assert.ok(ignoredAfter>=ignoredBefore+3,'Replayed references must reach the authoritative claim guard');
+ assert.deepEqual(await ack.api('/v1/tasks/'+ackTask.id),beforeKill,'Committed task/attempt survives process death and duplicate replay unchanged');
+ assert.equal(ack.events.filter(e=>e.point==='callback_complete').length,0,'Terminal replay must not invoke the fixture');
+ assert.equal((await ack.api('/v1/tasks',{method:'POST',body:input,key:'ack'})).id,ackTask.id);await ack.stop();
+ console.log('PASS actual SIGKILL after finish/before ack: committed success survives restart; at least three replay deliveries ignored without another fixture call');
+ // 5. Exception before final pump re-arm, while the earlier durable watchdog exists.
  let failedRearm=false;
  const d=await start('rearm',{holds:['before_claim'],fail:m=>m.point==='before_rearm'&&m.metadata.preserve_earlier===false&&!failedRearm&&(failedRearm=true)});
  const waiting=await d.api('/v1/tasks',{method:'POST',body:input,key:'rearm',expected:201});await d.point('after_publish',2);assert.ok(failedRearm);
@@ -82,5 +99,5 @@ try{
  console.log('PASS injected final pump re-arm exception: alarm republishes, retained work completes');
  for(const mode of ['disabled','unbound']){const guard=await start('guard-'+mode,{mode});await guard.api('/health',{expected:403});await guard.api('/v1/tasks',{method:'POST',body:'bad-json',expected:403});assert.equal(guard.events.filter(e=>e.kind==='point').length,0);await guard.stop();}
  console.log('PASS test artifact guards: wrong host, disabled mode and missing private binding reject before body/DO work');
- console.log(JSON.stringify({scenarios:5,actual_process_group_kills:2,subprocesses:started,http_calls:calls,live_resources:0,external_callbacks:0}));
+ console.log(JSON.stringify({scenarios:6,actual_process_group_kills:3,subprocesses:started,http_calls:calls,live_resources:0,external_callbacks:0}));
 }finally{await cleanup();}

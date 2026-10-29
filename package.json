@@ -30,10 +30,15 @@
     "test:public-beta": "./scripts/test-public-beta.sh",
     "test:public-beta-receiver": "npm run test:callback-wire",
     "test:public-beta-client-v1": "node --test examples/public-beta-client.v1.test.mjs",
-    "test:public-beta-client-local": "./scripts/test-public-beta-client.sh"
+    "test:public-beta-client-local": "./scripts/test-public-beta-client.sh",
+    "mcp": "node mcp/server.mjs",
+    "test:mcp": "node --test mcp/*.test.mjs"
   },
   "devDependencies": {
-    "ajv": "8.20.0",
     "wrangler": "4.154.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "ajv": "8.20.0"
   }
 }
