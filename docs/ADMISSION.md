@@ -46,3 +46,33 @@ The admission test waits for earlier short-running fixtures to settle, modifies 
 `tests/recovery.rs` simulates persisted-ledger restart at acceptance/publish/claim/callback/outcome/ack boundaries. In particular, callback success before the durable result can duplicate a callback, while committed success before ack cannot create another committed attempt. These deterministic JSON snapshot tests use exactly the SQLite ledger's stored format, but are not live Cloudflare process-failure proofs. Real consumer concurrency, runtime failpoints, prolonged outage/capacity/noisy-neighbor load and production network safety remain launch gates. No issue is claimed fully complete from this slice alone.
 
 To require the fresh-store coincident-ID regression, start a local emulator with a new `--persist-to` directory and run `RUNLATER_REQUIRE_COINCIDENT_IDS=1 node scripts/admission.mjs` before other suites create tasks. Alpha and beta must each receive `task_0000000000000001`; distinct per-tenant operation keys and payloads prove that forged tenant headers still return the authenticated tenant's own data. The ordinary command also supports populated idle fixture stores without assuming global task-ID uniqueness.
+
+## Bounded publication rotation (#9)
+
+The default tenant outbox rotates its 32-reference publication window with a
+persisted last-selected task ID when more than 32 tasks are eligible. Previously,
+repeated publication selected only the lowest IDs, so an unclaimed head could
+hide later accepted work until that head progressed or age-expired. The runtime
+already commits the snapshot before Queue I/O. Advancing the cursor therefore
+survives a restart or uncertain/failed send; retained ready rows are selected again
+after wrapping. Publication spends neither rate tokens nor attempt permits.
+Cohorts of at most 32 retain stable replay order. Older snapshots default to no
+cursor, and cancellation/purge of the cursor task does not block progress.
+
+`cargo test --locked --test publication_fairness` proves that a fixed 97-task
+ready cohort is selected in four calls across snapshot restarts even when every
+reference stays unclaimed, and is selected again within the next four calls.
+Generally a fixed eligible cohort of N > 32 is covered within ceil(N/32)
+completed outbox selections. This bound assumes repeated persisted selections;
+it is not a wall-clock bound, successful-send guarantee, FIFO claim policy, or
+cross-tenant/cross-shard Cloudflare scheduling guarantee. Continuous arrivals,
+selective send failure and actual consumer scheduling still require live proof.
+The cursor adds no second scheduling authority.
+
+A separate deterministic 1000-task noisy-tenant scenario allows a quiet tenant to
+complete, then simulates a transport outage longer than the delivery-age limit
+with a crashed permit. Reconciliation terminates stale work, fences late results,
+and retention purge permits fresh admission and claim. This is a local model
+proof using the persisted format, not live process failure or load evidence.
+Named queues, live failpoints/concurrency, global fairness and outage/load launch
+gates remain open; numeric limits remain configuration rather than plan promises.

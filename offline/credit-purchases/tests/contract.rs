@@ -658,3 +658,16 @@ fn event_capacity_and_project_credit_counter_never_wrap() {
         s.create_intent(s.revision(), authority(), "b", 1, 10)
     });
 }
+
+#[test]
+fn immutable_quote_lookup_is_project_scoped_and_read_only_after_restore() {
+    let mut s = state();
+    let i = intent(&mut s, "quote_lookup");
+    let restored = OfflineLedger::restore(&s.snapshot().unwrap()).unwrap();
+    let before = restored.snapshot().unwrap();
+    assert_eq!(restored.intent("alpha", &i.id), Ok(&i));
+    assert_eq!(restored.intent("foreign", &i.id), Err(Error::Forbidden));
+    assert_eq!(restored.intent("foreign", "missing"), Err(Error::Forbidden));
+    assert_eq!(restored.intent("alpha", "missing"), Err(Error::Invalid));
+    assert_eq!(restored.snapshot().unwrap(), before);
+}
