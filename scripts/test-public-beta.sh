@@ -5,3 +5,4 @@ trap restore_default EXIT
 ./scripts/build-production.sh
 node scripts/assert-no-destination-hooks.mjs
 node scripts/public-beta.mjs
+node scripts/destination-security.mjs

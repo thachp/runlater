@@ -24,6 +24,7 @@
     "test:web-local": "node scripts/test-web-local.mjs",
     "test:invitations": "./scripts/test-invitations.sh",
     "test:destinations": "./scripts/test-destinations.sh",
+    "test:destination-security": "./scripts/test-destination-security.sh",
     "test:invitation-production": "./scripts/test-invitation-production.sh && npm run test:public-beta-client-local",
     "test:invitation-delivery": "./scripts/test-invitation-delivery.sh",
     "test:invitation-client-v1": "node --test examples/invitation-client.v1.test.mjs",
