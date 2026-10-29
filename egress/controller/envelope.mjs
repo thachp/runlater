@@ -16,7 +16,8 @@ export async function validateEnvelope(e,now=Date.now(),{historical=false}={}){
  if(!exactKeys(r,['url','body','contentType','operationKey'])||typeof r.url!=='string'||encoder.encode(r.url).length>2048||typeof r.body!=='string'||encoder.encode(r.body).length>1024||r.contentType!=='application/json'||typeof r.operationKey!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(r.operationKey))throw Error('invalid_envelope');
  try{JSON.parse(r.body);}catch{throw Error('invalid_envelope');}
  if(typeof e.target_sha256!=='string'||!/^[0-9a-f]{64}$/.test(e.target_sha256)||await sha256(JSON.stringify({version:1,url:r.url,method:'POST',content_type:'application/json'}))!==e.target_sha256)throw Error('invalid_envelope');
- // URL syntax/network validation remains mandatory in native egress, never replaced by this digest.
+ // Digest is not network proof. Each adapter validates URL syntax; native pins an observed
+ // public peer, while the separate Worker artifact relies on provider public-Fetch routing.
  const canonical=canonicalEnvelope(e);if(encoder.encode(canonical).length>MAX_ENVELOPE_BYTES)throw Error('invalid_envelope');
  return {envelope:JSON.parse(JSON.stringify(e)),hash:await sha256(canonical),key:await sha256(JSON.stringify([e.release_id,e.project_id,e.task_id,e.fence]))};
 }
