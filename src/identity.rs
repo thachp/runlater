@@ -140,6 +140,8 @@ pub struct Identity {
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Catalog {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) trial: Option<crate::anonymous_trial::Descriptor>,
     project_id: String,
     revision: u64,
     policy_hash: String,
@@ -446,6 +448,24 @@ impl Catalog {
             .min(self.approval(key, now.max(self.clock_ms))?.expires_at_ms))
     }
     /// Identity lookup only; callers must separately authenticate request possession. No task route uses this yet.
+    pub(crate) fn authorize_trial(
+        &self,
+        project: &str,
+        permission: Permission,
+        now: i64,
+    ) -> Result<(), Error> {
+        let t = self.trial.as_ref().ok_or(Error::Forbidden)?;
+        if self.project_revoked
+            || project != self.project_id
+            || project != t.project_id()?
+            || now < t.issued_at_ms
+            || now >= t.expires_at_ms
+            || !t.allows(permission)
+        {
+            return Err(Error::Forbidden);
+        }
+        Ok(())
+    }
     pub fn authorize(
         &self,
         project: &str,

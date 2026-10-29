@@ -41,6 +41,7 @@ impl Default for State {
 }
 #[derive(Debug)]
 pub enum Error {
+    ReceiverRequired,
     BetaCapacity,
     Auth(identity::Error),
     Task(funded_tasks::Error),
@@ -373,6 +374,11 @@ impl Enrollment {
                 .destination
                 .strip_prefix("registered:")
                 .ok_or(Error::Unavailable)?;
+            if matches!(proof, crate::mcp_delegation::Proof::Trial { .. })
+                && !next.outbound.versions.contains_key(endpoint)
+            {
+                return Err(Error::ReceiverRequired);
+            }
             let version = if let Some(parent) = &task.parent {
                 next.outbound
                     .selections

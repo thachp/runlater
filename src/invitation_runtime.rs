@@ -239,12 +239,34 @@ struct Signed {
     body_hex: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     delegation: Option<crate::mcp_delegation::Certificate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trial: Option<crate::anonymous_trial::Descriptor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trial_capability: Option<String>,
 }
 impl Signed {
     fn proof<'a>(
         &'a self,
         trust: Option<&'a (String, String)>,
     ) -> std::result::Result<crate::mcp_delegation::Proof<'a>, crate::identity::Error> {
+        if let Some(descriptor) = &self.trial {
+            if self.delegation.is_some() {
+                return Err(crate::identity::Error::Forbidden);
+            }
+            let (gateway, release) = trust.ok_or(crate::identity::Error::Forbidden)?;
+            return Ok(crate::mcp_delegation::Proof::Trial {
+                signature: &self.signature,
+                descriptor,
+                capability: self
+                    .trial_capability
+                    .as_deref()
+                    .ok_or(crate::identity::Error::Forbidden)?,
+                trust: crate::mcp_delegation::Trust {
+                    gateway_public_key: gateway,
+                    release_id: release,
+                },
+            });
+        }
         match &self.delegation {
             None => Ok(crate::mcp_delegation::Proof::Owner(&self.signature)),
             Some(certificate) => {
@@ -315,6 +337,8 @@ async fn signed_forward(req: &mut Request, env: &Env) -> Result<Response> {
         signature: h.get("RunLater-Request-Signature")?.unwrap_or_default(),
         body_hex: hex::encode(raw),
         delegation: None,
+        trial: None,
+        trial_capability: None,
     };
     internal(
         env,
@@ -738,6 +762,38 @@ impl DurableObject for InvitationProject {
         if public_runtime::mode(&self.env) && req.path() == "/public/enroll" {
             return self.public_install(value, &project);
         }
+        if public_runtime::mode(&self.env) && req.path() == "/public/trial-install" {
+            return self.trial_install(value, &project);
+        }
+        if req.path() == "/public/trial-validate" {
+            let input: Signed = serde_json::from_value(value)?;
+            let Some((gateway, release)) = public_runtime::trial_trust(&self.env)? else {
+                return rejected(inv::Error::Forbidden);
+            };
+            if input.ticket.revoked
+                || input.ticket.project_id != project
+                || input.envelope.project_id != project
+            {
+                return rejected(inv::Error::Forbidden);
+            }
+            let Some(d) = &input.trial else {
+                return rejected(inv::Error::Forbidden);
+            };
+            return match s.validate_trial(
+                &input.envelope,
+                d,
+                input.trial_capability.as_deref().unwrap_or_default(),
+                &input.signature,
+                crate::mcp_delegation::Trust {
+                    gateway_public_key: &gateway,
+                    release_id: &release,
+                },
+                now(),
+            ) {
+                Ok(v) => json_response(&v, 200),
+                Err(e) => task_error(e.into()),
+            };
+        }
         if req.path() == "/deliver" {
             let d: crate::core::Dispatch = serde_json::from_value(value)?;
             return self.deliver(&project, d).await;
@@ -793,7 +849,9 @@ impl DurableObject for InvitationProject {
             let Ok(raw) = hex::decode(&input.body_hex) else {
                 return rejected(inv::Error::Invalid);
             };
-            let trust = if input.delegation.is_some() {
+            let trust = if input.trial.is_some() {
+                public_runtime::trial_trust(&self.env)?
+            } else if input.delegation.is_some() {
                 public_runtime::mcp_trust(&self.env)?
             } else {
                 None
@@ -802,7 +860,7 @@ impl DurableObject for InvitationProject {
                 Ok(v) => v,
                 Err(e) => return task_error(e.into()),
             };
-            if input.delegation.is_some()
+            if (input.delegation.is_some() || input.trial.is_some())
                 && crate::mcp_delegation::task_permission(&input.envelope).is_err()
             {
                 return rejected(inv::Error::Forbidden);

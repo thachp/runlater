@@ -91,6 +91,10 @@ pub struct State {
     registry: Registry,
     pending: BTreeMap<String, Pending>,
     grants: BTreeMap<String, Grant>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    trials: BTreeMap<String, crate::anonymous_trial::Grant>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    trial_tombstones: BTreeMap<String, crate::anonymous_trial::Descriptor>,
     clock_ms: i64,
     anonymous_operations: u32,
     client_operations: BTreeMap<String, u32>,
@@ -173,6 +177,8 @@ impl State {
             registry,
             pending: BTreeMap::new(),
             grants: BTreeMap::new(),
+            trials: BTreeMap::new(),
+            trial_tombstones: BTreeMap::new(),
             clock_ms: profile.opens_at_ms,
             anonymous_operations: 0,
             client_operations: BTreeMap::new(),
@@ -185,7 +191,8 @@ impl State {
         profile.validate()?;
         if self.version != 1
             || &self.profile != profile
-            || self.grants.len() > PROJECTS
+            || self.grants.len() + self.trials.len() > PROJECTS
+            || self.trial_tombstones.len() > PENDING
             || self.pending.len() > PENDING
             || self.anonymous_operations > ANONYMOUS_OPERATIONS
             || self.client_operations.len() > PROJECTS
@@ -201,6 +208,24 @@ impl State {
         }
         for (project, state) in &self.mcp_revocations {
             if !self.grants.contains_key(project) || state.validate().is_err() {
+                return Err(Error::Invalid);
+            }
+        }
+        for (p, g) in &self.trials {
+            g.check().map_err(|_| Error::Invalid)?;
+            if p != &g.ticket.project_id
+                || g.descriptor.release_id != profile.release_id
+                || self.grants.contains_key(p)
+            {
+                return Err(Error::Invalid);
+            }
+        }
+        for (p, d) in &self.trial_tombstones {
+            d.validate().map_err(|_| Error::Invalid)?;
+            if p != &d.project_id().map_err(|_| Error::Invalid)?
+                || d.release_id != profile.release_id
+                || self.trials.contains_key(p)
+            {
                 return Err(Error::Invalid);
             }
         }
@@ -274,7 +299,7 @@ impl State {
             if now < self.profile.opens_at_ms || now >= self.profile.closes_at_ms {
                 return Err(Error::Closed);
             }
-            if self.grants.len() >= PROJECTS {
+            if self.grants.len() + self.trials.len() >= PROJECTS {
                 return Err(Error::Limited);
             }
             self.registry
@@ -327,7 +352,7 @@ impl State {
             }
             return Ok((g.clone(), c));
         }
-        if now >= self.profile.closes_at_ms || self.grants.len() >= PROJECTS {
+        if now >= self.profile.closes_at_ms || self.grants.len() + self.trials.len() >= PROJECTS {
             return Err(Error::Limited);
         }
         let ticket = self.registry.commit_public(&c.ticket, now)?;
@@ -344,12 +369,15 @@ impl State {
         if projects.len() > PROJECTS || projects.iter().any(|p| !crate::security::tenant_valid(p)) {
             return Err(Error::Invalid);
         }
-        if projects
-            .iter()
-            .any(|p| self.grants.get(p).is_some_and(|g| !g.ticket.revoked))
-        {
+        if projects.iter().any(|p| {
+            self.grants.get(p).is_some_and(|g| !g.ticket.revoked)
+                || self.trials.get(p).is_some_and(|g| !g.ticket.revoked)
+        }) {
             self.time(now)?;
             for project in projects {
+                if let Some(g) = self.trials.get_mut(project) {
+                    g.ticket.revoked = true;
+                }
                 if let Some(g) = self.grants.get_mut(project) {
                     g.ticket.revoked = true
                 }
@@ -400,6 +428,7 @@ impl State {
             return Err(Error::Forbidden);
         }
         match proof {
+            crate::mcp_delegation::Proof::Trial { .. } => return Err(Error::Forbidden),
             crate::mcp_delegation::Proof::Owner(signature) => {
                 if !identity::verify_ed25519(
                     &e.public_key,
@@ -540,8 +569,115 @@ impl State {
         *self = next;
         Ok(serde_json::json!({"revoked_before_ms":now,"replayed":false}))
     }
+    /// Explicit provisioning only. The shared Registry is the single cohort reservation authority.
+    pub fn trial_request(
+        &mut self,
+        e: &crate::signed::Envelope,
+        d: &crate::anonymous_trial::Descriptor,
+        secret: &str,
+        signature: &str,
+        trust: crate::mcp_delegation::Trust<'_>,
+        body: &[u8],
+        now: i64,
+    ) -> Result<serde_json::Value, Error> {
+        use crate::anonymous_trial::{PROVISION, REVOKE, STATUS, VALIDATE};
+        e.validate_trial_request(body, now)
+            .map_err(|_| Error::Forbidden)?;
+        d.verify(e, secret, signature, trust, now)
+            .map_err(|_| Error::Forbidden)?;
+        if trust.release_id != self.profile.release_id || now < self.clock_ms {
+            return Err(Error::Forbidden);
+        }
+        let lifecycle = matches!(e.path.as_str(), PROVISION | VALIDATE | STATUS | REVOKE);
+        if lifecycle
+            && (if e.path == STATUS {
+                e.method != "GET" || !body.is_empty()
+            } else {
+                e.method != "POST" || body != b"{}"
+            })
+        {
+            return Err(Error::Invalid);
+        }
+        if !lifecycle {
+            if !d.allows(crate::mcp_delegation::task_permission(e).map_err(|_| Error::Forbidden)?) {
+                return Err(Error::Forbidden);
+            }
+        }
+        if let Some(old) = self.trial_tombstones.get(&e.project_id) {
+            if old != d {
+                return Err(Error::Conflict);
+            }
+            return if e.path == REVOKE {
+                Ok(serde_json::json!({"revoked":true,"provisioned":false}))
+            } else {
+                Err(Error::Forbidden)
+            };
+        }
+        if let Some(g) = self.trials.get(&e.project_id) {
+            if &g.descriptor != d {
+                return Err(Error::Conflict);
+            }
+        }
+        if e.path == REVOKE {
+            if let Some(g) = self.trials.get_mut(&e.project_id) {
+                if g.revoked_at_ms.is_none() {
+                    g.revoked_at_ms = Some(now);
+                }
+                return Ok(serde_json::json!({"revoked":true,"provisioned":true}));
+            }
+            if self.trial_tombstones.len() >= PENDING {
+                return Err(Error::Limited);
+            }
+            self.trial_tombstones
+                .insert(e.project_id.clone(), d.clone());
+            return Ok(serde_json::json!({"revoked":true,"provisioned":false}));
+        }
+        if e.path == PROVISION && !self.trials.contains_key(&e.project_id) {
+            if now < self.profile.opens_at_ms
+                || now >= self.profile.closes_at_ms
+                || self.grants.len() + self.trials.len() >= PROJECTS
+            {
+                return Err(Error::Limited);
+            }
+            self.anonymous(now)?;
+            let mut ticket = self.registry.preview_public(
+                &d.ticket_id().map_err(|_| Error::Invalid)?,
+                (now + 300_000).min(d.expires_at_ms),
+                now,
+            )?;
+            ticket.terms = d.terms();
+            let ticket = self.registry.commit_trial(&ticket, now)?;
+            self.trials.insert(
+                e.project_id.clone(),
+                crate::anonymous_trial::Grant {
+                    descriptor: d.clone(),
+                    ticket,
+                    revoked_at_ms: None,
+                },
+            );
+        }
+        let Some(g) = self.trials.get(&e.project_id) else {
+            return if e.path == STATUS || e.path == VALIDATE {
+                Ok(d.status(false))
+            } else {
+                Err(Error::Forbidden)
+            };
+        };
+        g.active(now).map_err(|_| Error::Forbidden)?;
+        if !lifecycle {
+            let n = self
+                .client_operations
+                .entry(e.project_id.clone())
+                .or_default();
+            if *n >= CLIENT_OPERATIONS {
+                return Err(Error::Limited);
+            }
+            *n += 1;
+        }
+        Ok(serde_json::json!({"grant":g}))
+    }
     pub fn view(&self, now: i64) -> serde_json::Value {
-        serde_json::json!({"mode":"public_free_beta","registration_open":now>=self.profile.opens_at_ms&&now<self.profile.closes_at_ms&&self.grants.len()<PROJECTS&&self.anonymous_operations<ANONYMOUS_OPERATIONS,"remaining_projects":PROJECTS-self.grants.len(),"trial":{"duration_ms":DURATION,"attempt_units":UNITS,"units_reserved_per_task":5},"limits":{"lifetime_projects":PROJECTS,"lifetime_tasks_per_project":16,"lifetime_publications_per_project":128,"client_operations_per_project":CLIENT_OPERATIONS,"receiver":"worker.account.workers.dev"},"payments":false})
+        serde_json::json!({"mode":"public_free_beta","registration_open":now>=self.profile.opens_at_ms&&now<self.profile.closes_at_ms&&self.grants.len()+self.trials.len()<PROJECTS&&self.anonymous_operations<ANONYMOUS_OPERATIONS,"remaining_projects":PROJECTS-self.grants.len()-self.trials.len(),"trial":{"duration_ms":DURATION,"attempt_units":UNITS,"units_reserved_per_task":5},"limits":{"lifetime_projects":PROJECTS,"lifetime_tasks_per_project":16,"lifetime_publications_per_project":128,"client_operations_per_project":CLIENT_OPERATIONS,"receiver":"worker.account.workers.dev"},"payments":false})
     }
     pub fn grant(&self, project: &str) -> Option<&Grant> {
         self.grants.get(project)

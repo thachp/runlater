@@ -102,7 +102,7 @@ pub struct Ticket {
     pub revoked: bool,
 }
 impl Ticket {
-    fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         self.terms.validate()?;
         if !hex64(&self.id)
             || self.project_id != format!("p_{}", &self.id[..60])
@@ -152,11 +152,30 @@ impl Registry {
         clone.issue(id, expires, now)
     }
     pub(crate) fn commit_public(&mut self, t: &Ticket, now: i64) -> Result<Ticket, Error> {
+        self.commit_public_inner(t, now, false)
+    }
+    pub(crate) fn commit_trial(&mut self, t: &Ticket, now: i64) -> Result<Ticket, Error> {
+        self.commit_public_inner(t, now, true)
+    }
+    fn commit_public_inner(&mut self, t: &Ticket, now: i64, trial: bool) -> Result<Ticket, Error> {
         t.validate()?;
         self.time(now)?;
         let p = self.policy.as_ref().ok_or(Error::Closed)?;
-        if p.terms.as_ref() != Some(&t.terms)
-            || t.policy_revision != p.revision
+        if if trial {
+            p.terms.as_ref().is_none_or(|original| {
+                t.terms.attempt_units != original.attempt_units
+                    || t.terms.identity_ms != original.identity_ms
+                    || t.terms.permissions.is_empty()
+                    || t.terms.permissions.iter().any(|v| {
+                        !matches!(
+                            v,
+                            Permission::Cancel | Permission::Read | Permission::Enqueue
+                        )
+                    })
+            })
+        } else {
+            p.terms.as_ref() != Some(&t.terms)
+        } || t.policy_revision != p.revision
             || now >= t.expires_at_ms
         {
             return Err(Error::Invalid);
@@ -428,11 +447,15 @@ impl Enrollment {
             project_id: r.project_id.clone(),
             revision: 1,
             revoked: false,
-            approvals: vec![identity::Approval {
-                public_key: r.public_key.clone(),
-                permissions: r.permissions.clone(),
-                expires_at_ms: r.expires_at_ms,
-            }],
+            approvals: if self.project.catalog.trial.is_some() {
+                vec![]
+            } else {
+                vec![identity::Approval {
+                    public_key: r.public_key.clone(),
+                    permissions: r.permissions.clone(),
+                    expires_at_ms: r.expires_at_ms,
+                }]
+            },
             revoked_keys: vec![],
         })
     }
@@ -516,6 +539,73 @@ impl Enrollment {
         };
         self.project
             .task_command_with_proof(&p, grant.as_ref(), e, proof, body, now)
+    }
+    /// Called only from the authoritative AdmissionRegistry grant, never a public supplied grant.
+    pub fn install_trial(
+        &mut self,
+        g: &crate::anonymous_trial::Grant,
+        now: i64,
+    ) -> Result<(), Error> {
+        g.active(now).map_err(|_| Error::Forbidden)?;
+        if self.mode != Mode::Invitation || self.ticket.as_ref().is_some_and(|t| t.revoked) {
+            return Err(Error::Forbidden);
+        }
+        if let Some(old) = &self.receipt {
+            return if self.project.catalog.trial.as_ref() == Some(&g.descriptor)
+                && old.project_id == g.ticket.project_id
+                && self.ticket.as_ref() == Some(&g.ticket)
+            {
+                Ok(())
+            } else {
+                Err(Error::Conflict)
+            };
+        }
+        let mut next = self.clone();
+        next.ticket = Some(g.ticket.clone());
+        next.receipt = Some(Receipt {
+            ticket_id: g.ticket.id.clone(),
+            project_id: g.ticket.project_id.clone(),
+            public_key: String::new(),
+            grant_id: g.ticket.grant_id.clone(),
+            enrolled_at_ms: g.descriptor.issued_at_ms,
+            expires_at_ms: g.descriptor.expires_at_ms,
+            attempt_units: g.ticket.terms.attempt_units,
+            permissions: g.ticket.terms.permissions.clone(),
+        });
+        next.project.catalog.trial = Some(g.descriptor.clone());
+        next.project
+            .catalog
+            .apply_policy(&next.identity_policy().map_err(|_| Error::Forbidden)?, now)
+            .map_err(|_| Error::Forbidden)?;
+        next.project
+            .funding
+            .apply(&next.admission_policy().map_err(|_| Error::Forbidden)?, now)
+            .map_err(|_| Error::Conflict)?;
+        next.time(now)?;
+        *self = next;
+        Ok(())
+    }
+    pub fn validate_trial(
+        &self,
+        e: &crate::signed::Envelope,
+        d: &crate::anonymous_trial::Descriptor,
+        secret: &str,
+        signature: &str,
+        trust: crate::mcp_delegation::Trust<'_>,
+        now: i64,
+    ) -> Result<serde_json::Value, identity::Error> {
+        let body = match (e.method.as_str(), e.path.as_str()) {
+            ("GET", crate::anonymous_trial::STATUS) => b"".as_slice(),
+            ("POST", crate::anonymous_trial::VALIDATE) => b"{}".as_slice(),
+            _ => return Err(identity::Error::Forbidden),
+        };
+        e.validate_trial_request(body, now)?;
+        self.identity_policy()?;
+        if self.project.catalog.trial.as_ref() != Some(d) {
+            return Err(identity::Error::Forbidden);
+        }
+        d.verify(e, secret, signature, trust, now)?;
+        Ok(d.status(true))
     }
     pub(crate) fn install_public(
         &mut self,

@@ -6,6 +6,8 @@ import {WebStandardStreamableHTTPServerTransport} from '@modelcontextprotocol/sd
 import {CallToolRequestSchema, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema,
   JSONRPCMessageSchema, McpError, ErrorCode} from '@modelcontextprotocol/sdk/types.js';
 import {TOOLS, toolHandler} from './tools.mjs';
+import {TRIAL_TOOLS, trialToolHandler} from './trial-tools.mjs';
+import {canonicalTrialDescriptor, trialProjectId} from './trial-client.mjs';
 
 export const MCP_ORIGIN = 'https://mcp.runlater.io';
 export const HOSTED_SERVICE = Object.freeze({service: 'RunLater', intended_endpoint: MCP_ORIGIN + '/sse',
@@ -19,9 +21,25 @@ const resources = [{uri: 'runlater://service', name: 'RunLater capabilities and 
   {uri: 'runlater://setup', name: 'MCP setup and publication status', mimeType: 'text/markdown'}];
 const encoder = new TextEncoder();
 const json = (status, error) => Response.json({error}, {status, headers: {'Cache-Control': 'no-store'}});
-const validPrincipal = p => p && /^[a-f0-9]{64}$/.test(p.tokenHash) && /^p_[a-f0-9]{60}$/.test(p.delegation?.project_id)
-  && typeof p.delegation.delegation_id === 'string' && Array.isArray(p.scopes) && Number.isSafeInteger(p.expiresAt);
-const principalBinding = p => createHash('sha256').update(JSON.stringify([p.delegation, [...p.scopes].sort(), p.expiresAt])).digest('hex');
+const trialPrincipal = p => p?.kind === 'trial';
+const principalProject = p => trialPrincipal(p) ? trialProjectId(p.trial.descriptor) : p.delegation.project_id;
+const principalId = p => trialPrincipal(p) ? p.trial.descriptor.bootstrap_id : p.delegation.delegation_id;
+function validPrincipal(p) {
+  if (!p || !/^[a-f0-9]{64}$/.test(p.tokenHash) || !Array.isArray(p.scopes) || !p.scopes.length
+    || p.scopes.some(scope => !['cancel', 'enqueue', 'read'].includes(scope)) || !Number.isSafeInteger(p.expiresAt)) return false;
+  if (!trialPrincipal(p)) return p.kind === undefined && /^p_[a-f0-9]{60}$/.test(p.delegation?.project_id)
+    && typeof p.delegation.delegation_id === 'string';
+  try {const d = canonicalTrialDescriptor(p.trial?.descriptor);
+    return /^[a-f0-9]{64}$/.test(p.trial.capability) && p.scopes.every(scope => d.permissions.includes(scope)) && p.expiresAt <= d.expires_at_ms;
+  } catch {return false;}
+}
+const principalBinding = p => createHash('sha256').update(JSON.stringify([trialPrincipal(p) ? p.trial.descriptor : p.delegation,
+  [...p.scopes].sort(), p.expiresAt])).digest('hex');
+const serviceFor = p => trialPrincipal(p) ? {...HOSTED_SERVICE,
+  authentication: 'Standard OAuth anonymous trial; no mandatory human account or owner-key UI. Trial authority is token-bound encrypted gateway storage, not owner-local asymmetric custody.',
+  authorization: 'Explicit provision_trial allocates once; connect, discovery and status do not. The API independently checks dedicated capability, gateway signature, fixed expiry, revocation and shared finite budgets.',
+  onboarding: 'Connected; receiver setup required. No receiver runtime installation or recovery mechanism is configured by this source milestone.',
+  omissions: [...HOSTED_SERVICE.omissions.filter(value => value !== 'registration'), 'receiver_secret_transfer', 'automatic_recovery']} : HOSTED_SERVICE;
 const safeMessage = message => message.error ? {...message, error: {code: message.error.code, message: 'Invalid or unsupported MCP request'}} : message;
 
 async function readMessage(request) {
@@ -93,25 +111,27 @@ function scopeChallenge(message, principal) {
 
 export function createHostedProtocol({makeClient, setup, status, clock = Date.now, maxSessions = 32, sessionMs = 900000} = {}) {
   if (typeof makeClient !== 'function' || typeof setup !== 'string') throw new Error('Invalid hosted protocol configuration');
-  const sessions = new Map(); let active = 0;
+  const sessions = new Map(); let active = 0, activeTrials = 0;
   function makeServer(principal) {
-    const call = toolHandler({client: makeClient(principal), allowedScopes: principal.scopes, status});
+    const client = makeClient(principal), taskHandler = toolHandler({client, allowedScopes: principal.scopes, status});
+    const call = trialPrincipal(principal) ? trialToolHandler({client, revokeTrial: principal.revokeTrial,
+      markTrialProvisioned: principal.markTrialProvisioned, taskHandler}) : taskHandler;
     const server = new Server({name: 'runlater', version: '0.2.0'}, {capabilities: {tools: {}, resources: {}}, instructions: HOSTED_SERVICE.guarantees,
       jsonSchemaValidator: {getValidator() {throw new Error('Dynamic schemas are not supported');}}});
     server.onerror = () => {};
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({tools: TOOLS}));
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({tools: trialPrincipal(principal) ? [...TOOLS, ...TRIAL_TOOLS] : TOOLS}));
     server.setRequestHandler(ListResourcesRequestSchema, async () => ({resources}));
     server.setRequestHandler(ReadResourceRequestSchema, async ({params}) => {
       const resource = resources.find(r => r.uri === params.uri);
       if (!resource) throw new McpError(ErrorCode.InvalidParams, 'Unknown resource');
-      return {contents: [{...resource, text: resource.uri === 'runlater://service' ? JSON.stringify(HOSTED_SERVICE) : setup}]};
+      return {contents: [{...resource, text: resource.uri === 'runlater://service' ? JSON.stringify(serviceFor(principal)) : setup}]};
     });
     server.setRequestHandler(CallToolRequestSchema, async ({params}) => {
       if (params.task !== undefined) throw new McpError(ErrorCode.InvalidParams, 'Async tasks unavailable');
       if (clock() >= principal.expiresAt) throw new McpError(ErrorCode.InvalidRequest, 'Credentials expired');
-      if (active >= 4) return {isError: true, content: [{type: 'text', text: 'Server busy. No operation was attempted; do not change idempotency keys.'}]};
-      active++;
-      try {return await call(params.name, params.arguments, true);} finally {active--;}
+      if (active >= 4 || (trialPrincipal(principal) && activeTrials >= 2)) return {isError: true, content: [{type: 'text', text: 'Server busy. No operation was attempted; do not change idempotency keys.'}]};
+      active++; if (trialPrincipal(principal)) activeTrials++;
+      try {return await call(params.name, params.arguments, true);} finally {active--; if (trialPrincipal(principal)) activeTrials--;}
     });
     return server;
   }
@@ -121,20 +141,21 @@ export function createHostedProtocol({makeClient, setup, status, clock = Date.no
       if (url.origin !== MCP_ORIGIN || (request.headers.has('origin') && request.headers.get('origin') !== MCP_ORIGIN)) return json(403, 'origin_rejected');
       if (!validPrincipal(principal) || principal.expiresAt <= clock()) return json(401, 'credentials_rejected');
       if (url.pathname === '/sse' && request.method === 'GET' && !url.search) {
-        const projectSessions = [...sessions.values()].filter(s => s.project === principal.delegation.project_id).length;
-        if (sessions.size >= maxSessions || projectSessions >= 4) return json(429, 'session_capacity');
+        const projectSessions = [...sessions.values()].filter(s => s.project === principalProject(principal)).length;
+        if (sessions.size >= maxSessions || projectSessions >= (trialPrincipal(principal) ? 2 : 4)
+          || (trialPrincipal(principal) && [...sessions.values()].filter(s => s.trial).length >= Math.min(8, maxSessions))) return json(429, 'session_capacity');
         const id = crypto.randomUUID(), server = makeServer(principal);
         const transport = new LegacySseTransport({sessionId: id, lifetimeMs: Math.min(sessionMs, principal.expiresAt - clock()),
           onClosed: () => sessions.delete(id)});
-        sessions.set(id, {server, transport, tokenHash: principal.tokenHash, project: principal.delegation.project_id,
-          delegationId: principal.delegation.delegation_id, principalBinding: principalBinding(principal), messages: 0});
+        sessions.set(id, {server, transport, tokenHash: principal.tokenHash, project: principalProject(principal), trial: trialPrincipal(principal),
+          delegationId: principalId(principal), principalBinding: principalBinding(principal), messages: 0});
         try {await server.connect(transport);} catch {await transport.close(); throw 400;}
         return transport.response();
       }
       if (url.pathname === '/messages' && request.method === 'POST' && [...url.searchParams.keys()].join() === 'sessionId') {
         const session = sessions.get(url.searchParams.get('sessionId'));
-        if (!session || session.tokenHash !== principal.tokenHash || session.project !== principal.delegation.project_id
-          || session.delegationId !== principal.delegation.delegation_id || session.principalBinding !== principalBinding(principal)) return json(403, 'session_not_authorized');
+        if (!session || session.tokenHash !== principal.tokenHash || session.project !== principalProject(principal)
+          || session.delegationId !== principalId(principal) || session.principalBinding !== principalBinding(principal)) return json(403, 'session_not_authorized');
         if (++session.messages > 512) {await session.server.close(); return json(429, 'session_budget_exhausted');}
         const message = await readMessage(request);
         const insufficient = scopeChallenge(message, principal); if (insufficient) return insufficient;

@@ -1,3 +1,4 @@
+import {createTrialAuthority} from './oauth-trial.mjs';
 import {MCP_RESOURCE, normalizedAuthRequest, ownerChallenge, verifyOwnerApproval} from './oauth-consent.mjs';
 const escape = value => String(value).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 export const privateHeaders = {'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
@@ -34,18 +35,20 @@ export async function authorizeOwner(request, oauth, config) {
       const details = await oauth.describeConsent(parsed);
       const consent = await oauth.beginConsent(parsed);
       const challenge = ownerChallenge(parsed, consent.handle, config);
+      const trialForm = config.trialEnabled ? `<h2>Start free agent project</h2><p>No account or sign-in. This client gets a seven-day credential with finite budget and no billing. Connecting creates no API project; the agent must explicitly provision its trial. A verified receiver must be configured before tasks can deliver; this connection alone is not ready to send work. Lost credentials cannot be recovered here. Refresh reuses the same trial and never resets its expiry or budget. Retrying a consumed refresh credential permanently revokes access.</p><form method="post" action="/authorize"><input type="hidden" name="handle" value="${escape(consent.handle)}"><button name="decision" value="trial">Start free agent project</button><button name="decision" value="deny">Deny</button></form><details><summary>Link an existing project with your local owner key</summary>` : '';
       const html = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Authorize RunLater MCP</title>
 <h1>Authorize RunLater MCP</h1><p>Client: <strong>${escape(details.clientName)}</strong></p>
 <p>Client identifier: <code>${escape(parsed.clientId)}</code></p>
 <p>${details.clientDomain ? `Published on ${escape(details.clientDomain)}.` : 'Client name is self-asserted, not a verified identity.'}</p>
 <p>Redirect destination: <strong>${escape(parsed.redirectUri)}</strong></p>
 ${details.redirectIsLoopback ? '<p><strong>This grants access to an app on your computer. Continue only if you started this sign-in.</strong></p>' : ''}
-<p>Permissions: <strong>${escape(parsed.scope.join(', '))}</strong>. Scheduling consumes your existing finite attempt budget; cancellation cannot undo an in-flight effect.</p>
+<p>Permissions: <strong>${escape(parsed.scope.map(s=>({read:'view task status',enqueue:'schedule tasks',cancel:'cancel pending tasks'})[s]).join(', '))}</strong>. Scheduling consumes your existing finite attempt budget; cancellation cannot undo an in-flight effect.</p>
+${trialForm}
 <p>Your private key stays on your device. Copy the public challenge below to a file, review it with the RunLater owner authorization helper, then paste only its signed approval below. Never paste a private key. This page expires after ten minutes.</p>
 <label>Public challenge<textarea readonly rows="18" cols="90">${escape(JSON.stringify(challenge, null, 2))}</textarea></label>
 <form method="post" action="/authorize"><input type="hidden" name="handle" value="${escape(consent.handle)}">
 <label>Signed approval JSON<textarea name="approval" rows="8" cols="90" maxlength="12000"></textarea></label>
-<p><button name="decision" value="approve">Approve this client</button> <button name="decision" value="deny">Deny</button></p></form></html>`;
+<p><button name="decision" value="approve">Approve this client</button> <button name="decision" value="deny">Deny</button></p></form>${config.trialEnabled ? '</details>' : ''}</html>`;
       const headers = new Headers(consent.headers);
       for (const [key, value] of Object.entries(privateHeaders)) headers.set(key, value);
       headers.set('Content-Type', 'text/html; charset=utf-8');
@@ -56,6 +59,17 @@ ${details.redirectIsLoopback ? '<p><strong>This grants access to an app on your 
     if (form.get('decision') === 'deny') {
       const denied = await oauth.denyConsent(request, handle);
       return new Response(null, {status: 302, headers: denied.headers});
+    }
+    if (form.get('decision') === 'trial') {
+      if (!config.trialEnabled || form.has('approval')) return oauthFailure();
+      const approved = await oauth.approveConsent(request, handle);
+      const parsed = normalizedAuthRequest(approved.request);
+      const trial = createTrialAuthority({releaseId:config.releaseId,clientId:parsed.clientId,scopes:parsed.scope});
+      const completed = await oauth.completeAuthorization({request:parsed,userId:trial.props.projectId,metadata:{authorityKind:'trial'},
+        scope:parsed.scope,props:trial.props,revokeExistingGrants:false,trialRevocationSecret:trial.revocationSecret});
+      const headers = new Headers(approved.headers);
+      for (const [key,value] of Object.entries(privateHeaders)) headers.set(key,value);
+      headers.set('Location',completed.redirectTo); return new Response(null,{status:302,headers});
     }
     if (form.get('decision') !== 'approve') return oauthFailure();
     // Library owns cookie binding and one-use transaction. Input cannot reconstruct a redirect.

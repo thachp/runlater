@@ -241,3 +241,18 @@ test('optional MCP gateway trust requires exact reviewed config and public-key s
   assert.throws(()=>validate(c,a,e));
  }
 });
+
+test('anonymous trial activation requires exact reviewed profile and existing gateway trust',()=>{
+ const {c,a,e}=fixture(); c.vars.MCP_ANONYMOUS_TRIAL_ENABLED='operator-approved';
+ assert.throws(()=>validate(c,a,e));
+ a.config_sha256=digest(c); assert.throws(()=>validate(c,a,e)); // No gateway proof.
+ c.vars.MCP_DELEGATION_GATEWAY_PUBLIC_KEY='a'.repeat(64);
+ assert.throws(()=>validate(c,a,e)); // Adding trust still requires a newly reviewed digest.
+ a.config_sha256=digest(c); assert.doesNotThrow(()=>validate(c,a,e));
+ for(const invalid of ['true','enabled','',true,123]) {
+  c.vars.MCP_ANONYMOUS_TRIAL_ENABLED=invalid; a.config_sha256=digest(c);
+  assert.throws(()=>validate(c,a,e));
+ }
+ c.vars.MCP_ANONYMOUS_TRIAL_ENABLED='disabled'; delete c.vars.MCP_DELEGATION_GATEWAY_PUBLIC_KEY;
+ a.config_sha256=digest(c); assert.doesNotThrow(()=>validate(c,a,e));
+});
