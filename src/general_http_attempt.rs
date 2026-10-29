@@ -203,12 +203,31 @@ mod result_tests {
     use serde_json::json;
     #[test]
     fn strict_private_results_never_echo_body_or_accept_malformed_success() {
-        let success=json!({"ok":true,"http_status":204,"outcome":"http_response","response_bytes":0,"request_may_have_been_sent":true,"automatic_retry":false});
-        assert!(matches!(outcome(&success),(core::Outcome::Http(204),false)));
-        let mut bad=success.clone(); bad["body"]=json!("private"); assert!(matches!(outcome(&bad),(core::Outcome::Timeout,false)));
-        let mut bad=success.clone(); bad["automatic_retry"]=json!(true); assert!(matches!(outcome(&bad),(core::Outcome::Timeout,false)));
-        let mut redirect=success; redirect["http_status"]=json!(302);redirect["outcome"]=json!("redirect_rejected");assert!(matches!(outcome(&redirect),(core::Outcome::Http(302),false)));
-        let rate=json!({"ok":false,"error":"rate_limited","request_may_have_been_sent":false,"automatic_retry":false});assert!(matches!(outcome(&rate),(core::Outcome::Http(429),true)));
-        let mut uncertain=rate;uncertain["request_may_have_been_sent"]=json!(true);assert!(matches!(outcome(&uncertain),(core::Outcome::Timeout,false)));
+        let success = json!({"ok":true,"http_status":204,"outcome":"http_response","response_bytes":0,"request_may_have_been_sent":true,"automatic_retry":false});
+        assert!(matches!(
+            outcome(&success),
+            (core::Outcome::Http(204), false)
+        ));
+        let mut bad = success.clone();
+        bad["body"] = json!("private");
+        assert!(matches!(outcome(&bad), (core::Outcome::Timeout, false)));
+        let mut bad = success.clone();
+        bad["automatic_retry"] = json!(true);
+        assert!(matches!(outcome(&bad), (core::Outcome::Timeout, false)));
+        let mut redirect = success;
+        redirect["http_status"] = json!(302);
+        redirect["outcome"] = json!("redirect_rejected");
+        assert!(matches!(
+            outcome(&redirect),
+            (core::Outcome::Http(302), false)
+        ));
+        let rate = json!({"ok":false,"error":"rate_limited","request_may_have_been_sent":false,"automatic_retry":false});
+        assert!(matches!(outcome(&rate), (core::Outcome::Http(429), true)));
+        let mut uncertain = rate;
+        uncertain["request_may_have_been_sent"] = json!(true);
+        assert!(matches!(
+            outcome(&uncertain),
+            (core::Outcome::Timeout, false)
+        ));
     }
 }

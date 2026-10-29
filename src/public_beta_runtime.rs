@@ -482,7 +482,13 @@ async fn trial_front(mut req: Request, env: &Env) -> Result<Response> {
     let Some(raw) = read_raw(&mut req).await? else {
         return err(inv::Error::Invalid);
     };
-    if raw.len() > if req.path() == crate::general_http::CREATE { crate::general_http::MAX_REQUEST_BYTES } else { 2048 } {
+    if raw.len()
+        > if req.path() == crate::general_http::CREATE {
+            crate::general_http::MAX_REQUEST_BYTES
+        } else {
+            2048
+        }
+    {
         return err(inv::Error::Invalid);
     }
     let h = req.headers();

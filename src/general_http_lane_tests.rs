@@ -1,5 +1,4 @@
 //! Disposable local keys and capabilities only. No external enrollment.
-use ed25519_dalek::{Signer, SigningKey};
 use crate::{
     anonymous_trial::{Descriptor, Grant, PROVISION, REVOKE, STATUS, VALIDATE},
     invitation::{Enrollment, Mode},
@@ -8,6 +7,7 @@ use crate::{
     security::digest,
     signed::Envelope,
 };
+use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
 const CAP: &str = "abababababababababababababababababababababababababababababababab";
 const REVOKER: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
@@ -160,7 +160,13 @@ fn fixture() -> (
 ) {
     let mut s = state();
     let mut d = descriptor(1);
-    d.permissions = vec!["cancel".into(), "enqueue".into(), "http_schedule".into(), "read".into(), "receiver_setup".into()];
+    d.permissions = vec![
+        "cancel".into(),
+        "enqueue".into(),
+        "http_schedule".into(),
+        "read".into(),
+        "receiver_setup".into(),
+    ];
     let g = provision(&mut s, &d, 20);
     let m = manifest(&d);
     let (e, body) = pin(&mut s, &d, &m, 21);
@@ -219,28 +225,108 @@ fn prove(p: &mut Enrollment, policy: &EgressPolicy, now: i64) {
 fn mixed_lanes_reserve_only_publishable_references_without_quota_reset() {
     let (_, d, m, mut p, keys, material, policy) = fixture();
     prove(&mut p, &policy, 22);
-    let payload = p.pairing_pull(&request(&m, PULL, "{}", 24), &keys, &material, 24).unwrap();
-    let ackbody = serde_json::to_string(&json!({"installation_sha256":payload["installation_sha256"]})).unwrap();
+    let payload = p
+        .pairing_pull(&request(&m, PULL, "{}", 24), &keys, &material, 24)
+        .unwrap();
+    let ackbody =
+        serde_json::to_string(&json!({"installation_sha256":payload["installation_sha256"]}))
+            .unwrap();
     let ack = request(&m, ACK, &ackbody, 26);
     let challenge = p.pairing_ack_begin(&ack, &policy, 26).unwrap().unwrap();
-    p.pairing_ack_complete(&ack, &challenge, 200, payload["installation"]["destination_proof"]["response"].as_str().unwrap().as_bytes(), &policy, 27).unwrap();
+    p.pairing_ack_complete(
+        &ack,
+        &challenge,
+        200,
+        payload["installation"]["destination_proof"]["response"]
+            .as_str()
+            .unwrap()
+            .as_bytes(),
+        &policy,
+        27,
+    )
+    .unwrap();
     let body=serde_json::to_vec(&json!({"destination":"registered:receiver","body":"fixture","operation_key":"paired","run_at_ms":0})).unwrap();
-    let e=envelope(&d,"/v1/tasks",&body,30); let sign=sig(&d,&e); let k=public();
-    let callback=p.registered_beta_task_command_with_proof(&e,Proof::Trial{signature:&sign,descriptor:&d,capability:CAP,trust:trust(&k)},&body,&policy,&keys,&material,30).unwrap();
-    let callback_id=callback["result"]["id"].as_str().unwrap().to_owned();
+    let e = envelope(&d, "/v1/tasks", &body, 30);
+    let sign = sig(&d, &e);
+    let k = public();
+    let callback = p
+        .registered_beta_task_command_with_proof(
+            &e,
+            Proof::Trial {
+                signature: &sign,
+                descriptor: &d,
+                capability: CAP,
+                trust: trust(&k),
+            },
+            &body,
+            &policy,
+            &keys,
+            &material,
+            30,
+        )
+        .unwrap();
+    let callback_id = callback["result"]["id"].as_str().unwrap().to_owned();
     let raw=serde_json::to_vec(&json!({"url":"https://customer.example.com/hook","payload":{"test":true},"run_at_ms":0,"operation_key":"general"})).unwrap();
-    let mut e=envelope(&d,crate::general_http::CREATE,&raw,31);e.idempotency_key="general".into();let sign=sig(&d,&e);
-    let permit=super::AdmissionPermit::from_reviewed_revision(&"c".repeat(64)).unwrap();
-    let general=p.schedule_http(&e,Proof::Trial{signature:&sign,descriptor:&d,capability:CAP,trust:trust(&k)},&raw,Some(&permit),31).unwrap();
-    let general_id=general["result"]["id"].as_str().unwrap().to_owned();
-    let count=|p:&Enrollment|serde_json::to_value(p).unwrap()["project"]["delivery"]["publications"].as_u64().unwrap();
-    let before=count(&p);
-    let refs=p.registered_outbox_lanes(&d.project_id().unwrap(),32,false,true).unwrap();
-    assert_eq!(refs.iter().map(|x|x.id.as_str()).collect::<Vec<_>>(),vec![general_id.as_str()]); assert_eq!(count(&p),before+1);
-    assert!(!p.project.ledger.get(&callback_id).unwrap().status.terminal());
-    let refs=p.registered_outbox_lanes(&d.project_id().unwrap(),33,true,false).unwrap();
-    assert_eq!(refs.iter().map(|x|x.id.as_str()).collect::<Vec<_>>(),vec![callback_id.as_str()]);assert_eq!(count(&p),before+2);
-    assert!(p.registered_outbox_lanes(&d.project_id().unwrap(),34,false,false).unwrap().is_empty());assert_eq!(count(&p),before+2);
-    let refs=p.registered_outbox_lanes(&d.project_id().unwrap(),35,true,true).unwrap();assert_eq!(refs.len(),2);assert_eq!(count(&p),before+4);
-    assert_eq!(serde_json::to_value(&p).unwrap()["outbound"]["beta_admissions"],2);
+    let mut e = envelope(&d, crate::general_http::CREATE, &raw, 31);
+    e.idempotency_key = "general".into();
+    let sign = sig(&d, &e);
+    let permit = super::AdmissionPermit::from_reviewed_revision(&"c".repeat(64)).unwrap();
+    let general = p
+        .schedule_http(
+            &e,
+            Proof::Trial {
+                signature: &sign,
+                descriptor: &d,
+                capability: CAP,
+                trust: trust(&k),
+            },
+            &raw,
+            Some(&permit),
+            31,
+        )
+        .unwrap();
+    let general_id = general["result"]["id"].as_str().unwrap().to_owned();
+    let count = |p: &Enrollment| {
+        serde_json::to_value(p).unwrap()["project"]["delivery"]["publications"]
+            .as_u64()
+            .unwrap()
+    };
+    let before = count(&p);
+    let refs = p
+        .registered_outbox_lanes(&d.project_id().unwrap(), 32, false, true)
+        .unwrap();
+    assert_eq!(
+        refs.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(),
+        vec![general_id.as_str()]
+    );
+    assert_eq!(count(&p), before + 1);
+    assert!(!p
+        .project
+        .ledger
+        .get(&callback_id)
+        .unwrap()
+        .status
+        .terminal());
+    let refs = p
+        .registered_outbox_lanes(&d.project_id().unwrap(), 33, true, false)
+        .unwrap();
+    assert_eq!(
+        refs.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(),
+        vec![callback_id.as_str()]
+    );
+    assert_eq!(count(&p), before + 2);
+    assert!(p
+        .registered_outbox_lanes(&d.project_id().unwrap(), 34, false, false)
+        .unwrap()
+        .is_empty());
+    assert_eq!(count(&p), before + 2);
+    let refs = p
+        .registered_outbox_lanes(&d.project_id().unwrap(), 35, true, true)
+        .unwrap();
+    assert_eq!(refs.len(), 2);
+    assert_eq!(count(&p), before + 4);
+    assert_eq!(
+        serde_json::to_value(&p).unwrap()["outbound"]["beta_admissions"],
+        2
+    );
 }

@@ -137,10 +137,21 @@ pub struct AdmissionPermit {
 }
 impl AdmissionPermit {
     pub(crate) fn from_reviewed_revision(revision: &str) -> Result<Self, identity::Error> {
-        if revision.len() != 64 || revision.bytes().all(|b| b == b'0') || !revision.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) { return Err(identity::Error::Invalid); }
-        Ok(Self { adapter_revision: revision.into() })
+        if revision.len() != 64
+            || revision.bytes().all(|b| b == b'0')
+            || !revision
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(identity::Error::Invalid);
+        }
+        Ok(Self {
+            adapter_revision: revision.into(),
+        })
     }
-    pub(crate) fn revision(&self) -> &str { &self.adapter_revision }
+    pub(crate) fn revision(&self) -> &str {
+        &self.adapter_revision
+    }
     fn validate(&self) -> Result<(), identity::Error> {
         if self.adapter_revision.is_empty() {
             Err(identity::Error::Forbidden)
@@ -526,20 +537,60 @@ mod tests {
     #[test]
     fn private_attempt_deadline_comes_from_persisted_claim_never_retry_clock() {
         let (mut p, d, cap, key, public) = setup(vec!["http_schedule"]);
-        let permit = AdmissionPermit { adapter_revision: "offline_test_only".into() };
-        let created = invoke(&mut p, &d, &cap, &key, &public, &body("https://customer.example.com/hook?"), Some(&permit), 21).unwrap();
+        let permit = AdmissionPermit {
+            adapter_revision: "offline_test_only".into(),
+        };
+        let created = invoke(
+            &mut p,
+            &d,
+            &cap,
+            &key,
+            &public,
+            &body("https://customer.example.com/hook?"),
+            Some(&permit),
+            21,
+        )
+        .unwrap();
         let id = created["result"]["id"].as_str().unwrap().to_owned();
-        assert!(p.http.attempt_envelope(&p.project, &d.release_id, &d.project_id().unwrap(), &id, &AdmissionPermit::from_reviewed_revision(&"c".repeat(64)).unwrap(), 1000).is_err());
+        assert!(p
+            .http
+            .attempt_envelope(
+                &p.project,
+                &d.release_id,
+                &d.project_id().unwrap(),
+                &id,
+                &AdmissionPermit::from_reviewed_revision(&"c".repeat(64)).unwrap(),
+                1000
+            )
+            .is_err());
         // A structurally persisted running claim; network factory remains unavailable.
         let task = p.project.ledger.tasks.get_mut(&id).unwrap();
         task.status = core::Status::Running;
         task.fence = 1;
         task.lease_until = Some(31000);
-        task.attempts.push(core::Attempt { fence:1, started_ms:1000, finished_ms:None, outcome:None, staging_diagnostic:None });
-        let make = |p: &Enrollment, now| p.http.attempt_envelope(&p.project, &d.release_id, &d.project_id().unwrap(), &id, &AdmissionPermit::from_reviewed_revision(&"c".repeat(64)).unwrap(), now);
+        task.attempts.push(core::Attempt {
+            fence: 1,
+            started_ms: 1000,
+            finished_ms: None,
+            outcome: None,
+            staging_diagnostic: None,
+        });
+        let make = |p: &Enrollment, now| {
+            p.http.attempt_envelope(
+                &p.project,
+                &d.release_id,
+                &d.project_id().unwrap(),
+                &id,
+                &AdmissionPermit::from_reviewed_revision(&"c".repeat(64)).unwrap(),
+                now,
+            )
+        };
         let first = make(&p, 1000).unwrap();
         assert_eq!(first.deadline_ms(), 30000);
-        assert_eq!(first.hash().unwrap(), make(&p, 29999).unwrap().hash().unwrap());
+        assert_eq!(
+            first.hash().unwrap(),
+            make(&p, 29999).unwrap().hash().unwrap()
+        );
         assert!(make(&p, 999).is_err());
         assert!(make(&p, 30000).is_err());
         p.project.ledger.tasks.get_mut(&id).unwrap().lease_until = Some(32000);

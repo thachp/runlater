@@ -1,7 +1,7 @@
-#[path = "general_http_runtime.rs"]
-pub(crate) mod general_runtime;
 #[path = "invitation_transport.rs"]
 pub(crate) mod delivery_transport;
+#[path = "general_http_runtime.rs"]
+pub(crate) mod general_runtime;
 #[path = "public_beta_runtime.rs"]
 pub(crate) mod public_runtime;
 // Explicit invitation mode; defaults closed.

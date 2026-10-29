@@ -532,7 +532,13 @@ impl Enrollment {
     pub fn registered_outbox(&mut self, project: &str, now: i64) -> Result<Vec<Dispatch>, Error> {
         self.registered_outbox_lanes(project, now, true, true)
     }
-    pub(crate) fn registered_outbox_lanes(&mut self, project: &str, now: i64, callback_ready: bool, general_ready: bool) -> Result<Vec<Dispatch>, Error> {
+    pub(crate) fn registered_outbox_lanes(
+        &mut self,
+        project: &str,
+        now: i64,
+        callback_ready: bool,
+        general_ready: bool,
+    ) -> Result<Vec<Dispatch>, Error> {
         if self.identity_policy().is_err() {
             let ids: Vec<_> = self
                 .project
@@ -552,7 +558,13 @@ impl Enrollment {
         self.project.funded_maintenance(now)?;
         self.project.delivery.prune(&self.project.ledger);
         let mut refs = self.project.ledger.outbox(project, now);
-        refs.retain(|d| if self.http.target(&d.id).is_some() { general_ready } else { callback_ready });
+        refs.retain(|d| {
+            if self.http.target(&d.id).is_some() {
+                general_ready
+            } else {
+                callback_ready
+            }
+        });
         self.project.delivery.reserve_publications(&mut refs);
         Ok(refs)
     }

@@ -350,12 +350,17 @@ impl InvitationProject {
             return Ok(());
         };
         let general_enabled = !s.http.is_empty()
-            && self.env.var("GENERAL_HTTPS_ENABLED").map(|v|v.to_string()).unwrap_or_default() == "operator-approved"
+            && self
+                .env
+                .var("GENERAL_HTTPS_ENABLED")
+                .map(|v| v.to_string())
+                .unwrap_or_default()
+                == "operator-approved"
             && self.env.service("GENERAL_HTTPS_EGRESS").is_ok();
-        let enabled = general_enabled || s
-            .project_id()
-            .and_then(|p| configuration(&self.env, p).ok().flatten())
-            .is_some_and(|c| s.outbound.sync_keys(c.keys.tenant(), &c.keys, &c).is_ok());
+        let enabled = general_enabled
+            || s.project_id()
+                .and_then(|p| configuration(&self.env, p).ok().flatten())
+                .is_some_and(|c| s.outbound.sync_keys(c.keys.tenant(), &c.keys, &c).is_ok());
         let wake = if enabled {
             s.project.delivery_next_wake(now())
         } else {
@@ -403,9 +408,16 @@ impl InvitationProject {
             return self.rearm().await;
         };
         // Independent lanes: unavailable callback policy must not stall general tasks.
-        let callback_ready = configuration(&self.env, &project).ok().flatten()
+        let callback_ready = configuration(&self.env, &project)
+            .ok()
+            .flatten()
             .is_some_and(|c| s.outbound.sync_keys(&project, &c.keys, &c).is_ok());
-        let general_ready = self.env.var("GENERAL_HTTPS_ENABLED").map(|v|v.to_string()).unwrap_or_default() == "operator-approved"
+        let general_ready = self
+            .env
+            .var("GENERAL_HTTPS_ENABLED")
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+            == "operator-approved"
             && self.env.service("GENERAL_HTTPS_EGRESS").is_ok();
         let refs = s
             .registered_outbox_lanes(&project, now(), callback_ready, general_ready)
