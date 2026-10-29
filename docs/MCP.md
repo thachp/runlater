@@ -2,6 +2,15 @@
 
 **Intended publication endpoint: `https://mcp.runlater.io/sse`. Not deployed or verified by this change.** Source, tests and discovery links do not establish hosted availability. Issue #57 remains open until separately authorized publication and a live end-to-end proof are completed.
 
+## Hosted multi-tenant milestone
+
+The separately staged [hosted delegation design and rollout gates](MCP-HOSTING.md)
+adds standard remote OAuth authorization while keeping owner private keys local,
+with true legacy `/sse` and separate Streamable HTTP `/mcp`. It is **not deployed
+or verified**. The single-project Node configuration below remains a local option,
+not the multi-tenant public hosting model. Do not expose one owner's signer as a
+public service or treat source tests as hosted acceptance.
+
 ## Transport and distribution
 
 This repository contains a Node.js 22+ server using the pinned official MCP TypeScript SDK. It supports **legacy HTTP+SSE**: a client opens `GET /sse`, receives the relative `/messages?sessionId=…` endpoint, and sends JSON-RPC messages there with POST. This is an actual MCP transport, separate from the custom discovery/tool-schema artifacts. Streamable HTTP is preferred for new MCP integrations but is not implemented here; legacy SSE was chosen for the issue's requested endpoint/client contract. Clients must support SSE and header-based credentials on both GET and POST. No OAuth issuer or dynamic client registration is provided; OAuth-only clients are not supported by this initial slice.

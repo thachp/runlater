@@ -197,6 +197,20 @@ impl InvitationProject {
         raw: Vec<u8>,
     ) -> Result<Response> {
         let project = input.envelope.project_id.clone();
+        let trust = if input.delegation.is_some() {
+            public_runtime::mcp_trust(&self.env)?
+        } else {
+            None
+        };
+        let proof = match input.proof(trust.as_ref()) {
+            Ok(v) => v,
+            Err(e) => return task_error(e.into()),
+        };
+        if input.delegation.is_some()
+            && crate::mcp_delegation::task_permission(&input.envelope).is_err()
+        {
+            return rejected(inv::Error::Forbidden);
+        };
         let configured = configuration(&self.env, &project).ok().flatten();
         if crate::invitation_delivery::destination_route(
             &input.envelope.method,
@@ -281,7 +295,7 @@ impl InvitationProject {
             // Persist monotonic callback revocations/material identities independently of admission rollback.
             if s.outbound.sync_keys(&project, &c.keys, &c).is_err() {
                 let replay =
-                    s.signed_task_command(&input.envelope, &input.signature, &raw, false, now());
+                    s.signed_task_command_with_proof(&input.envelope, proof, &raw, false, now());
                 save(&self.state, &s)?;
                 self.rearm().await?;
                 return match replay {
@@ -291,9 +305,9 @@ impl InvitationProject {
             }
             save(&self.state, &s)?;
             if c.public_beta {
-                s.registered_beta_task_command(
+                s.registered_beta_task_command_with_proof(
                     &input.envelope,
-                    &input.signature,
+                    proof,
                     &raw,
                     &c.egress,
                     &c.keys,
@@ -312,7 +326,7 @@ impl InvitationProject {
                 )
             }
         } else {
-            s.signed_task_command(&input.envelope, &input.signature, &raw, false, now())
+            s.signed_task_command_with_proof(&input.envelope, proof, &raw, false, now())
                 .map_err(Into::into)
         };
         save(&self.state, &s)?;

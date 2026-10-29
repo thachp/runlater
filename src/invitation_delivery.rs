@@ -281,8 +281,29 @@ impl Enrollment {
         material: &impl Material,
         now: i64,
     ) -> Result<Value, Error> {
+        self.registered_beta_task_command_with_proof(
+            e,
+            crate::mcp_delegation::Proof::Owner(signature),
+            body,
+            policy,
+            keys,
+            material,
+            now,
+        )
+    }
+    pub fn registered_beta_task_command_with_proof(
+        &mut self,
+        e: &Envelope,
+        proof: crate::mcp_delegation::Proof<'_>,
+        body: &[u8],
+        policy: &EgressPolicy,
+        keys: &Keyring,
+        material: &impl Material,
+        now: i64,
+    ) -> Result<Value, Error> {
         let mut next = self.clone();
-        let v = next.registered_task_command(e, signature, body, policy, keys, material, now)?;
+        let v =
+            next.registered_task_command_with_proof(e, proof, body, policy, keys, material, now)?;
         if v["created"] == true {
             let id = v["result"]["id"].as_str().ok_or(Error::Unavailable)?;
             let t = next
@@ -308,8 +329,28 @@ impl Enrollment {
         material: &impl Material,
         now: i64,
     ) -> Result<Value, Error> {
+        self.registered_task_command_with_proof(
+            e,
+            crate::mcp_delegation::Proof::Owner(signature),
+            body,
+            policy,
+            keys,
+            material,
+            now,
+        )
+    }
+    pub fn registered_task_command_with_proof(
+        &mut self,
+        e: &Envelope,
+        proof: crate::mcp_delegation::Proof<'_>,
+        body: &[u8],
+        policy: &EgressPolicy,
+        keys: &Keyring,
+        material: &impl Material,
+        now: i64,
+    ) -> Result<Value, Error> {
         let mut next = self.clone();
-        let value = next.signed_task_command(e, signature, body, true, now)?;
+        let value = next.signed_task_command_with_proof(e, proof, body, true, now)?;
         if value["created"] == true {
             // Public lifetime capacity is checked after authenticated idempotent replay,
             // before the destination's independent acceptance cap can shadow its permanent error.

@@ -1,0 +1,11 @@
+// Shared strict schemas; no runtime code generation (Workers-compatible).
+const object = properties => ({type: 'object', additionalProperties: false, properties, required: Object.keys(properties)});
+const string = (pattern, maxLength) => ({type: 'string', pattern, maxLength, minLength: 1});
+const taskId = string('^task_[a-f0-9]{16}$', 21);
+const key = string('^[A-Za-z0-9_-]{1,128}$', 128);
+export const TOOLS = [
+  {name: 'service_status', description: 'Read public API capability/capacity status. No credentials, task creation, registration or payments.', inputSchema: object({}), annotations: {readOnlyHint: true, openWorldHint: true}},
+  {name: 'schedule_task', description: 'Explicit mutation: reserve finite attempt units and create/schedule one task for an already ownership-verified Workers.dev endpoint. Requires enqueue scope. Supply and retain a stable idempotency_key and identical arguments for uncertain-result recovery; never invent a replacement key. Acceptance is not callback delivery. No automatic retry or payment.', inputSchema: object({idempotency_key: key, endpoint_id: string('^[A-Za-z0-9_-]{1,64}$', 64), body: {type: 'string', maxLength: 1024, description: 'Callback UTF-8 body, at most 1024 bytes. Not returned in tool results or logs.'}, operation_key: key, run_at_ms: {type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: 'UTC milliseconds; 0 means immediate. Must not exceed the enrolled identity expiry. No exact-time promise.'}}), annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true}},
+  {name: 'task_status', description: 'Read one task and redacted attempt history in the configured project. Requires read scope. A recorded HTTP success is not proof of downstream business completion.', inputSchema: object({task_id: taskId}), annotations: {readOnlyHint: true, openWorldHint: true}},
+  {name: 'cancel_task', description: 'Explicit mutation requiring cancel scope: suppress future attempts for one task. Cannot undo an in-flight callback or earlier external effect; recorded success may win the race. Inspect status after an uncertain result.', inputSchema: object({task_id: taskId}), annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true}},
+];

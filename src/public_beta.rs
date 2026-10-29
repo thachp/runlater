@@ -94,6 +94,8 @@ pub struct State {
     clock_ms: i64,
     anonymous_operations: u32,
     client_operations: BTreeMap<String, u32>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    mcp_revocations: BTreeMap<String, crate::mcp_delegation::Revocations>,
     minute: i64,
     minute_requests: u32,
 }
@@ -174,6 +176,7 @@ impl State {
             clock_ms: profile.opens_at_ms,
             anonymous_operations: 0,
             client_operations: BTreeMap::new(),
+            mcp_revocations: BTreeMap::new(),
             minute: 0,
             minute_requests: 0,
         })
@@ -192,6 +195,14 @@ impl State {
                 .any(|n| *n > CLIENT_OPERATIONS)
         {
             return Err(Error::Conflict);
+        }
+        if self.mcp_revocations.len() > PROJECTS {
+            return Err(Error::Invalid);
+        }
+        for (project, state) in &self.mcp_revocations {
+            if !self.grants.contains_key(project) || state.validate().is_err() {
+                return Err(Error::Invalid);
+            }
         }
         for (p, g) in &self.grants {
             if p != &g.ticket.project_id
@@ -358,6 +369,14 @@ impl State {
         signature: &str,
         now: i64,
     ) -> Result<Ticket, Error> {
+        self.client_with_proof(e, crate::mcp_delegation::Proof::Owner(signature), now)
+    }
+    pub fn client_with_proof(
+        &mut self,
+        e: &crate::signed::Envelope,
+        proof: crate::mcp_delegation::Proof<'_>,
+        now: i64,
+    ) -> Result<Ticket, Error> {
         if now < self.clock_ms {
             return Err(Error::Clock);
         }
@@ -377,13 +396,42 @@ impl State {
             || e.issued_at_ms > now
             || e.expires_at_ms <= now
             || e.expires_at_ms - e.issued_at_ms > 60000
-            || !identity::verify_ed25519(
-                &e.public_key,
-                &e.bytes().map_err(|_| Error::Invalid)?,
-                signature,
-            )
         {
             return Err(Error::Forbidden);
+        }
+        match proof {
+            crate::mcp_delegation::Proof::Owner(signature) => {
+                if !identity::verify_ed25519(
+                    &e.public_key,
+                    &e.bytes().map_err(|_| Error::Invalid)?,
+                    signature,
+                ) {
+                    return Err(Error::Forbidden);
+                }
+            }
+            crate::mcp_delegation::Proof::Delegated {
+                signature,
+                certificate,
+                trust,
+                ..
+            } => {
+                if trust.release_id != self.profile.release_id
+                    || g.ticket.revoked
+                    || certificate.issued_at_ms < g.admitted_at_ms
+                {
+                    return Err(Error::Forbidden);
+                }
+                certificate
+                    .verify(
+                        e,
+                        signature,
+                        trust,
+                        g.expires_at_ms,
+                        self.mcp_revocations.get(&e.project_id).map(|r| r.floor_ms),
+                        now,
+                    )
+                    .map_err(|_| Error::Forbidden)?;
+            }
         }
         let ticket = g.ticket.clone();
         self.time(now)?;
@@ -396,6 +444,101 @@ impl State {
         }
         *n += 1;
         Ok(ticket)
+    }
+    /// Read-only routing for OAuth issuance: validates current real grant without spending a client operation.
+    pub fn validate_mcp_delegation(
+        &self,
+        e: &crate::signed::Envelope,
+        signature: &str,
+        certificate: &crate::mcp_delegation::Certificate,
+        trust: crate::mcp_delegation::Trust<'_>,
+        now: i64,
+    ) -> Result<Ticket, Error> {
+        if now < self.clock_ms
+            || e.method != "POST"
+            || e.path != crate::mcp_delegation::VALIDATE_PATH
+            || e.validate_request(b"{}", now).is_err()
+        {
+            return Err(Error::Invalid);
+        }
+        let grant = self.grants.get(&e.project_id).ok_or(Error::Forbidden)?;
+        if trust.release_id != self.profile.release_id
+            || grant.ticket.revoked
+            || grant.public_key != e.public_key
+            || now < grant.admitted_at_ms
+            || now >= grant.expires_at_ms
+            || certificate.issued_at_ms < grant.admitted_at_ms
+        {
+            return Err(Error::Forbidden);
+        }
+        certificate
+            .verify(
+                e,
+                signature,
+                trust,
+                grant.expires_at_ms,
+                self.mcp_revocations.get(&e.project_id).map(|r| r.floor_ms),
+                now,
+            )
+            .map_err(|_| Error::Forbidden)?;
+        Ok(grant.ticket.clone())
+    }
+    /// Registry-authoritative revoke: cutoff and receipt commit before subsequent delegated admission.
+    /// Already-admitted requests may finish; no cross-object atomicity is claimed.
+    pub fn revoke_mcp_delegations(
+        &mut self,
+        e: &crate::signed::Envelope,
+        signature: &str,
+        now: i64,
+    ) -> Result<serde_json::Value, Error> {
+        if now < self.clock_ms || now < 0 || now > 9_007_199_254_740_991 {
+            return Err(Error::Clock);
+        }
+        if e.method != "POST"
+            || e.path != crate::mcp_delegation::REVOKE_PATH
+            || e.validate_request(b"{}", now).is_err()
+        {
+            return Err(Error::Invalid);
+        }
+        let grant = self.grants.get(&e.project_id).ok_or(Error::Forbidden)?;
+        if grant.public_key != e.public_key
+            || grant.ticket.revoked
+            || now < grant.admitted_at_ms
+            || now >= grant.expires_at_ms
+            || !grant.ticket.terms.permissions.contains(&Permission::Cancel)
+            || !identity::verify_ed25519(
+                &e.public_key,
+                &e.bytes().map_err(|_| Error::Invalid)?,
+                signature,
+            )
+        {
+            return Err(Error::Forbidden);
+        }
+        // Authenticated replay is read-only and never consumes more client operations or changes the cutoff.
+        if let Some(cutoff) = self
+            .mcp_revocations
+            .get(&e.project_id)
+            .and_then(|r| r.receipts.get(&e.idempotency_key))
+        {
+            return Ok(serde_json::json!({"revoked_before_ms":cutoff,"replayed":true}));
+        }
+        if self
+            .mcp_revocations
+            .get(&e.project_id)
+            .is_some_and(|r| r.receipts.len() >= 128)
+        {
+            return Err(Error::Limited);
+        }
+        let mut next = self.clone();
+        next.client(e, signature, now)?;
+        let state = next
+            .mcp_revocations
+            .entry(e.project_id.clone())
+            .or_default();
+        state.floor_ms = state.floor_ms.max(now);
+        state.receipts.insert(e.idempotency_key.clone(), now);
+        *self = next;
+        Ok(serde_json::json!({"revoked_before_ms":now,"replayed":false}))
     }
     pub fn view(&self, now: i64) -> serde_json::Value {
         serde_json::json!({"mode":"public_free_beta","registration_open":now>=self.profile.opens_at_ms&&now<self.profile.closes_at_ms&&self.grants.len()<PROJECTS&&self.anonymous_operations<ANONYMOUS_OPERATIONS,"remaining_projects":PROJECTS-self.grants.len(),"trial":{"duration_ms":DURATION,"attempt_units":UNITS,"units_reserved_per_task":5},"limits":{"lifetime_projects":PROJECTS,"lifetime_tasks_per_project":16,"lifetime_publications_per_project":128,"client_operations_per_project":CLIENT_OPERATIONS,"receiver":"worker.account.workers.dev"},"payments":false})

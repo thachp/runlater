@@ -205,3 +205,12 @@ Finite operator-alpha task funding is a [source-only model](docs/FUNDING.md), te
 The subsequent [restricted registered-delivery source](docs/REGISTERED-DELIVERY.md) wires production-mode alarms, Queue and v2 signatures for one owned synthetic receiver behind explicit operator configuration. It is offline-tested and not activated; arbitrary destinations and public customer enrollment remain unavailable.
 
 Offline destination verification source and activation boundaries: [DESTINATIONS.md](docs/DESTINATIONS.md).
+
+
+### Hosted MCP delegation milestone
+
+The source includes a staged multi-tenant OAuth MCP gateway: owner keys stay local,
+scoped delegation is independently verified by the existing API, and true legacy
+`/sse` is separate from Streamable HTTP `/mcp`. It is **not yet deployed or verified**.
+See [hosting/security gates](docs/MCP-HOSTING.md) and [local MCP setup](docs/MCP.md).
+Do not use the single-project local signer as a public shared credential.

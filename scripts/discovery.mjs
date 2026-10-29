@@ -23,6 +23,8 @@ export function buildDiscovery(output=path.join(repo,'build/discovery')){
  for(const name of ['README.md','worker.mjs','wrangler.example.jsonc'])copy('examples/public-beta-receiver/'+name,'docs/agent/public-beta-receiver/'+name);
  copy('contracts/public-beta-v1.json','docs/agent/public-beta.v1.json');copy('discovery/public-beta-release.v1.json','docs/agent/public-beta-release.v1.json');
  copy('docs/MCP.md','docs/agent/mcp.md');
+ copy('docs/MCP-HOSTING.md','docs/agent/MCP-HOSTING.md');
+ const hostedMcpGuide=path.join(output,'docs/agent/MCP-HOSTING.md');fs.writeFileSync(hostedMcpGuide,fs.readFileSync(hostedMcpGuide,'utf8').replace('(MCP.md)','(https://docs.runlater.io/agent/mcp.md)'));
  copy('docs/AGENT-QUICKSTART.md','docs/agent/quickstart.md');copy('docs/openapi.json','docs/openapi.json');
  const receiverReadme=path.join(output,'docs/agent/public-beta-receiver/README.md');fs.writeFileSync(receiverReadme,fs.readFileSync(receiverReadme,'utf8').replace('../../docs/PUBLIC-BETA-QUICKSTART-v1.md','https://docs.runlater.io/agent/quickstart.md'));
  for(const role of ['landing','docs']){copy('web/hosting/headers',role+'/_headers');copy('web/hosting/robots.txt',role+'/robots.txt');}

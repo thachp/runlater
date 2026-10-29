@@ -29,6 +29,19 @@ pub(super) fn profile(env: &Env) -> Result<Profile> {
         .map_err(|_| Error::RustError("Invalid beta profile".into()))?;
     Ok(p)
 }
+pub(super) fn mcp_trust(env: &Env) -> Result<Option<(String, String)>> {
+    if !mode(env) {
+        return Ok(None);
+    }
+    let Ok(value) = env.var("MCP_DELEGATION_GATEWAY_PUBLIC_KEY") else {
+        return Ok(None);
+    };
+    let key = value.to_string();
+    if !crate::identity::key_valid(&key) {
+        return Err(Error::RustError("Invalid MCP delegation trust".into()));
+    }
+    Ok(Some((key, profile(env)?.release_id)))
+}
 pub(super) fn master(env: &Env) -> Result<Master> {
     Master::from_hex(&env.secret("BETA_CALLBACK_MASTER")?.to_string())
         .map_err(|_| Error::RustError("Invalid beta master".into()))
@@ -137,7 +150,10 @@ pub(super) async fn front(mut req: Request, env: Env) -> Result<Response> {
     if crate::funded_tasks::route(req.method().as_ref(), &path).is_some()
         || crate::invitation_delivery::destination_route(req.method().as_ref(), &path)
         || (req.method() == Method::Get && matches!(path.as_str(), "/v1/identity/me" | "/v1/queue"))
-        || (req.method() == Method::Post && path == "/v1/callback-key")
+        || (req.method() == Method::Post
+            && (path == "/v1/callback-key"
+                || path == crate::mcp_delegation::REVOKE_PATH
+                || path == crate::mcp_delegation::VALIDATE_PATH))
     {
         return signed(req, &env).await;
     }
@@ -252,10 +268,41 @@ async fn signed(mut req: Request, env: &Env) -> Result<Response> {
         nonce: h.get("RunLater-Nonce")?.unwrap_or_default(),
     };
     let signature = h.get("RunLater-Request-Signature")?.unwrap_or_default();
+    let delegation = match h.get("RunLater-MCP-Delegation")? {
+        None => None,
+        Some(header) => {
+            if mcp_trust(env)?.is_none() {
+                return err(inv::Error::Forbidden);
+            }
+            match crate::mcp_delegation::Certificate::from_header(&header) {
+                Ok(c) => Some(c),
+                Err(_) => return err(inv::Error::Invalid),
+            }
+        }
+    };
+    if e.path == crate::mcp_delegation::REVOKE_PATH {
+        if delegation.is_some() || raw != b"{}" {
+            return err(inv::Error::Forbidden);
+        }
+        return global(
+            env,
+            "/public/mcp-revoke",
+            &json!({"envelope":e,"signature":signature}),
+        )
+        .await;
+    }
+    let validation = e.path == crate::mcp_delegation::VALIDATE_PATH;
+    if validation && (delegation.is_none() || raw != b"{}") {
+        return err(inv::Error::Forbidden);
+    }
     let mut gate = global(
         env,
-        "/public/client-route",
-        &json!({"envelope":e,"signature":signature}),
+        if validation {
+            "/public/mcp-validate"
+        } else {
+            "/public/client-route"
+        },
+        &json!({"envelope":e,"signature":signature,"delegation":delegation}),
     )
     .await?;
     if gate.status_code() != 200 {
@@ -267,12 +314,17 @@ async fn signed(mut req: Request, env: &Env) -> Result<Response> {
         envelope: e,
         signature,
         body_hex: hex::encode(raw),
+        delegation,
     };
     internal(
         env,
         "PROJECTS",
         &input.envelope.project_id,
-        "/signed",
+        if validation {
+            "/public/mcp-validate"
+        } else {
+            "/signed"
+        },
         &serde_json::to_value(&input)?,
     )
     .await
@@ -310,13 +362,46 @@ impl AdmissionRegistry {
         );
         s.validate(&p)
             .map_err(|_| Error::RustError("Public policy conflict".into()))?;
+        if req.path() == "/public/mcp-validate" {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Validate {
+                envelope: crate::signed::Envelope,
+                signature: String,
+                delegation: crate::mcp_delegation::Certificate,
+            }
+            let c: Validate = serde_json::from_value(v)?;
+            // Honor current configured revocations on a read-only snapshot; never persist on introspection.
+            s.revoke(&revocations(&self.env)?, now())
+                .map_err(|_| Error::RustError("Invalid beta revocations".into()))?;
+            let Some((gateway, release)) = mcp_trust(&self.env)? else {
+                return err(inv::Error::Forbidden);
+            };
+            return match s.validate_mcp_delegation(
+                &c.envelope,
+                &c.signature,
+                &c.delegation,
+                crate::mcp_delegation::Trust {
+                    gateway_public_key: &gateway,
+                    release_id: &release,
+                },
+                now(),
+            ) {
+                Ok(ticket) => json_response(&json!(ticket), 200),
+                Err(error) => err(error),
+            };
+        }
         let before = serde_json::to_string(&s)?;
         s.revoke(&revocations(&self.env)?, now())
             .map_err(|_| Error::RustError("Invalid beta revocation update".into()))?;
         let result=match req.path().as_str(){
    "/public/challenge"=>s.challenge(v["public_key"].as_str().unwrap_or_default(),v["nonce"].as_str().unwrap_or_default(),now()).and_then(|c|Ok(json!({"challenge_id":c.id()?,"canonical_utf8":String::from_utf8(c.bytes()?).map_err(|_|inv::Error::Invalid)?,"challenge":c}))),
    "/public/complete"=>s.complete(v["challenge_id"].as_str().unwrap_or_default(),v["signature"].as_str().unwrap_or_default(),now()).map(|(grant,challenge)|json!({"grant":grant,"challenge":challenge})),
-   "/public/client-route"=>{#[derive(Deserialize)]struct Client{envelope:crate::signed::Envelope,signature:String}let c:Client=serde_json::from_value(v)?;s.client(&c.envelope,&c.signature,now()).map(|t|json!(t))},
+   "/public/mcp-revoke"=>{#[derive(Deserialize)]#[serde(deny_unknown_fields)]struct Revoke{envelope:crate::signed::Envelope,signature:String}let c:Revoke=serde_json::from_value(v)?;s.revoke_mcp_delegations(&c.envelope,&c.signature,now())},
+   "/public/client-route"=>{#[derive(Deserialize)]#[serde(deny_unknown_fields)]struct Client{envelope:crate::signed::Envelope,signature:String,#[serde(default)]delegation:Option<crate::mcp_delegation::Certificate>}let c:Client=serde_json::from_value(v)?;
+       let trust=if c.delegation.is_some(){mcp_trust(&self.env)?}else{None};
+       let proof=match (&c.delegation,&trust){(None,_)=>crate::mcp_delegation::Proof::Owner(&c.signature),(Some(certificate),Some((gateway,release)))=>crate::mcp_delegation::Proof::Delegated{signature:&c.signature,certificate,trust:crate::mcp_delegation::Trust{gateway_public_key:gateway,release_id:release}},_=>return err(inv::Error::Forbidden)};
+       s.client_with_proof(&c.envelope,proof,now()).map(|t|json!(t))},
    "/public/recovery-route"=>{let r:Recovery=serde_json::from_value(v)?;s.recovery(&r.project_id,&r.public_key,&r.nonce,r.issued_at_ms,r.expires_at_ms,&r.signature,now()).map(|t|json!(t))},
    "/signed-route"=>s.route(v["project_id"].as_str().unwrap_or_default()).map(|t|json!(t)),
    _=>Err(inv::Error::Invalid)

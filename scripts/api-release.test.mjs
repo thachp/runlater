@@ -230,3 +230,14 @@ test('non-map annotations fail closed; absent and empty label sets are equivalen
  assert.equal(settingsDigest({bindings:[]}),settingsDigest({bindings:[],annotations:{}}));
  assert.equal(settingsDigest({bindings:[]}),settingsDigest({bindings:[],annotations:{'workers/tag':'any-label'}}));
 });
+
+
+test('optional MCP gateway trust requires exact reviewed config and public-key shape',()=>{
+ const {c,a,e}=fixture(); c.vars.MCP_DELEGATION_GATEWAY_PUBLIC_KEY='a'.repeat(64);
+ assert.throws(()=>validate(c,a,e)); // No implicit activation from an unreviewed profile.
+ a.config_sha256=digest(c); assert.doesNotThrow(()=>validate(c,a,e));
+ for(const invalid of ['', '0'.repeat(64), 'A'.repeat(64), 'private-key-material', 123]) {
+  c.vars.MCP_DELEGATION_GATEWAY_PUBLIC_KEY=invalid; a.config_sha256=digest(c);
+  assert.throws(()=>validate(c,a,e));
+ }
+});

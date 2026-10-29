@@ -430,6 +430,21 @@ impl Catalog {
             serde_json::json!({"project_id":project,"public_key":key,"permissions":permissions,"expires_at_ms":identity.expires_at_ms.min(approval.expires_at_ms)}),
         )
     }
+    pub(crate) fn authorized_expiry(
+        &self,
+        project: &str,
+        key: &str,
+        permission: Permission,
+        now: i64,
+    ) -> Result<i64, Error> {
+        self.authorize(project, key, permission, now)?;
+        Ok(self
+            .identities
+            .get(key)
+            .ok_or(Error::Forbidden)?
+            .expires_at_ms
+            .min(self.approval(key, now.max(self.clock_ms))?.expires_at_ms))
+    }
     /// Identity lookup only; callers must separately authenticate request possession. No task route uses this yet.
     pub fn authorize(
         &self,
