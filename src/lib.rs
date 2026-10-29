@@ -37,6 +37,7 @@ pub mod identity;
     any(feature = "production", feature = "funding-tests")
 ))]
 mod production_runtime;
+pub mod publication;
 #[cfg(all(
     target_arch = "wasm32",
     not(any(

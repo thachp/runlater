@@ -386,7 +386,7 @@ impl TaskLedger {
             s.staging_published += messages.len() as u32;
         }
         self.save(&s)?;
-        for d in messages {
+        crate::publication::publish_batch(messages, |d| async move {
             #[cfg(feature = "runtime-tests")]
             let reference = d.clone();
             #[cfg(feature = "runtime-tests")]
@@ -399,7 +399,9 @@ impl TaskLedger {
             self.env.queue("READY")?.send(d).await?;
             #[cfg(feature = "runtime-tests")]
             test_point(&self.env, "after_publish", serde_json::to_value(reference)?).await?;
-        }
+            Ok::<(), Error>(())
+        })
+        .await?;
         self.rearm(false).await
     }
 }
@@ -715,6 +717,13 @@ pub async fn consume(
             message.ack();
             continue;
         };
+        #[cfg(feature = "runtime-tests")]
+        test_point(
+            &env,
+            "after_claim",
+            json!({"id":task.id,"fence":task.fence,"generation":task.generation}),
+        )
+        .await?;
         // In-process receiver: never fetches URLs, follows redirects, resolves DNS, or touches external systems.
         let enabled = env
             .var("LOCAL_FIXTURES")
