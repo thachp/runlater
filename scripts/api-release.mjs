@@ -9,7 +9,7 @@ export const digest = v => createHash('sha256').update(canonical(v)).digest('hex
 function guard(ok) { if (!ok) throw new Error('release guard rejected configuration or provider state'); }
 export function validate(c,a,e) {
   guard(e.RUNLATER_RELEASE_ENABLED === 'true' && e.GITHUB_REPOSITORY === 'thachp/runlater' && /^[a-f0-9]{40}$/.test(e.RELEASE_SHA ?? ''));
-  guard(a.worker === 'runlater-public-api' && /^[a-f0-9]{32}$/.test(a.account_id ?? '') && /^[a-f0-9]{64}$/.test(a.settings_sha256 ?? '') && digest(c) === a.config_sha256);
+  guard(a.worker === 'runlater-public-api' && /^[a-f0-9]{32}$/.test(a.account_id ?? '') && /^[a-f0-9]{32}$/.test(a.worker_tag ?? '') && /^[a-f0-9]{64}$/.test(a.settings_sha256 ?? '') && digest(c) === a.config_sha256);
   guard(Object.keys(c).every(k=>['name','main','compatibility_date','compatibility_flags','workers_dev','preview_urls','limits','observability','durable_objects','queues','ratelimits','vars','version_metadata'].includes(k)));
   guard(c.name === a.worker && c.main === 'build/worker/shim.mjs' && c.workers_dev === false && c.preview_urls === false && canonical(c.limits) === '{"cpu_ms":50}' && canonical(c.observability) === '{"enabled":false}');
   guard(canonical(c.compatibility_flags) === '["global_fetch_strictly_public"]' && /^\d{4}-\d{2}-\d{2}$/.test(c.compatibility_date ?? ''));
@@ -23,21 +23,44 @@ export function validate(c,a,e) {
   guard(Array.isArray(JSON.parse(c.vars.BETA_REVOKED_PROJECTS)));
   guard(canonical(c.ratelimits) === canonical([{name:'BETA_IP_RATE',namespace_id:'1001',simple:{limit:60,period:60}},{name:'BETA_REG_IP_RATE',namespace_id:'1002',simple:{limit:6,period:60}}]));
 }
-export function uploadedVersion(lines) {
+export function uploadedVersion(lines,expectedTag,onReceipt=()=>{}) {
   const records=lines.trim().split('\n').map(l=>JSON.parse(l)).filter(r=>r.type==='version-upload');
-  guard(records.length===1 && records[0].worker_name==='runlater-public-api' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(records[0].version_id??'') && !records[0].preview_url && !records[0].preview_alias_url);
+  guard(records.length===1 && records[0].worker_name==='runlater-public-api' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(records[0].version_id??''));
+  onReceipt(records[0].version_id);
+  guard(!records[0].preview_url&&!records[0].preview_alias_url&&/^[a-f0-9]{32}$/.test(expectedTag??'')&&records[0].worker_tag===expectedTag);
   return records[0].version_id;
 }
-export async function deployExisting(a,get,upload,promote,stillCurrent=async()=>true,onUploaded=()=>{}) {
+export function uploadArguments(file,sha,service,a) {
+  const env=service?.default_environment,script=env?.script;
+  guard(a.worker==='runlater-public-api'&&/^[a-f0-9]{32}$/.test(a.worker_tag??'')&&service?.id===a.worker&&env?.environment==='production'&&script?.id===a.worker&&script?.tag===a.worker_tag);
+  // Wrangler strict mode always refuses an API-origin Worker, even without drift.
+  // Only this authenticated, pinned identity can acknowledge that generic warning.
+  // deployExisting's approved settings/deployment fingerprints still gate promotion.
+  return ['versions','upload','--config',file,...(script.last_deployed_from==='api'?[]:['--strict']),'--tag',sha.slice(0,12),'--message',`Reviewed main ${sha}`];
+}
+export function runWrangler(args,e,out,exec=execFileSync,onFailure=()=>{}) {
+  try{return exec('node',['node_modules/wrangler/bin/wrangler.js',...args],{timeout:120000,stdio:'pipe',env:{...e,WRANGLER_SEND_METRICS:'false',WRANGLER_OUTPUT_FILE_PATH:out}});}
+  catch(error){onFailure(Number.isInteger(error?.status)&&error.status>=0&&error.status<=255?error.status:'unknown');throw new Error('wrangler_child_failed');}
+}
+export async function deployExisting(a,get,upload,promote,stillCurrent=async()=>true,onUploaded=()=>{},onStage=()=>{}) {
+  onStage('source_preflight');
   guard(await stillCurrent());
+  onStage('settings_preflight');
   const s=await get('/settings');
   guard(digest(s)===a.settings_sha256 && s.bindings?.some(b=>b.name==='BETA_CALLBACK_MASTER' && b.type==='secret_text'));
+  onStage('deployment_preflight');
   const before=digest(await get('/deployments'));
-  const id=uploadedVersion(await upload());
-  onUploaded(id);
-  guard(digest(await get('/settings'))===a.settings_sha256 && digest(await get('/deployments'))===before);
+  onStage('version_upload');
+  const id=uploadedVersion(await upload(),a.worker_tag,onUploaded);
+  onStage('settings_post_upload');
+  guard(digest(await get('/settings'))===a.settings_sha256);
+  onStage('deployment_post_upload');
+  guard(digest(await get('/deployments'))===before);
+  onStage('source_post_upload');
   guard(await stillCurrent());
+  onStage('version_promote');
   await promote(id);
+  onStage('deployment_verify');
   const active=await get('/deployments');
   const versions=active?.deployments?.[0]?.versions;
   guard(Array.isArray(versions) && versions.length===1 && versions[0].version_id===id && versions[0].percentage===100);
@@ -52,21 +75,29 @@ export async function release(e=process.env) {
   const stillCurrent=async()=>{
     guard(e.GH_TOKEN);
     const r=await fetch('https://api.github.com/repos/thachp/runlater/git/ref/heads/main',{headers:{Authorization:`Bearer ${e.GH_TOKEN}`,Accept:'application/vnd.github+json'},signal:AbortSignal.timeout(15000),redirect:'error'});
+    console.log(`GitHub read HTTP status: ${r.status}`);
     guard(r.ok);return (await r.json()).object?.sha===e.RELEASE_SHA;
   };
-  const get=async suffix=>{
-    const r=await fetch(`https://api.cloudflare.com/client/v4/accounts/${a.account_id}/workers/scripts/${a.worker}${suffix}`,{headers:{Authorization:`Bearer ${e.CLOUDFLARE_API_TOKEN}`},signal:AbortSignal.timeout(15000),redirect:'error'});
+  const providerRead=async path=>{
+    const r=await fetch(`https://api.cloudflare.com/client/v4/accounts/${a.account_id}${path}`,{headers:{Authorization:`Bearer ${e.CLOUDFLARE_API_TOKEN}`},signal:AbortSignal.timeout(15000),redirect:'error'});
+    console.log(`Provider read HTTP status: ${r.status}`);
     guard(r.ok);const b=await r.json();guard(b.success);return b.result;
   };
+  const get=suffix=>providerRead(`/workers/scripts/${a.worker}${suffix}`);
   const dir=await mkdtemp(join(tmpdir(),'runlater-release-')), file=join(process.cwd(),'.runlater-release.generated.json'), out=join(dir,'upload.jsonl');
-  const run=args=>execFileSync('node',['node_modules/wrangler/bin/wrangler.js',...args],{timeout:120000,stdio:'pipe',env:{...e,CLOUDFLARE_ACCOUNT_ID:a.account_id,WRANGLER_SEND_METRICS:'false',WRANGLER_OUTPUT_FILE_PATH:out}});
+  const run=args=>runWrangler(args,{...e,CLOUDFLARE_ACCOUNT_ID:a.account_id},out,execFileSync,status=>console.error(`Wrangler child exit status: ${status}`));
   let owned=false;
   try {
     await writeFile(file,JSON.stringify(c),{mode:0o600,flag:'wx'});owned=true;
     const id=await deployExisting(a,get,async()=>{
-      run(['versions','upload','--config',file,'--strict','--tag',e.RELEASE_SHA.slice(0,12),'--message',`Reviewed main ${e.RELEASE_SHA}`]);
+      console.log('Release phase: service_identity');
+      const service=await providerRead(`/workers/services/${a.worker}`);
+      const args=uploadArguments(file,e.RELEASE_SHA,service,a);
+      console.log('Release phase: upload_cli');
+      run(args);
       return readFile(out,'utf8');
-    },async id=>run(['versions','deploy',`${id}@100%`,'--config',file,'--yes','--message',`Reviewed main ${e.RELEASE_SHA}`]),stillCurrent,id=>console.log(`Uploaded Worker version ${id} for ${e.RELEASE_SHA}; retain this receipt even if later checks fail.`));
+    },async id=>run(['versions','deploy',`${id}@100%`,'--config',file,'--yes','--message',`Reviewed main ${e.RELEASE_SHA}`]),stillCurrent,id=>console.log(`Uploaded Worker version ${id} for ${e.RELEASE_SHA}; retain this receipt even if later checks fail.`),stage=>console.log(`Release phase: ${stage}`));
+    console.log('Release phase: health_verify');
     const health=await fetch('https://api.runlater.io/health',{signal:AbortSignal.timeout(5000),redirect:'error'});
     guard(health.status===200);
     const reader=health.body.getReader();let body='',size=0;

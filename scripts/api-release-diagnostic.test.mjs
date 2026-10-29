@@ -4,7 +4,7 @@ import {diagnose} from './api-release-diagnostic.mjs';import {digest} from './ap
 function fixture(){
  const config={name:'runlater-public-api',main:'build/worker/shim.mjs',version_metadata:{binding:'RELEASE_VERSION'},compatibility_date:'2026-10-27',compatibility_flags:['global_fetch_strictly_public'],workers_dev:false,preview_urls:false,limits:{cpu_ms:50},observability:{enabled:false},durable_objects:{bindings:[{name:'ADMISSION',class_name:'AdmissionRegistry'},{name:'PROJECTS',class_name:'InvitationProject'}]},queues:{producers:[{binding:'BETA_READY',queue:'runlater-public-ready'}]},ratelimits:[{name:'BETA_IP_RATE',namespace_id:'1001',simple:{limit:60,period:60}},{name:'BETA_REG_IP_RATE',namespace_id:'1002',simple:{limit:6,period:60}}],vars:{PUBLIC_BETA_ENABLED:'operator-approved',PUBLIC_BETA_PROFILE:JSON.stringify({release_id:'test',opens_at_ms:1000,closes_at_ms:2000,callback_end_sec:1000000}),BETA_REVOKED_PROJECTS:'[]',BETA_READY_QUEUE:'runlater-public-ready'}};
  const settings={bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]};
- const approval={worker:config.name,account_id:'a'.repeat(32),config_sha256:digest(config),settings_sha256:digest(settings)};
+ const approval={worker:config.name,worker_tag:'d'.repeat(32),account_id:'a'.repeat(32),config_sha256:digest(config),settings_sha256:digest(settings)};
  const e={RUNLATER_RELEASE_CONFIG:JSON.stringify(config),RUNLATER_RELEASE_APPROVAL:JSON.stringify(approval),RUNLATER_RELEASE_ENABLED:'false',GITHUB_REPOSITORY:'thachp/runlater',GITHUB_SHA:'c'.repeat(40),GH_TOKEN:'public-gh-fixture-sentinel',CLOUDFLARE_API_TOKEN:'public-cf-fixture-sentinel'};
  return {e,config,approval,settings};
 }
