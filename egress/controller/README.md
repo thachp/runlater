@@ -12,6 +12,28 @@ Production remains disabled. Source readiness is constructible only with explici
 EGRESS_ENABLED=operator-approved and nonzero 64-hex EGRESS_REVIEW_REVISION matching
 the API's independently reviewed artifact-manifest revision; absent flags fail closed.
 
+## Testing minimal runtime images
+
+The production transport uses Node's DNS/TLS/HTTPS APIs; it does not require the
+OpenSSL command-line executable. The native TLS integration test normally uses
+that executable only to generate a disposable self-signed local certificate.
+For a minimal image without that executable, generate a one-day `example.com`
+certificate and key outside the image using the same command in
+`native-tls.test.mjs`, then mount their directory read-only and set the test-only
+`RUNLATER_NATIVE_TLS_FIXTURE_DIR` to its absolute container path. Name the files
+`cert.pem` and `key.pem`, and let the nonroot container user read them. Use only
+disposable local test material, never a production key or trusted certificate.
+
+Run all three suites inside the exact image:
+`node --test egress/egress.test.mjs egress/controller.test.mjs egress/native-tls.test.mjs`.
+The test copies fixtures into its own temporary directory and still performs real
+loopback TLS, checking success, hostname mismatch, untrusted CA, request counts
+and diagnostic redaction. Missing/invalid fixtures fail rather than skip. No
+runtime trust store, production transport or provider behavior is changed by this
+test input. Keep the test container offline with a read-only root, bounded writable
+temporary directory, dropped capabilities and nonroot execution. Local synthetic
+peer translation remains **not** hosted-provider network proof.
+
 ## Proposed boundary
 
 Existing API → explicit same-account `GENERAL_HTTPS_EGRESS` service binding to named

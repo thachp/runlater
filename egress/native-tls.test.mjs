@@ -14,7 +14,16 @@ import {createNativeEgress} from './index.mjs';
 test('native TLS validates original hostname and CA before sending private headers/body',async t=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'runlater-egress-tls-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
  const key=path.join(dir,'key.pem'),cert=path.join(dir,'cert.pem');
- const generated=spawnSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,'-days','1','-subj','/CN=example.com','-addext','subjectAltName=DNS:example.com'],{stdio:'ignore'});assert.equal(generated.status,0);
+ // Test-only fixture input lets minimal runtime images omit the OpenSSL CLI.
+ // Copy into our owned temporary directory; never chmod/delete the mounted source.
+ const fixtureDir=process.env.RUNLATER_NATIVE_TLS_FIXTURE_DIR;
+ if(fixtureDir){
+  assert.ok(path.isAbsolute(fixtureDir),'TLS fixture directory must be absolute');
+  fs.copyFileSync(path.join(fixtureDir,'key.pem'),key,fs.constants.COPYFILE_EXCL);
+  fs.copyFileSync(path.join(fixtureDir,'cert.pem'),cert,fs.constants.COPYFILE_EXCL);
+ }else{
+  const generated=spawnSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,'-days','1','-subj','/CN=example.com','-addext','subjectAltName=DNS:example.com'],{stdio:'ignore'});assert.equal(generated.status,0);
+ }
  fs.chmodSync(key,0o600);const ca=fs.readFileSync(cert);let requests=0;
  const server=https.createServer({key:fs.readFileSync(key),cert:ca},(req,res)=>{
   requests++;assert.equal(req.headers.host,'example.com');assert.equal(req.headers.authorization,'PRIVATE_AUTH');let body='';req.on('data',c=>body+=c);req.on('end',()=>{assert.equal(body,'{}');res.writeHead(204);res.end();});
