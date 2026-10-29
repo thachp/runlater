@@ -39,3 +39,16 @@ Permission evidence: [Workers roles and per-Worker scopes](https://developers.cl
 The settings endpoint describes the latest uploaded version, which may be staged rather than active. Expected version labels therefore change without changing runtime policy. The active deployment fingerprint is checked separately and must remain unchanged until promotion.
 
 The initial reviewed configuration replaces the nonsecret `RUNLATER_RELEASE_RUN` binding with `RELEASE_VERSION` version metadata. This binding change is deliberately **not** normalized away: review it against the approved configuration and explicitly install a `runtime-v1` baseline for that configuration before enabling another release. Do not refresh a baseline merely because a guard failed. Reconcile the exact staged version, immutable Worker identity, secret-name sets, bindings and active deployment first. A failed upload or post-upload check does not authorize promoting the staged version.
+
+## Optional MCP delegated authorization
+
+A separately approved deployment may include nonsecret
+`MCP_DELEGATION_GATEWAY_PUBLIC_KEY` (64 lowercase hexadecimal Ed25519 bytes) in
+`RUNLATER_RELEASE_CONFIG.vars`. Its absence keeps delegated API authentication
+disabled. The exact config and live-settings baseline must be reviewed and refreshed
+for any addition, rotation or removal; merely merging source does not activate it.
+No owner private key or gateway private key belongs in this API profile. The private
+gateway signer lives only in the separately approved MCP Worker. See
+[hosted MCP rollout gates](../docs/MCP-HOSTING.md), including the state-compatible
+rollback restriction after first persisted delegation revocation. Do not bypass
+this workflow's existing fingerprints, release sequencing, or secret-collision checks.

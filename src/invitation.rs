@@ -377,6 +377,45 @@ pub struct Enrollment {
     clock_ms: i64,
 }
 impl Enrollment {
+    /// Read-only authoritative project enrollment check; no catalog/nonce/receipt persistence.
+    pub fn validate_mcp_delegation(
+        &self,
+        e: &crate::signed::Envelope,
+        signature: &str,
+        certificate: &crate::mcp_delegation::Certificate,
+        trust: crate::mcp_delegation::Trust<'_>,
+        now: i64,
+    ) -> Result<serde_json::Value, identity::Error> {
+        if e.method != "POST" || e.path != crate::mcp_delegation::VALIDATE_PATH {
+            return Err(identity::Error::Forbidden);
+        }
+        e.validate_request(b"{}", now)?;
+        let mut catalog = self.project.catalog.clone();
+        catalog.apply_policy(&self.identity_policy()?, now)?;
+        let receipt = self.receipt.as_ref().ok_or(identity::Error::Forbidden)?;
+        if certificate.issued_at_ms < receipt.enrolled_at_ms {
+            return Err(identity::Error::Forbidden);
+        }
+        let mut expiry = receipt.expires_at_ms;
+        for scope in &certificate.permissions {
+            let permission = match scope.as_str() {
+                "cancel" => Permission::Cancel,
+                "enqueue" => Permission::Enqueue,
+                "read" => Permission::Read,
+                _ => return Err(identity::Error::Forbidden),
+            };
+            expiry = expiry.min(catalog.authorized_expiry(
+                &e.project_id,
+                &e.public_key,
+                permission,
+                now,
+            )?);
+        }
+        certificate.verify(e, signature, trust, expiry, None, now)?;
+        Ok(
+            serde_json::json!({"active":true,"project_id":e.project_id,"expires_at_ms":certificate.expires_at_ms.min(expiry),"permissions":certificate.permissions}),
+        )
+    }
     pub(crate) fn identity_policy(&self) -> Result<identity::Policy, identity::Error> {
         let r = self.receipt.as_ref().ok_or(identity::Error::Forbidden)?;
         if self.version != 1
@@ -421,13 +460,26 @@ impl Enrollment {
         body: &[u8],
         now: i64,
     ) -> Result<serde_json::Value, crate::funded_tasks::Error> {
+        self.signed_query_with_proof(e, crate::mcp_delegation::Proof::Owner(signature), body, now)
+    }
+    pub fn signed_query_with_proof(
+        &self,
+        e: &crate::signed::Envelope,
+        proof: crate::mcp_delegation::Proof<'_>,
+        body: &[u8],
+        now: i64,
+    ) -> Result<serde_json::Value, crate::funded_tasks::Error> {
         let p = self.identity_policy()?;
         if crate::funded_tasks::route(&e.method, &e.path).is_some() {
-            self.project.task_query(&p, e, signature, body, now)
+            self.project.task_query_with_proof(&p, e, proof, body, now)
         } else {
-            self.project
-                .query(&p, e, signature, body, now)
-                .map_err(Into::into)
+            match proof {
+                crate::mcp_delegation::Proof::Owner(signature) => self
+                    .project
+                    .query(&p, e, signature, body, now)
+                    .map_err(Into::into),
+                _ => Err(identity::Error::Forbidden.into()),
+            }
         }
     }
     /// Server-only readiness decides whether new admissions are possible; request input cannot set it.
@@ -440,6 +492,22 @@ impl Enrollment {
         new_admission_ready: bool,
         now: i64,
     ) -> Result<serde_json::Value, crate::funded_tasks::Error> {
+        self.signed_task_command_with_proof(
+            e,
+            crate::mcp_delegation::Proof::Owner(signature),
+            body,
+            new_admission_ready,
+            now,
+        )
+    }
+    pub fn signed_task_command_with_proof(
+        &mut self,
+        e: &crate::signed::Envelope,
+        proof: crate::mcp_delegation::Proof<'_>,
+        body: &[u8],
+        new_admission_ready: bool,
+        now: i64,
+    ) -> Result<serde_json::Value, crate::funded_tasks::Error> {
         let p = self.identity_policy()?;
         let grant = if new_admission_ready {
             Some(self.admission_policy()?)
@@ -447,7 +515,7 @@ impl Enrollment {
             None
         };
         self.project
-            .task_command(&p, grant.as_ref(), e, signature, body, now)
+            .task_command_with_proof(&p, grant.as_ref(), e, proof, body, now)
     }
     pub(crate) fn install_public(
         &mut self,

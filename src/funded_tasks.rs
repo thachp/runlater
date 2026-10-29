@@ -57,13 +57,15 @@ impl Project {
         t: &Task,
         created: bool,
         replayed: bool,
+        delegated_read: bool,
         now: i64,
     ) -> Result<Value, Error> {
         self.funding.reservation(&t.id)?;
-        let can_read = self
-            .catalog
-            .authorize(&e.project_id, &e.public_key, Permission::Read, now)
-            .is_ok();
+        let can_read = delegated_read
+            && self
+                .catalog
+                .authorize(&e.project_id, &e.public_key, Permission::Read, now)
+                .is_ok();
         let result = CommandResult {
             status: if created { 201 } else { 200 },
             body: serde_json::to_value(t).map_err(|_| identity::Error::Invalid)?,
@@ -81,14 +83,30 @@ impl Project {
         body: &[u8],
         now: i64,
     ) -> Result<Value, Error> {
+        self.task_query_with_proof(
+            policy,
+            e,
+            crate::mcp_delegation::Proof::Owner(signature),
+            body,
+            now,
+        )
+    }
+    pub fn task_query_with_proof(
+        &self,
+        policy: &IdentityPolicy,
+        e: &Envelope,
+        proof: crate::mcp_delegation::Proof<'_>,
+        body: &[u8],
+        now: i64,
+    ) -> Result<Value, Error> {
         let Some(Route::Read(id)) = route(&e.method, &e.path) else {
             return Err(identity::Error::Invalid.into());
         };
         let mut snapshot = self.clone();
         snapshot.catalog.apply_policy(policy, now)?;
-        e.authenticate(&snapshot.catalog, signature, body, now)?;
+        e.authenticate_with_proof(&snapshot.catalog, proof, body, now)?;
         let t = snapshot.ledger.get(id)?;
-        let mut v = snapshot.task_result(e, &t, false, false, now)?;
+        let mut v = snapshot.task_result(e, &t, false, false, proof.permits_read(), now)?;
         v["sampled_at_ms"] = now.into();
         v["delivery"] = serde_json::to_value(snapshot.delivery.attempts.get(id))
             .map_err(|_| identity::Error::Invalid)?;
@@ -104,12 +122,30 @@ impl Project {
         body: &[u8],
         now: i64,
     ) -> Result<Value, Error> {
+        self.task_command_with_proof(
+            policy,
+            admission,
+            e,
+            crate::mcp_delegation::Proof::Owner(signature),
+            body,
+            now,
+        )
+    }
+    pub fn task_command_with_proof(
+        &mut self,
+        policy: &IdentityPolicy,
+        admission: Option<&funding::Policy>,
+        e: &Envelope,
+        proof: crate::mcp_delegation::Proof<'_>,
+        body: &[u8],
+        now: i64,
+    ) -> Result<Value, Error> {
         let action = route(&e.method, &e.path).ok_or(identity::Error::Invalid)?;
         if matches!(action, Route::Read(_)) {
             return Err(identity::Error::Invalid.into());
         }
         self.catalog.apply_policy(policy, now)?;
-        e.authenticate(&self.catalog, signature, body, now)?;
+        e.authenticate_with_proof(&self.catalog, proof, body, now)?;
         let mut next = self.clone();
         next.requests.check_nonce(e, now)?;
         let (task, created, replayed) = match action {
@@ -164,7 +200,7 @@ impl Project {
         }
         next.funding.settle_all(&next.ledger, now)?;
         next.requests.record_nonce(e)?;
-        let result = next.task_result(e, &task, created, replayed, now)?;
+        let result = next.task_result(e, &task, created, replayed, proof.permits_read(), now)?;
         *self = next;
         Ok(result)
     }

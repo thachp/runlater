@@ -20,6 +20,7 @@ jobs:
       - run: node --test web/redirect/worker.test.mjs
       - run: npm ci
       - run: npm run test:mcp
+      - run: npm run build:mcp
       - run: node --test scripts/api-release.test.mjs
       - run: node --test scripts/api-release-diagnostic.test.mjs
       - run: node --test scripts/branch-cleanup-preflight.test.mjs
@@ -39,4 +40,5 @@ jobs:
       - run: npm run test:delivery
       - run: npm run test:invitations
       - run: npm run test:public-beta
+      - run: npm run test:mcp-delegation
       - run: npm run test:invitation-production

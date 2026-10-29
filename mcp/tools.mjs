@@ -1,18 +1,8 @@
 // MCP adapter only: the signed API remains the sole task/funding authority.
-import Ajv from 'ajv';
 import {PublicBetaClientError, ORIGIN} from '../examples/public-beta-client.v1.mjs';
 
-const object = properties => ({type: 'object', additionalProperties: false, properties, required: Object.keys(properties)});
-const string = (pattern, maxLength) => ({type: 'string', pattern, maxLength, minLength: 1});
-const taskId = string('^task_[a-f0-9]{16}$', 21);
-const key = string('^[A-Za-z0-9_-]{1,128}$', 128);
-export const TOOLS = [
-  {name: 'service_status', description: 'Read public API capability/capacity status. No credentials, task creation, registration or payments.', inputSchema: object({}), annotations: {readOnlyHint: true, openWorldHint: true}},
-  {name: 'schedule_task', description: 'Explicit mutation: reserve finite attempt units and create/schedule one task for an already ownership-verified Workers.dev endpoint. Requires enqueue scope. Supply and retain a stable idempotency_key and identical arguments for uncertain-result recovery; never invent a replacement key. Acceptance is not callback delivery. No automatic retry or payment.', inputSchema: object({idempotency_key: key, endpoint_id: string('^[A-Za-z0-9_-]{1,64}$', 64), body: {type: 'string', maxLength: 1024, description: 'Callback UTF-8 body, at most 1024 bytes. Not returned in tool results or logs.'}, operation_key: key, run_at_ms: {type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: 'UTC milliseconds; 0 means immediate. Must not exceed the enrolled identity expiry. No exact-time promise.'}}), annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true}},
-  {name: 'task_status', description: 'Read one task and redacted attempt history in the configured project. Requires read scope. A recorded HTTP success is not proof of downstream business completion.', inputSchema: object({task_id: taskId}), annotations: {readOnlyHint: true, openWorldHint: true}},
-  {name: 'cancel_task', description: 'Explicit mutation requiring cancel scope: suppress future attempts for one task. Cannot undo an in-flight callback or earlier external effect; recorded success may win the race. Inspect status after an uncertain result.', inputSchema: object({task_id: taskId}), annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true}},
-];
-const validators = new Map(TOOLS.map(tool => [tool.name, new Ajv({strict: true}).compile(tool.inputSchema)]));
+export {TOOLS} from './tool-schema.mjs';
+import * as validators from './tool-validation.generated.mjs';
 const scopes = {schedule_task: 'enqueue', task_status: 'read', cancel_task: 'cancel'};
 const states = ['scheduled', 'ready', 'running', 'retry_wait', 'succeeded', 'failed', 'cancelled'];
 const integer = n => Number.isSafeInteger(n) && n >= 0;
@@ -67,8 +57,8 @@ export function toolHandler({client = null, allowedScopes = [], status = publicS
   // One configured client per process; neither project identity nor credentials can be selected by tools.
   let active = 0;
   return async (name, args = {}, authorized = false) => {
-    if (!validators.has(name)) return failure('capability_unavailable', 'Use tools/list. List, redrive, enrollment, receiver changes and payments are not exposed.');
-    if (!validators.get(name)(args) || (name === 'schedule_task' && Buffer.byteLength(args.body) > 1024)) return failure('invalid_input', 'Use exactly the published tool schema; credentials and project overrides are not accepted.');
+    if (!Object.hasOwn(validators, name)) return failure('capability_unavailable', 'Use tools/list. List, redrive, enrollment, receiver changes and payments are not exposed.');
+    if (!validators[name](args) || (name === 'schedule_task' && Buffer.byteLength(args.body) > 1024)) return failure('invalid_input', 'Use exactly the published tool schema; credentials and project overrides are not accepted.');
     if (name !== 'service_status' && (!authorized || !client)) return failure('credentials_required', 'Configure an existing project identity and MCP access token outside the conversation; reconnect with Authorization.');
     if (name !== 'service_status' && !allowedScopes.includes(scopes[name])) return failure('insufficient_scope', 'Ask the owner to review existing authority; discovery does not grant permissions.');
     if (active >= 4) return failure('busy', 'Wait for in-flight calls to finish. Never retry a mutation with a different idempotency key.');

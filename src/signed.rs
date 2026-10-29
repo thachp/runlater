@@ -64,6 +64,9 @@ impl Envelope {
         Ok(bytes)
     }
     fn permission(&self) -> Result<Permission, Error> {
+        if self.method == "POST" && self.path == crate::mcp_delegation::REVOKE_PATH {
+            return Ok(Permission::Cancel);
+        }
         if crate::invitation_delivery::destination_route(&self.method, &self.path)
             || (self.method == "POST" && self.path == "/v1/callback-key")
         {
@@ -88,6 +91,26 @@ impl Envelope {
         body: &[u8],
         now: i64,
     ) -> Result<(), Error> {
+        self.authenticate_with_proof(
+            catalog,
+            crate::mcp_delegation::Proof::Owner(signature),
+            body,
+            now,
+        )
+    }
+    pub(crate) fn authenticate_with_proof(
+        &self,
+        catalog: &Catalog,
+        proof: crate::mcp_delegation::Proof<'_>,
+        body: &[u8],
+        now: i64,
+    ) -> Result<(), Error> {
+        self.validate_request(body, now)?;
+        catalog.authorize(&self.project_id, &self.public_key, self.permission()?, now)?;
+        proof.verify(self, catalog, now)
+    }
+    /// Full canonical-envelope validation, shared by task auth and registry-owned control commands.
+    pub(crate) fn validate_request(&self, body: &[u8], now: i64) -> Result<(), Error> {
         if self.version != 1
             || self.origin != ORIGIN
             || !tenant_valid(&self.project_id)
@@ -113,7 +136,15 @@ impl Envelope {
             return Err(Error::Invalid);
         }
         if self.method == "POST" {
-            if crate::invitation_delivery::destination_route(&self.method, &self.path)
+            if self.path == crate::mcp_delegation::VALIDATE_PATH {
+                if !self.idempotency_key.is_empty() {
+                    return Err(Error::Invalid);
+                }
+            } else if self.path == crate::mcp_delegation::REVOKE_PATH {
+                if !key_valid(&self.idempotency_key) {
+                    return Err(Error::Invalid);
+                }
+            } else if crate::invitation_delivery::destination_route(&self.method, &self.path)
                 || (self.method == "POST" && self.path == "/v1/callback-key")
             {
                 if !key_valid(&self.idempotency_key) {
@@ -130,10 +161,7 @@ impl Envelope {
                 }
             }
         }
-        catalog.authorize(&self.project_id, &self.public_key, self.permission()?, now)?;
-        if digest(body) != self.body_sha256
-            || !crate::identity::verify_ed25519(&self.public_key, &self.bytes()?, signature)
-        {
+        if digest(body) != self.body_sha256 {
             return Err(Error::Forbidden);
         }
         Ok(())

@@ -27,7 +27,9 @@ export function validate(c,a,e) {
   guard(canonical(c.version_metadata) === '{"binding":"RELEASE_VERSION"}');
   guard(canonical(c.queues) === canonical({producers:[{binding:'BETA_READY',queue:'runlater-public-ready'}]}));
   guard(c.vars?.PUBLIC_BETA_ENABLED === 'operator-approved' && c.vars?.BETA_READY_QUEUE === 'runlater-public-ready');
-  guard(Object.keys(c.vars).sort().join(',') === 'BETA_READY_QUEUE,BETA_REVOKED_PROJECTS,PUBLIC_BETA_ENABLED,PUBLIC_BETA_PROFILE');
+  const optionalGateway = c.vars.MCP_DELEGATION_GATEWAY_PUBLIC_KEY;
+  guard(optionalGateway === undefined || (typeof optionalGateway === 'string' && /^[a-f0-9]{64}$/.test(optionalGateway) && optionalGateway !== '0'.repeat(64)));
+  guard(Object.keys(c.vars).filter(k=>k!=='MCP_DELEGATION_GATEWAY_PUBLIC_KEY').sort().join(',') === 'BETA_READY_QUEUE,BETA_REVOKED_PROJECTS,PUBLIC_BETA_ENABLED,PUBLIC_BETA_PROFILE');
   const p = JSON.parse(c.vars.PUBLIC_BETA_PROFILE);
   guard(p.release_id && Number.isSafeInteger(p.opens_at_ms) && Number.isSafeInteger(p.closes_at_ms) && p.closes_at_ms>p.opens_at_ms && p.closes_at_ms-p.opens_at_ms<=604800000 && Number.isSafeInteger(p.callback_end_sec) && p.callback_end_sec>=Math.floor((p.closes_at_ms+691200000)/1000)+300);
   guard(Array.isArray(JSON.parse(c.vars.BETA_REVOKED_PROJECTS)));

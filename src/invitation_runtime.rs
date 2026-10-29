@@ -237,6 +237,29 @@ struct Signed {
     envelope: crate::signed::Envelope,
     signature: String,
     body_hex: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delegation: Option<crate::mcp_delegation::Certificate>,
+}
+impl Signed {
+    fn proof<'a>(
+        &'a self,
+        trust: Option<&'a (String, String)>,
+    ) -> std::result::Result<crate::mcp_delegation::Proof<'a>, crate::identity::Error> {
+        match &self.delegation {
+            None => Ok(crate::mcp_delegation::Proof::Owner(&self.signature)),
+            Some(certificate) => {
+                let (gateway, release) = trust.ok_or(crate::identity::Error::Forbidden)?;
+                Ok(crate::mcp_delegation::Proof::Delegated {
+                    signature: &self.signature,
+                    certificate,
+                    trust: crate::mcp_delegation::Trust {
+                        gateway_public_key: gateway,
+                        release_id: release,
+                    },
+                })
+            }
+        }
+    }
 }
 async fn signed_forward(req: &mut Request, env: &Env) -> Result<Response> {
     let project = req
@@ -291,6 +314,7 @@ async fn signed_forward(req: &mut Request, env: &Env) -> Result<Response> {
         envelope: e,
         signature: h.get("RunLater-Request-Signature")?.unwrap_or_default(),
         body_hex: hex::encode(raw),
+        delegation: None,
     };
     internal(
         env,
@@ -718,6 +742,38 @@ impl DurableObject for InvitationProject {
             let d: crate::core::Dispatch = serde_json::from_value(value)?;
             return self.deliver(&project, d).await;
         }
+        if req.path() == "/public/mcp-validate" {
+            if !public_runtime::mode(&self.env) {
+                return rejected(inv::Error::Forbidden);
+            }
+            let input: Signed = serde_json::from_value(value)?;
+            if input.ticket.project_id != project
+                || input.envelope.project_id != project
+                || input.ticket.revoked
+                || input.body_hex != "7b7d"
+            {
+                return rejected(inv::Error::Forbidden);
+            }
+            let Some(certificate) = &input.delegation else {
+                return rejected(inv::Error::Forbidden);
+            };
+            let Some((gateway, release)) = public_runtime::mcp_trust(&self.env)? else {
+                return rejected(inv::Error::Forbidden);
+            };
+            return match s.validate_mcp_delegation(
+                &input.envelope,
+                &input.signature,
+                certificate,
+                crate::mcp_delegation::Trust {
+                    gateway_public_key: &gateway,
+                    release_id: &release,
+                },
+                now(),
+            ) {
+                Ok(v) => json_response(&v, 200),
+                Err(e) => task_error(e.into()),
+            };
+        }
         if req.path() == "/signed" {
             let input: Signed = serde_json::from_value(value)?;
             if input.ticket.project_id != project || input.envelope.project_id != project {
@@ -737,11 +793,25 @@ impl DurableObject for InvitationProject {
             let Ok(raw) = hex::decode(&input.body_hex) else {
                 return rejected(inv::Error::Invalid);
             };
+            let trust = if input.delegation.is_some() {
+                public_runtime::mcp_trust(&self.env)?
+            } else {
+                None
+            };
+            let proof = match input.proof(trust.as_ref()) {
+                Ok(v) => v,
+                Err(e) => return task_error(e.into()),
+            };
+            if input.delegation.is_some()
+                && crate::mcp_delegation::task_permission(&input.envelope).is_err()
+            {
+                return rejected(inv::Error::Forbidden);
+            }
             if public_runtime::mode(&self.env) && input.envelope.path == "/v1/callback-key" {
                 return self.public_key(s, &input, &raw);
             }
             if input.envelope.method == "GET" {
-                return match s.signed_query(&input.envelope, &input.signature, &raw, now()) {
+                return match s.signed_query_with_proof(&input.envelope, proof, &raw, now()) {
                     Ok(v) => task_result(v),
                     Err(e) => task_error(e),
                 };
