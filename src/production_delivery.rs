@@ -133,11 +133,14 @@ impl ProjectIdentity {
             .settle_all(&s.ledger, now())
             .map_err(|_| Error::RustError("Funding settlement rejected".into()))?;
         self.save(&s)?;
-        for d in refs {
-            if self.env.queue("ALPHA_READY")?.send(d).await.is_err() {
-                self.state.storage().set_alarm(1000).await?;
-                return Err(Error::RustError("Queue publication uncertain".into()));
-            }
+        if crate::publication::publish_batch(refs, |d| async move {
+            self.env.queue("ALPHA_READY")?.send(d).await
+        })
+        .await
+        .is_err()
+        {
+            self.state.storage().set_alarm(1000).await?;
+            return Err(Error::RustError("Queue publication uncertain".into()));
         }
         self.delivery_rearm().await
     }

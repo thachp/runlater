@@ -413,7 +413,7 @@ impl Ledger {
         // Rotate only when bounded publication would omit eligible work. Small
         // cohorts retain stable replay order. A deleted cursor ID is harmless:
         // resume at the next greater ID, wrapping when none remains.
-        let start = if eligible.len() > 32 {
+        let start = if eligible.len() > crate::publication::BATCH_SIZE {
             self.publication_cursor.as_ref().map_or(0, |cursor| {
                 eligible.iter().position(|t| t.id > *cursor).unwrap_or(0)
             })
@@ -424,14 +424,14 @@ impl Ledger {
             .iter()
             .cycle()
             .skip(start)
-            .take(eligible.len().min(32))
+            .take(eligible.len().min(crate::publication::BATCH_SIZE))
             .map(|t| Dispatch {
                 tenant: tenant.into(),
                 id: t.id.clone(),
                 generation: t.generation,
             })
             .collect();
-        self.publication_cursor = if eligible.len() > 32 {
+        self.publication_cursor = if eligible.len() > crate::publication::BATCH_SIZE {
             messages.last().map(|d| d.id.clone())
         } else {
             None

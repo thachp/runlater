@@ -66,7 +66,8 @@ Generally a fixed eligible cohort of N > 32 is covered within ceil(N/32)
 completed outbox selections. This bound assumes repeated persisted selections;
 it is not a wall-clock bound, successful-send guarantee, FIFO claim policy, or
 cross-tenant/cross-shard Cloudflare scheduling guarantee. Continuous arrivals,
-selective send failure and actual consumer scheduling still require live proof.
+selective send failure under live provider conditions and actual consumer
+scheduling still require live proof.
 The cursor adds no second scheduling authority.
 
 A separate deterministic 1000-task noisy-tenant scenario allows a quiet tenant to
@@ -76,3 +77,36 @@ and retention purge permits fresh admission and claim. This is a local model
 proof using the persisted format, not live process failure or load evidence.
 Named queues, live failpoints/concurrency, global fairness and outage/load launch
 gates remain open; numeric limits remain configuration rather than plan promises.
+
+## Selective publication failures (#9)
+
+All three Queue pumps (local fixtures, registered alpha, and invitation/public
+beta) now attempt every reference in an already persisted selection, sequentially,
+even if one send returns an error. Previously a persistently failing head could
+hide the rest of a small stable-order cohort forever; rotating whole batches did
+not protect tails when the same failures recurred at fixed batch positions.
+
+The common sender returns the first error only after the remaining references
+have received one send attempt. The existing durable watchdog remains responsible
+for replay; ready rows are not removed, and publication does not spend dispatch
+tokens or callback-attempt permits. The selection stays bounded to 32 references,
+or fewer when an existing publication budget truncates it. There is no immediate
+retry, added parallelism, fresh budget, or new scheduling authority. During a
+complete Queue outage this intentionally makes up to 32 failed send calls per
+pump instead of stopping after one; configured finite publication budgets still
+count reserved references, including uncertain sends.
+
+`cargo test --locked --test publication_fairness` covers selective failures across
+snapshot restarts at cohort sizes 1, 2, 32, 33, 64, 97 and 1000, preserves every
+ready row for recovery, and checks first-error reporting and single attempts.
+`./scripts/test-publication-fairness.sh` runs a compiled local Worker with real
+emulated SQLite/Queue transport, a fresh disposable store, denied network egress,
+and three fixture tasks. Private pre-send exceptions repeatedly block the first
+reference while both tails complete; removing the fault lets the retained head
+complete without an extra callback attempt. The runner restores the normal
+artifact and checks that runtime fault hooks are absent.
+
+The local exception is **not** an actual provider Queue send failure or a live
+load benchmark. Permanent errors still cannot guarantee delivery of the failing
+reference. Named queues, continuous-arrival/global scheduling fairness, live
+consumer concurrency, and live outage/load launch gates remain open.
