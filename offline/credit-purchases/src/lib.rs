@@ -7,6 +7,8 @@ use runlater::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod entitlements;
+
 pub const SAFE: u64 = 9_007_199_254_740_991;
 pub const MAX_INTENTS: usize = funding::MAX_GRANTS;
 pub const MAX_EVENTS: usize = 256;
@@ -27,6 +29,12 @@ pub enum Error {
     ClockRegressed,
     Corrupt,
     Funding(funding::Error),
+    Task(runlater::core::Fault),
+}
+impl From<runlater::core::Fault> for Error {
+    fn from(e: runlater::core::Fault) -> Self {
+        Self::Task(e)
+    }
 }
 impl From<funding::Error> for Error {
     fn from(e: funding::Error) -> Self {
