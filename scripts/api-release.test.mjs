@@ -4,10 +4,10 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {spawnSync} from 'node:child_process';
 const workerTag='d'.repeat(32);
-import {canonical,digest,validate,uploadedVersion,release,deployExisting,verifyHealth,uploadArguments,runWrangler,checkSecretCollisions} from './api-release.mjs';
+import {canonical,digest,validate,uploadedVersion,release,deployExisting,verifyHealth,uploadArguments,runWrangler,checkSecretCollisions,settingsDigest} from './api-release.mjs';
 function fixture(){
  const c={name:'runlater-public-api',main:'build/worker/shim.mjs',version_metadata:{binding:'RELEASE_VERSION'},compatibility_date:'2026-10-27',compatibility_flags:['global_fetch_strictly_public'],workers_dev:false,preview_urls:false,limits:{cpu_ms:50},observability:{enabled:false},durable_objects:{bindings:[{name:'ADMISSION',class_name:'AdmissionRegistry'},{name:'PROJECTS',class_name:'InvitationProject'}]},queues:{producers:[{binding:'BETA_READY',queue:'runlater-public-ready'}]},ratelimits:[{name:'BETA_IP_RATE',namespace_id:'1001',simple:{limit:60,period:60}},{name:'BETA_REG_IP_RATE',namespace_id:'1002',simple:{limit:6,period:60}}],vars:{PUBLIC_BETA_ENABLED:'operator-approved',PUBLIC_BETA_PROFILE:JSON.stringify({release_id:'test',opens_at_ms:1000,closes_at_ms:2000,callback_end_sec:1000000}),BETA_REVOKED_PROJECTS:'[]',BETA_READY_QUEUE:'runlater-public-ready'}};
- return {c,a:{worker:c.name,worker_tag:workerTag,account_id:'a'.repeat(32),config_sha256:digest(c),settings_sha256:'b'.repeat(64)},e:{RUNLATER_RELEASE_ENABLED:'true',GITHUB_REPOSITORY:'thachp/runlater',RELEASE_SHA:'c'.repeat(40)}};
+ return {c,a:{worker:c.name,worker_tag:workerTag,settings_schema:'runtime-v1',account_id:'a'.repeat(32),config_sha256:digest(c),settings_sha256:'b'.repeat(64)},e:{RUNLATER_RELEASE_ENABLED:'true',GITHUB_REPOSITORY:'thachp/runlater',RELEASE_SHA:'c'.repeat(40)}};
 }
 test('canonical digest is key-order stable',()=>assert.equal(digest({b:2,a:1}),digest({a:1,b:2})));
 test('valid existing-resource production config accepted',()=>{const {c,a,e}=fixture();validate(c,a,e)});
@@ -168,4 +168,65 @@ test('master absent from fresh secret listing prevents any upload',async()=>{
  const {c,a}=fixture(),s={bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]};a.settings_sha256=digest(s);let uploads=0;
  await assert.rejects(deployExisting(a,async path=>path==='/settings'?s:path==='/secrets'?[]:{deployments:['old']},async()=>{uploads++;return JSON.stringify(record);},async()=>{},undefined,undefined,undefined,c));
  assert.equal(uploads,0);
+});
+test('version identity labels in latest-uploaded settings do not reject an approved code-only candidate',async()=>{
+ const {c,a}=fixture();const observed=JSON.parse(readFileSync('scripts/fixtures/release-version-settings.json'));
+ const before=structuredClone(observed.staged);delete before.annotations;
+ const after={...structuredClone(before),annotations:{'workers/message':'Reviewed main '+'e'.repeat(40),'workers/tag':'e'.repeat(12),'workers/triggered_by':'version_upload'}};
+ a.settings_sha256=digest(before);let uploaded=false,promoted=false;
+ const secrets=[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}];
+ const get=async path=>path==='/settings'?(uploaded?after:before):path==='/secrets'?secrets:{deployments:promoted?[{versions:[{version_id:record.version_id,percentage:100}]}]:[{versions:[{version_id:'old',percentage:100}]}]};
+ const id=await deployExisting(a,get,async()=>{uploaded=true;return JSON.stringify(record);},async()=>{promoted=true;},undefined,undefined,undefined,c);
+ assert.equal(id,record.version_id);assert.equal(promoted,true);
+});
+
+test('observed staged settings have a stable golden fingerprint without mutating the snapshot',()=>{
+ const f=JSON.parse(readFileSync('scripts/fixtures/release-version-settings.json')),original=structuredClone(f.staged);
+ assert.equal(settingsDigest(f.staged),f.expected_staged_runtime_sha256);
+ const relabelled=structuredClone(f.staged);relabelled.annotations={'workers/message':'Reviewed main '+'e'.repeat(40),'workers/tag':'e'.repeat(12),'workers/triggered_by':'version_upload'};
+ assert.notEqual(digest(f.staged),digest(relabelled));assert.equal(settingsDigest(f.staged),settingsDigest(relabelled));
+ assert.deepEqual(f.staged,original);
+ // The explicitly reviewed first binding transition still needs a new baseline.
+ assert.notEqual(settingsDigest(f.before),settingsDigest(f.staged));
+});
+for(const [name,mutate]of Object.entries({
+ namespace:s=>s.bindings.find(b=>b.name==='ADMISSION').namespace_id='9'.repeat(32),
+ queue:s=>s.bindings.find(b=>b.name==='BETA_READY').queue_name='foreign-queue',
+ rate:s=>s.bindings.find(b=>b.name==='BETA_IP_RATE').simple.limit=600,
+ profile:s=>s.bindings.find(b=>b.name==='PUBLIC_BETA_PROFILE').text='different-profile',
+ secret_type:s=>s.bindings.find(b=>b.name==='BETA_CALLBACK_MASTER').type='plain_text',
+ extra_binding:s=>s.bindings.push({name:'UNEXPECTED_BINDING',type:'secret_text'}),
+ cpu:s=>s.limits.cpu_ms=500,
+ flags:s=>s.compatibility_flags=[],
+ date:s=>s.compatibility_date='2026-10-28',
+ logpush:s=>s.logpush=true,
+ tails:s=>s.tail_consumers=[{service:'unexpected'}],
+ placement:s=>s.placement={mode:'smart'},
+ usage:s=>s.usage_model='other',
+ other_annotation:s=>s.annotations['workers/unknown-control']='unexpected',
+ unknown_setting:s=>s.new_setting={enabled:true}
+}))test(`stable fingerprint still blocks ${name} drift after upload`,async()=>{
+ const {c,a}=fixture(),before=JSON.parse(readFileSync('scripts/fixtures/release-version-settings.json')).staged,after=structuredClone(before);
+ mutate(after);a.settings_sha256=settingsDigest(before);
+ assert.notEqual(settingsDigest(after),a.settings_sha256);
+ const secrets=[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}];let uploaded=false,promotes=0;const receipts=[];
+ const get=async path=>path==='/settings'?(uploaded?after:before):path==='/secrets'?secrets:{deployments:['old']};
+ await assert.rejects(deployExisting(a,get,async()=>{uploaded=true;return JSON.stringify(record);},async()=>{promotes++;},undefined,id=>receipts.push(id),undefined,c));
+ assert.equal(promotes,0);assert.deepEqual(receipts,[record.version_id]);
+});
+test('an untyped legacy approval is rejected before any credential use',async()=>{
+ const {c,a,e}=fixture();const original=globalThis.fetch;let calls=0;
+ globalThis.fetch=async()=>{calls++;throw Error('unexpected network');};
+ try{
+  for(const schema of [undefined,'raw-v1','runtime-v2']){
+   const approval={...a,settings_schema:schema};assert.throws(()=>validate(c,approval,e));
+   await assert.rejects(release({...e,RUNLATER_RELEASE_CONFIG:JSON.stringify(c),RUNLATER_RELEASE_APPROVAL:JSON.stringify(approval),GH_TOKEN:'public-fixture',CLOUDFLARE_API_TOKEN:'public-fixture'}));
+  }
+  assert.equal(calls,0);
+ }finally{globalThis.fetch=original;}
+});
+test('non-map annotations fail closed; absent and empty label sets are equivalent',()=>{
+ for(const annotations of ['invalid',[],123])assert.throws(()=>settingsDigest({annotations}));
+ assert.equal(settingsDigest({bindings:[]}),settingsDigest({bindings:[],annotations:{}}));
+ assert.equal(settingsDigest({bindings:[]}),settingsDigest({bindings:[],annotations:{'workers/tag':'any-label'}}));
 });

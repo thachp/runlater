@@ -1,5 +1,5 @@
 // Bounded GET-only preflight. Never uploads, promotes, changes settings, or prints provider bodies.
-import {validate, digest} from './api-release.mjs';
+import {validate, settingsDigest} from './api-release.mjs';
 import {pathToFileURL} from 'node:url';
 
 export async function diagnose(e=process.env, fetchImpl=globalThis.fetch, clock=Date.now) {
@@ -42,7 +42,7 @@ export async function diagnose(e=process.env, fetchImpl=globalThis.fetch, clock=
   if(github)report.main_matches_source=github.object?.sha===e.GITHUB_SHA;
   const base=`https://api.cloudflare.com/client/v4/accounts/${approval.account_id}`;
   const settings=await read('worker_settings',`${base}/workers/scripts/runlater-public-api/settings`,e.CLOUDFLARE_API_TOKEN);
-  if(settings?.result){report.settings_match_baseline=digest(settings.result)===approval.settings_sha256;report.master_binding_present=!!settings.result.bindings?.some(b=>b.name==='BETA_CALLBACK_MASTER'&&b.type==='secret_text');}
+  if(settings?.result){report.settings_match_baseline=settingsDigest(settings.result)===approval.settings_sha256;report.master_binding_present=!!settings.result.bindings?.some(b=>b.name==='BETA_CALLBACK_MASTER'&&b.type==='secret_text');}
   const deployments=await read('worker_deployments',`${base}/workers/scripts/runlater-public-api/deployments`,e.CLOUDFLARE_API_TOKEN);
   if(deployments?.result)report.single_active_version=deployments.result.deployments?.[0]?.versions?.length===1&&deployments.result.deployments[0].versions[0].percentage===100;
   await read('queues_read',`${base}/queues?per_page=1`,e.CLOUDFLARE_API_TOKEN);
