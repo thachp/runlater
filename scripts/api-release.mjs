@@ -21,7 +21,7 @@ export function settingsDigest(settings) {
 export function validate(c,a,e) {
   guard(e.RUNLATER_RELEASE_ENABLED === 'true' && e.GITHUB_REPOSITORY === 'thachp/runlater' && /^[a-f0-9]{40}$/.test(e.RELEASE_SHA ?? ''));
   guard(a.worker === 'runlater-public-api' && /^[a-f0-9]{32}$/.test(a.account_id ?? '') && /^[a-f0-9]{32}$/.test(a.worker_tag ?? '') && a.settings_schema==='runtime-v1' && /^[a-f0-9]{64}$/.test(a.settings_sha256 ?? '') && digest(c) === a.config_sha256);
-  guard(Object.keys(c).every(k=>['name','main','compatibility_date','compatibility_flags','workers_dev','preview_urls','limits','observability','durable_objects','queues','ratelimits','vars','version_metadata'].includes(k)));
+  guard(Object.keys(c).every(k=>['name','main','compatibility_date','compatibility_flags','workers_dev','preview_urls','limits','observability','durable_objects','queues','ratelimits','vars','version_metadata','services'].includes(k)));
   guard(c.name === a.worker && c.main === 'build/worker/shim.mjs' && c.workers_dev === false && c.preview_urls === false && canonical(c.limits) === '{"cpu_ms":50}' && canonical(c.observability) === '{"enabled":false}');
   guard(canonical(c.compatibility_flags) === '["global_fetch_strictly_public"]' && /^\d{4}-\d{2}-\d{2}$/.test(c.compatibility_date ?? ''));
   guard(canonical(c.durable_objects) === canonical({bindings:[{name:'ADMISSION',class_name:'AdmissionRegistry'},{name:'PROJECTS',class_name:'InvitationProject'}]}));
@@ -35,7 +35,18 @@ export function validate(c,a,e) {
   // digest and observed provider baseline still require separately reviewed input.
   guard(optionalTrial === undefined || optionalTrial === 'disabled'
     || (optionalTrial === 'operator-approved' && optionalGateway !== undefined));
-  guard(Object.keys(c.vars).filter(k=>!['MCP_DELEGATION_GATEWAY_PUBLIC_KEY','MCP_ANONYMOUS_TRIAL_ENABLED'].includes(k)).sort().join(',') === 'BETA_READY_QUEUE,BETA_REVOKED_PROJECTS,PUBLIC_BETA_ENABLED,PUBLIC_BETA_PROFILE');
+  const optionalPairing = c.vars.MCP_RECEIVER_PAIRING_ENABLED;
+  guard(optionalPairing === undefined || optionalPairing === 'disabled'
+    || (optionalPairing === 'operator-approved' && optionalTrial === 'operator-approved'));
+  const optionalEgress = c.services;
+  guard(optionalEgress === undefined || canonical(optionalEgress) === canonical([{binding:'GENERAL_HTTPS_EGRESS',service:'runlater-general-egress',entrypoint:'EgressBinding'}]));
+  const egressRevision = c.vars.GENERAL_HTTPS_EGRESS_REVIEW_REVISION;
+  guard(egressRevision === undefined || (optionalEgress !== undefined && typeof egressRevision === 'string' && /^[a-f0-9]{64}$/.test(egressRevision) && egressRevision !== '0'.repeat(64)));
+  guard(optionalEgress === undefined || egressRevision !== undefined);
+  const optionalHttp = c.vars.GENERAL_HTTPS_ENABLED;
+  guard(optionalHttp === undefined || optionalHttp === 'disabled'
+    || (optionalHttp === 'operator-approved' && optionalTrial === 'operator-approved' && optionalEgress !== undefined && egressRevision !== undefined));
+  guard(Object.keys(c.vars).filter(k=>!['MCP_DELEGATION_GATEWAY_PUBLIC_KEY','MCP_ANONYMOUS_TRIAL_ENABLED','MCP_RECEIVER_PAIRING_ENABLED','GENERAL_HTTPS_ENABLED','GENERAL_HTTPS_EGRESS_REVIEW_REVISION'].includes(k)).sort().join(',') === 'BETA_READY_QUEUE,BETA_REVOKED_PROJECTS,PUBLIC_BETA_ENABLED,PUBLIC_BETA_PROFILE');
   const p = JSON.parse(c.vars.PUBLIC_BETA_PROFILE);
   guard(p.release_id && Number.isSafeInteger(p.opens_at_ms) && Number.isSafeInteger(p.closes_at_ms) && p.closes_at_ms>p.opens_at_ms && p.closes_at_ms-p.opens_at_ms<=604800000 && Number.isSafeInteger(p.callback_end_sec) && p.callback_end_sec>=Math.floor((p.closes_at_ms+691200000)/1000)+300);
   guard(Array.isArray(JSON.parse(c.vars.BETA_REVOKED_PROJECTS)));
@@ -67,6 +78,7 @@ export function checkSecretCollisions(config,settings,secrets) {
     ...(config.durable_objects?.bindings??[]).map(b=>b.name),
     ...(config.queues?.producers??[]).map(b=>b.binding),
     ...(config.ratelimits??[]).map(b=>b.name),
+    ...(config.services??[]).map(b=>b.binding),
     config.version_metadata?.binding
   ].filter(name=>name!==undefined));
   guard(localNames.size>0&&[...localNames].every(name=>typeof name==='string'&&name.length>0));

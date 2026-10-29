@@ -26,6 +26,7 @@ test('real OAuth PKCE, owner consent, audience, replay, concurrent exchange and 
     import {createRunLaterOAuth} from './mcp/oauth.mjs';
     export class TestHub extends DurableObject {
       constructor(ctx, env) {super(ctx,env); this.app=createRunLaterOAuth({env,storage:ctx.storage,
+        validateTrial:async()=>{throw new Error('no_trial_in_owner_fixture');},revokeTrial:async()=>{throw new Error('no_trial_in_owner_fixture');},
         validateDelegation:async c=>{if(c.project_id!==env.FIXTURE_PROJECT)throw new Error('not_enrolled');return {active:true,project_id:c.project_id,expires_at_ms:c.expires_at_ms,permissions:c.permissions};},
         protectedHandler:{fetch(request,env,ctx){return Response.json({project:ctx.principal.delegation.project_id,scope:ctx.principal.scopes});}}});}
       fetch(request){return this.app.fetch(request,this.env,this.ctx);}
@@ -37,7 +38,7 @@ test('real OAuth PKCE, owner consent, audience, replay, concurrent exchange and 
   const slowSeen = new Promise(resolve => {markSlow = resolve;});
   const mf = new Miniflare(convertV4MiniflareOptions({modules: true, script, compatibilityDate: '2026-10-28',
     compatibilityFlags: ['nodejs_compat', 'global_fetch_strictly_public'], durableObjects: {HUB: {className: 'TestHub', useSQLite: true}},
-    bindings: {MCP_OAUTH_ENABLED: 'operator-approved', MCP_GATEWAY_PUBLIC_KEY: gatewayKey, MCP_RELEASE_ID: releaseId, FIXTURE_PROJECT: receipt.project_id},
+    bindings: {MCP_OAUTH_ENABLED: 'operator-approved', MCP_ANONYMOUS_TRIAL_ENABLED: 'operator-approved', MCP_RECEIVER_PAIRING_ENABLED: 'operator-approved', MCP_GATEWAY_PUBLIC_KEY: gatewayKey, MCP_RELEASE_ID: releaseId, FIXTURE_PROJECT: receipt.project_id},
     outboundService: async request => {
       outbound++;
       if (/^https:\/\/slow[0-3]?\.example\.com\/metadata$/.test(request.url)) {
@@ -60,7 +61,13 @@ test('real OAuth PKCE, owner consent, audience, replay, concurrent exchange and 
   const query = new URLSearchParams({response_type: 'code', client_id: 'https://client.example.com/metadata',
     redirect_uri: 'https://client.example.com/callback', scope: 'enqueue read', state: 'fixed-owner-state',
     code_challenge: challenge, code_challenge_method: 'S256', resource: 'https://mcp.runlater.io'});
-  const page = await call('/authorize?' + query);
+  const setupQuery=new URLSearchParams(query);setupQuery.set('scope','enqueue read receiver_setup');
+  const setupPage=await call('/authorize?'+setupQuery);assert.equal(setupPage.status,200);
+  const setupCookie=setupPage.headers.get('set-cookie').split(';')[0],setupHtml=await setupPage.text();
+  const ownerLink=new URL(decodeHTML(setupHtml.match(/<a href="([^"]+)">Connect existing project/)[1]));
+  assert.equal(ownerLink.origin,'https://mcp.runlater.io');assert.equal(ownerLink.searchParams.get('scope'),'enqueue read');
+  for(const field of ['client_id','redirect_uri','response_type','state','code_challenge','code_challenge_method','resource'])assert.equal(ownerLink.searchParams.get(field),query.get(field));
+  const page = await call(ownerLink.pathname+ownerLink.search);
   assert.equal(page.status, 200, await page.clone().text());
   const html = await page.text();
   const publicChallenge = JSON.parse(decodeHTML(html.match(/<textarea readonly[^>]*>([\s\S]*?)<\/textarea>/)[1]));
@@ -73,6 +80,8 @@ test('real OAuth PKCE, owner consent, audience, replay, concurrent exchange and 
     Origin: 'https://mcp.runlater.io', Cookie: cookie}, body: form});
   assert.equal((await call('/authorize', {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded',
     Origin: 'https://mcp.runlater.io'}, body: form})).status, 400);
+  // A stale/back-tab cookie from the wider-scope page cannot approve the new owner context.
+  assert.equal((await call('/authorize',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded',Origin:'https://mcp.runlater.io',Cookie:setupCookie},body:form})).status,400);
   const consentResults = await Promise.all([approve(), approve()]);
   assert.deepEqual(consentResults.map(r => r.status).sort(), [302, 400]);
   const callback = new URL(consentResults.find(r => r.status === 302).headers.get('location'));

@@ -14,11 +14,13 @@ test('anonymous seven-day OAuth: no allocation, atomic issuance, strict refresh 
       constructor(ctx,env){super(ctx,env);this.fail=false;this.apiDown=false;this.validations=0;this.revokes=0;
         const storage={get:(...a)=>ctx.storage.get(...a),put:(...a)=>ctx.storage.put(...a),delete:(...a)=>ctx.storage.delete(...a),list:(...a)=>ctx.storage.list(...a),
           transaction:fn=>ctx.storage.transaction(async tx=>{const result=await fn(tx);if(this.fail){this.fail=false;throw new Error('fixture_commit_failure');}return result;})};
-        this.makeApp=()=>createRunLaterOAuth({env:{...env,MCP_ANONYMOUS_TRIAL_ENABLED:this.trialOff ? "disabled" : env.MCP_ANONYMOUS_TRIAL_ENABLED},storage,validateDelegation:async()=>{throw new Error();},
+        this.makeApp=()=>createRunLaterOAuth({env:{...env,MCP_ANONYMOUS_TRIAL_ENABLED:this.trialOff ? "disabled" : env.MCP_ANONYMOUS_TRIAL_ENABLED,MCP_RECEIVER_PAIRING_ENABLED:this.pairOff ? "disabled" : "operator-approved"},storage,validateDelegation:async()=>{throw new Error();},
           validateTrial:async t=>{this.validations++;return {state:'unprovisioned',expires_at_ms:t.descriptor.expires_at_ms};},
           revokeTrial:async()=>{if(this.apiDown)throw new Error('fixture_unavailable');if(this.falseRevoke)return {revoked:false};this.revokes++;return {revoked:true};},
-          protectedHandler:{fetch:async(req,env,c)=>{this.capability=c.principal.trial.capability;return Response.json({kind:c.principal.kind,project:c.principal.trial.descriptor.bootstrap_id,expires:c.principal.trial.descriptor.expires_at_ms});}}});this.app=this.makeApp();}
+          protectedHandler:{fetch:async(req,env,c)=>{this.capability=c.principal.trial.capability;return Response.json({kind:c.principal.kind,project:c.principal.trial.descriptor.bootstrap_id,expires:c.principal.trial.descriptor.expires_at_ms,scopes:c.principal.scopes});}}});this.app=this.makeApp();}
       async fetch(req){const path=new URL(req.url).pathname;
+        if(path==='/_fixture/pair-off'){this.pairOff=true;this.app=this.makeApp();return new Response('ok');}
+        if(path==='/_fixture/pair-on'){this.pairOff=false;this.app=this.makeApp();return new Response('ok');}
         if(path==='/_fixture/false-revoke'){this.falseRevoke=true;return new Response('ok');}
         if(path==='/_fixture/true-revoke'){this.falseRevoke=false;return new Response('ok');}
         if(path==='/_fixture/off'){this.trialOff=true;this.app=this.makeApp();return new Response('ok');}
@@ -45,8 +47,8 @@ test('anonymous seven-day OAuth: no allocation, atomic issuance, strict refresh 
   const call=(path,init={})=>mf.dispatchFetch(origin+path,{...init,redirect:'manual'});
   const post=(body)=>call('/oauth/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(body).toString()});
   const access=token=>call('/mcp',{headers:{Authorization:'Bearer '+token}});
-  async function consent(){const verifier='v'.repeat(64),challenge=createHash('sha256').update(verifier).digest('base64url');
-    const params=new URLSearchParams({response_type:'code',client_id:client,redirect_uri:'https://client.example.com/callback',scope:'cancel enqueue read',state:'fixture',resource:origin,code_challenge:challenge,code_challenge_method:'S256'});
+  async function consent(scope='cancel enqueue read'){const verifier='v'.repeat(64),challenge=createHash('sha256').update(verifier).digest('base64url');
+    const params=new URLSearchParams({response_type:'code',client_id:client,redirect_uri:'https://client.example.com/callback',scope,state:'fixture',resource:origin,code_challenge:challenge,code_challenge_method:'S256'});
     const page=await call('/authorize?'+params);assert.equal(page.status,200);const html=await page.text();assert.match(html,/Start free agent project/);
     const handle=html.match(/name="handle" value="([^"]+)"/)[1],cookie=page.headers.get('set-cookie').split(';')[0];
     const missing=await call('/authorize',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded',Origin:origin},body:new URLSearchParams({handle,decision:'trial'}).toString()});assert.equal(missing.status,400);
@@ -100,6 +102,24 @@ test('anonymous seven-day OAuth: no allocation, atomic issuance, strict refresh 
   assert.equal(falseResult.revokes,beforeFalse);assert.equal(falseResult.pending,true);assert.ok(falseResult.nextAttemptAtMs>Date.now()+25000);
   await call('/_fixture/true-revoke');await call('/_fixture/elapsed');await call('/_fixture/drain');
   assert.equal((await (await call('/_fixture/drain')).json()).pending,false);
+  // Newly consented setup scope is explicit; disabling pairing admission must not
+  // change installed task authority or permit scope upgrade on old credentials.
+  await call('/_fixture/on');
+  const pairingIssued=await post(await consent('cancel enqueue read receiver_setup'));
+  assert.equal(pairingIssued.status,200);const pairingTokens=await pairingIssued.json();
+  assert.equal(pairingTokens.scope,'cancel enqueue read receiver_setup');
+  const pairingIdentity=await (await access(pairingTokens.access_token)).json();assert.ok(pairingIdentity.scopes.includes('receiver_setup'));
+  await call('/_fixture/pair-off');
+  const metadata=await (await call('/.well-known/oauth-protected-resource')).json();assert.deepEqual(metadata.scopes_supported,['cancel','enqueue','read']);
+  assert.equal((await access(pairingTokens.access_token)).status,200);
+  const pairedRefresh=await refresh(pairingTokens.refresh_token);assert.equal(pairedRefresh.status,200);
+  const pairedNext=await pairedRefresh.json();assert.deepEqual(await (await access(pairedNext.access_token)).json(),pairingIdentity);
+  const blockedParams=new URLSearchParams({response_type:'code',client_id:client,redirect_uri:'https://client.example.com/callback',scope:'receiver_setup',state:'fixture',resource:origin,code_challenge:'a'.repeat(43),code_challenge_method:'S256'});
+  assert.equal((await call('/authorize?'+blockedParams)).status,400);
+  const taskOnly=await (await post(await consent())).json();
+  const noUpgrade=await post({grant_type:'refresh_token',client_id:client,refresh_token:taskOnly.refresh_token,resource:origin,scope:'receiver_setup'});
+  assert.notEqual(noUpgrade.status,200);assert.equal((await access(taskOnly.access_token)).status,200);
+  await call('/_fixture/pair-on');
   assert.equal(unexpected,0);
 });
 

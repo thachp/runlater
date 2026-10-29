@@ -46,6 +46,9 @@ pub enum Proof<'a> {
     },
 }
 pub fn task_permission(e: &Envelope) -> Result<Permission, Error> {
+    if e.method == "POST" && e.path == crate::general_http::CREATE {
+        return Ok(Permission::HttpSchedule);
+    }
     use crate::funded_tasks::{route, Route};
     match route(&e.method, &e.path) {
         Some(Route::Create) => Ok(Permission::Enqueue),

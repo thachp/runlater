@@ -15,6 +15,8 @@ use std::collections::BTreeMap;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct State {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pairing: Option<crate::receiver_pairing::State>,
     schema_version: u8,
     #[serde(default)]
     beta_admissions: u32,
@@ -29,6 +31,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             schema_version: 1,
+            pairing: None,
             beta_admissions: 0,
             destinations: None,
             versions: BTreeMap::new(),
@@ -81,6 +84,13 @@ pub struct DestinationCommand {
     pub url: Option<String>,
 }
 impl State {
+    pub(crate) fn reserve_beta_task(&mut self) -> Result<(), identity::Error> {
+        if self.beta_admissions >= 16 {
+            return Err(identity::Error::Limited);
+        }
+        self.beta_admissions += 1;
+        Ok(())
+    }
     pub(crate) fn validate(&self, project: Option<&str>) -> Result<(), Error> {
         if self.beta_admissions > 16
             || self.schema_version != 1
@@ -90,6 +100,12 @@ impl State {
             || self.material_hashes.len() > 16
         {
             return Err(Error::Unavailable);
+        }
+        if let Some(p) = &self.pairing {
+            p.check()?;
+            if Some(p.manifest.project_id.as_str()) != project {
+                return Err(Error::Unavailable);
+            }
         }
         if let Some(d) = &self.destinations {
             let p = project.ok_or(Error::Unavailable)?;
@@ -514,6 +530,15 @@ impl Enrollment {
         }
     }
     pub fn registered_outbox(&mut self, project: &str, now: i64) -> Result<Vec<Dispatch>, Error> {
+        self.registered_outbox_lanes(project, now, true, true)
+    }
+    pub(crate) fn registered_outbox_lanes(
+        &mut self,
+        project: &str,
+        now: i64,
+        callback_ready: bool,
+        general_ready: bool,
+    ) -> Result<Vec<Dispatch>, Error> {
         if self.identity_policy().is_err() {
             let ids: Vec<_> = self
                 .project
@@ -533,7 +558,304 @@ impl Enrollment {
         self.project.funded_maintenance(now)?;
         self.project.delivery.prune(&self.project.ledger);
         let mut refs = self.project.ledger.outbox(project, now);
+        refs.retain(|d| {
+            if self.http.target(&d.id).is_some() {
+                general_ready
+            } else {
+                callback_ready
+            }
+        });
         self.project.delivery.reserve_publications(&mut refs);
         Ok(refs)
+    }
+}
+
+impl Enrollment {
+    pub fn pairing_pin(
+        &mut self,
+        e: &Envelope,
+        proof: crate::mcp_delegation::Proof<'_>,
+        raw: &[u8],
+        nonce: &str,
+        now: i64,
+    ) -> Result<Value, Error> {
+        if e.path != crate::receiver_pairing::PIN
+            || e.method != "POST"
+            || !matches!(proof, crate::mcp_delegation::Proof::Trial { .. })
+        {
+            return Err(identity::Error::Forbidden.into());
+        }
+        let policy = self.identity_policy()?;
+        self.project.catalog.apply_policy(&policy, now)?;
+        e.authenticate_with_proof(&self.project.catalog, proof, raw, now)?;
+        let m: crate::receiver_pairing::Manifest =
+            serde_json::from_slice(raw).map_err(|_| identity::Error::Invalid)?;
+        m.authorize(
+            self.project
+                .catalog
+                .trial
+                .as_ref()
+                .ok_or(identity::Error::Forbidden)?,
+            now,
+        )?;
+        if e.idempotency_key != m.pairing_id {
+            return Err(identity::Error::Invalid.into());
+        }
+        if let Some(old) = &self.outbound.pairing {
+            if old.manifest != m {
+                return Err(identity::Error::Conflict.into());
+            }
+            return Ok(m.status(old.ready));
+        }
+        if !self.outbound.versions.is_empty() || !crate::anonymous_trial::hex32(nonce) {
+            return Err(identity::Error::Conflict.into());
+        }
+        self.outbound.pairing = Some(crate::receiver_pairing::State {
+            manifest: m.clone(),
+            probe_nonce: nonce.into(),
+            probe_attempts: 0,
+            endpoint_proved: false,
+            proof_response: None,
+            proof_id: None,
+            installation_sha256: None,
+            verify_attempts: 0,
+            ready: false,
+            request_nonces: Default::default(),
+        });
+        Ok(m.status(false))
+    }
+    pub fn pairing_probe_begin(&mut self, now: i64) -> Result<Option<(String, String)>, Error> {
+        self.identity_policy()?;
+        let p = self
+            .outbound
+            .pairing
+            .as_mut()
+            .ok_or(identity::Error::Forbidden)?;
+        if p.ready || p.endpoint_proved {
+            return Ok(None);
+        }
+        if now >= p.manifest.expires_at_ms || p.probe_attempts >= 3 {
+            return Err(identity::Error::Limited.into());
+        }
+        p.probe_attempts += 1;
+        Ok(Some((
+            p.manifest.url.clone(),
+            p.manifest.probe(&p.probe_nonce)?,
+        )))
+    }
+    pub fn pairing_probe_complete(
+        &mut self,
+        signature: &str,
+        nonce: &str,
+        policy: &EgressPolicy,
+        now: i64,
+    ) -> Result<(), Error> {
+        self.identity_policy()?;
+        let p = self
+            .outbound
+            .pairing
+            .as_ref()
+            .ok_or(identity::Error::Forbidden)?
+            .clone();
+        p.manifest.authorize(
+            self.project
+                .catalog
+                .trial
+                .as_ref()
+                .ok_or(identity::Error::Forbidden)?,
+            now,
+        )?;
+        if p.endpoint_proved {
+            return Ok(());
+        }
+        if !identity::verify_ed25519(
+            &p.manifest.receiver_public_key,
+            p.manifest.probe(&p.probe_nonce)?.as_bytes(),
+            signature,
+        ) {
+            return Err(identity::Error::Forbidden.into());
+        }
+        let mut next = self.clone();
+        let project = &p.manifest.project_id;
+        next.outbound.registry(project)?.create(
+            project,
+            crate::receiver_pairing::ENDPOINT,
+            1,
+            &p.manifest.url,
+            policy,
+            now,
+        )?;
+        let prepared = next.outbound.registry(project)?.prepare_bound(
+            project,
+            crate::receiver_pairing::ENDPOINT,
+            1,
+            nonce,
+            policy,
+            now,
+            Some(p.manifest.expires_at_ms),
+        )?;
+        next.outbound
+            .versions
+            .insert(crate::receiver_pairing::ENDPOINT.into(), 1);
+        let state = next
+            .outbound
+            .pairing
+            .as_mut()
+            .ok_or(identity::Error::Forbidden)?;
+        state.endpoint_proved = true;
+        state.proof_response = Some(prepared.response);
+        state.proof_id = Some(prepared.id);
+        *self = next;
+        Ok(())
+    }
+    pub fn pairing_pull(
+        &mut self,
+        r: &crate::receiver_pairing::Request,
+        keys: &Keyring,
+        material: &impl Material,
+        now: i64,
+    ) -> Result<Value, Error> {
+        self.identity_policy()?;
+        let p = self
+            .outbound
+            .pairing
+            .as_ref()
+            .ok_or(identity::Error::Forbidden)?
+            .clone();
+        r.verify(&p.manifest, now)?;
+        if r.path != crate::receiver_pairing::PULL || !p.endpoint_proved || p.ready {
+            return Err(identity::Error::Conflict.into());
+        }
+        let m = &p.manifest;
+        let mut map = BTreeMap::new();
+        map.insert(
+            "beta_v1".into(),
+            hex::encode(material.key("beta_v1").ok_or(identity::Error::Forbidden)?),
+        );
+        let payload = crate::receiver_pairing::Installation {
+            version: 1,
+            project_id: &m.project_id,
+            pairing_id: &m.pairing_id,
+            manifest_sha256: m.hash()?,
+            installation_id: m.hash()?,
+            expires_at_ms: m.expires_at_ms,
+            callback_url: &m.url,
+            callback_policy: keys,
+            callback_keys: map,
+            destination_proof: crate::receiver_pairing::ProofPayload {
+                id: p.proof_id.ok_or(identity::Error::Forbidden)?,
+                response: p.proof_response.ok_or(identity::Error::Forbidden)?,
+                expires_at_ms: m.expires_at_ms,
+            },
+            endpoint_id: crate::receiver_pairing::ENDPOINT,
+            endpoint_version: 1,
+        };
+        let payload = serde_json::to_value(payload).map_err(|_| identity::Error::Invalid)?;
+        let bytes = serde_json::to_vec(&payload).map_err(|_| identity::Error::Invalid)?;
+        let hash = digest(&bytes);
+        if p.installation_sha256
+            .as_ref()
+            .is_some_and(|old| old != &hash)
+        {
+            return Err(identity::Error::Conflict.into());
+        }
+        self.outbound
+            .pairing
+            .as_mut()
+            .ok_or(identity::Error::Forbidden)?
+            .consume(r)?;
+        self.outbound.sync_keys(&m.project_id, keys, material)?;
+        self.outbound
+            .pairing
+            .as_mut()
+            .ok_or(identity::Error::Forbidden)?
+            .installation_sha256 = Some(hash.clone());
+        // Build directly from typed payload to preserve canonical serialization order.
+        Ok(json!({"installation":payload,"installation_sha256":hash}))
+    }
+    pub fn pairing_ack_begin(
+        &mut self,
+        r: &crate::receiver_pairing::Request,
+        policy: &EgressPolicy,
+        now: i64,
+    ) -> Result<Option<destinations::Challenge>, Error> {
+        self.identity_policy()?;
+        let p = self
+            .outbound
+            .pairing
+            .as_ref()
+            .ok_or(identity::Error::Forbidden)?
+            .clone();
+        r.verify(&p.manifest, now)?;
+        let ack: crate::receiver_pairing::Ack =
+            serde_json::from_str(&r.body).map_err(|_| identity::Error::Invalid)?;
+        if r.path != crate::receiver_pairing::ACK
+            || p.installation_sha256.as_ref() != Some(&ack.installation_sha256)
+        {
+            return Err(identity::Error::Forbidden.into());
+        }
+        self.outbound
+            .pairing
+            .as_mut()
+            .ok_or(identity::Error::Forbidden)?
+            .consume(r)?;
+        if p.ready {
+            return Ok(None);
+        }
+        if p.verify_attempts >= 3 {
+            return Err(identity::Error::Limited.into());
+        }
+        let c = self.outbound.registry(&r.project_id)?.pairing_resume(
+            &r.project_id,
+            crate::receiver_pairing::ENDPOINT,
+            1,
+            policy,
+            now,
+        )?;
+        self.outbound
+            .pairing
+            .as_mut()
+            .ok_or(identity::Error::Forbidden)?
+            .verify_attempts += 1;
+        Ok(Some(c))
+    }
+    pub fn pairing_ack_complete(
+        &mut self,
+        r: &crate::receiver_pairing::Request,
+        c: &destinations::Challenge,
+        status: u16,
+        body: &[u8],
+        policy: &EgressPolicy,
+        now: i64,
+    ) -> Result<Value, Error> {
+        self.identity_policy()?;
+        let p = self
+            .outbound
+            .pairing
+            .as_ref()
+            .ok_or(identity::Error::Forbidden)?
+            .clone();
+        r.verify(&p.manifest, now)?;
+        if p.ready {
+            return Ok(p.manifest.status(true));
+        }
+        if status != 200 || p.proof_id.as_ref() != Some(&digest(body)) {
+            return Err(identity::Error::Forbidden.into());
+        }
+        self.outbound.registry(&r.project_id)?.complete(
+            &r.project_id,
+            c,
+            Ok((status, body)),
+            policy,
+            now,
+        )?;
+        let state = self
+            .outbound
+            .pairing
+            .as_mut()
+            .ok_or(identity::Error::Forbidden)?;
+        state.ready = true;
+        state.proof_response = None;
+        Ok(state.manifest.status(true))
     }
 }

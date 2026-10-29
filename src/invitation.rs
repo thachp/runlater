@@ -39,6 +39,8 @@ fn allowed(p: &BTreeSet<Permission>) -> bool {
                     | Permission::Cancel
                     | Permission::Redrive
                     | Permission::ManageDestinations
+                    | Permission::ReceiverSetup
+                    | Permission::HttpSchedule
             )
         })
 }
@@ -169,7 +171,11 @@ impl Registry {
                     || t.terms.permissions.iter().any(|v| {
                         !matches!(
                             v,
-                            Permission::Cancel | Permission::Read | Permission::Enqueue
+                            Permission::Cancel
+                                | Permission::Read
+                                | Permission::Enqueue
+                                | Permission::ReceiverSetup
+                                | Permission::HttpSchedule
                         )
                     })
             })
@@ -384,6 +390,8 @@ pub struct Receipt {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Enrollment {
+    #[serde(default, skip_serializing_if = "crate::general_http::State::is_empty")]
+    pub(crate) http: crate::general_http::State,
     pub version: u8,
     pub mode: Mode,
     pub project: Project,
@@ -605,7 +613,12 @@ impl Enrollment {
             return Err(identity::Error::Forbidden);
         }
         d.verify(e, secret, signature, trust, now)?;
-        Ok(d.status(true))
+        let mut result = d.status(true);
+        if self.outbound.pairing.as_ref().is_some_and(|p| p.ready) {
+            result["receiver_ready"] = true.into();
+            result["endpoint_id"] = crate::receiver_pairing::ENDPOINT.into();
+        }
+        Ok(result)
     }
     pub(crate) fn install_public(
         &mut self,
@@ -721,6 +734,7 @@ impl Enrollment {
     pub fn new(mode: Mode) -> Self {
         Self {
             version: 1,
+            http: Default::default(),
             mode,
             project: Project::default(),
             outbound: Default::default(),

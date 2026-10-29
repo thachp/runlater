@@ -1,0 +1,22 @@
+{
+  "envelope": {
+    "version": 1,
+    "adapter_revision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "release_id": "beta_fixture",
+    "project_id": "p_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "task_id": "task_bbbbbbbbbbbbbbbb",
+    "fence": 1,
+    "attempt_started_at_ms": 1700000000000,
+    "deadline_ms": 1700000029000,
+    "target_sha256": "829dd8c9b2d67ac2515a054ec8602830e026b71892c2cbb1a9f625c9a6516a54",
+    "request": {
+      "url": "https://example.com/hook?",
+      "body": "{\"event\":\"fixture\"}",
+      "contentType": "application/json",
+      "operationKey": "fixture_op"
+    }
+  },
+  "canonical": "[1,\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"beta_fixture\",\"p_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"task_bbbbbbbbbbbbbbbb\",1,1700000000000,1700000029000,\"829dd8c9b2d67ac2515a054ec8602830e026b71892c2cbb1a9f625c9a6516a54\",[\"https://example.com/hook?\",\"{\\\"event\\\":\\\"fixture\\\"}\",\"application/json\",\"fixture_op\"]]",
+  "envelope_sha256": "12570d50b8b3085a487fa458168f3e7124b89984e28fcc120e4e3079f164e8b0",
+  "receipt_key": "9ef2f8d3de9942cf5968bcb6372fdc239e15e63a89d89662d1851218a1492d50"
+}

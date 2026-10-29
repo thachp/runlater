@@ -14,13 +14,16 @@ const authPaths = new Set(['/authorize', '/oauth/token', '/.well-known/oauth-aut
 const publicErrors = new Set(['invalid_request', 'invalid_client', 'invalid_grant', 'invalid_scope', 'invalid_target',
   'unauthorized_client', 'unsupported_grant_type', 'unsupported_response_type', 'access_denied', 'temporarily_unavailable']);
 export const resourceMetadata = Object.freeze({resource: MCP_RESOURCE, authorization_servers: [MCP_RESOURCE], scopes_supported: [...MCP_SCOPES]});
-export function oauthChallenge() {
+export function oauthChallenge(scopes = MCP_SCOPES) {
   return Response.json({error: 'invalid_token'}, {status: 401, headers: {...privateHeaders,
-    'WWW-Authenticate': `Bearer resource_metadata="${MCP_RESOURCE}/.well-known/oauth-protected-resource", scope="cancel enqueue read"`}});
+    'WWW-Authenticate': `Bearer resource_metadata="${MCP_RESOURCE}/.well-known/oauth-protected-resource", scope="${scopes.join(' ')}"`}});
 }
 export function createRunLaterOAuth({env, storage, protectedHandler, validateDelegation, validateTrial, revokeTrial}) {
   const trialEnabled = env.MCP_ANONYMOUS_TRIAL_ENABLED === 'operator-approved' && typeof validateTrial === 'function' && typeof revokeTrial === 'function';
-  const config = {trialEnabled, releaseId: env.MCP_RELEASE_ID, gatewayPublicKey: env.MCP_GATEWAY_PUBLIC_KEY};
+  const receiverPairingEnabled = trialEnabled && env.MCP_RECEIVER_PAIRING_ENABLED === 'operator-approved';
+  const generalHttpEnabled = trialEnabled && env.GENERAL_HTTPS_ENABLED === 'operator-approved';
+  const scopes = [...MCP_SCOPES, ...(receiverPairingEnabled ? ['receiver_setup'] : []), ...(generalHttpEnabled ? ['http_schedule'] : [])].sort();
+  const config = {trialEnabled, receiverPairingEnabled, generalHttpEnabled, releaseId: env.MCP_RELEASE_ID, gatewayPublicKey: env.MCP_GATEWAY_PUBLIC_KEY};
   const enabled = env.MCP_OAUTH_ENABLED === 'operator-approved' && /^[a-f0-9]{64}$/.test(config.gatewayPublicKey || '')
     && /^[A-Za-z0-9_-]{1,32}$/.test(config.releaseId || '') && typeof validateDelegation === 'function';
   const kv = createOAuthStorage(storage,{trialEnabled}), oauthEnv = {...env, OAUTH_KV: kv};
@@ -30,7 +33,7 @@ export function createRunLaterOAuth({env, storage, protectedHandler, validateDel
   const consentLane = handle => 'consent:' + createHash('sha256').update(String(handle)).digest('hex');
   const trialStates=new Map();
   const provider = new OAuthAuthorizationServer({issuer: MCP_RESOURCE, resources: [MCP_RESOURCE],
-    scopesSupported: [...MCP_SCOPES], accessTokenTTL: 3600, refreshTokenTTL: 0,
+    scopesSupported: [...scopes], accessTokenTTL: 3600, refreshTokenTTL: 0,
     clientIdMetadataDocumentEnabled: true, allowTokenExchangeGrant: false,
     onError: ({code, status}) => Response.json({error: publicErrors.has(code) ? code : 'invalid_request'}, {
       status: [400, 401, 403, 429, 500, 503].includes(status) ? status : 400,
@@ -155,13 +158,13 @@ export function createRunLaterOAuth({env, storage, protectedHandler, validateDel
     if (url.origin !== MCP_RESOURCE || !enabled) return oauthFailure(503);
     if (request.url.length > 8192) return oauthFailure();
     if (url.pathname === '/.well-known/oauth-protected-resource' && request.method === 'GET' && !url.search) {
-      return Response.json(resourceMetadata, {headers: privateHeaders});
+      return Response.json({...resourceMetadata, scopes_supported: [...scopes]}, {headers: privateHeaders});
     }
     if (protectedPaths.has(url.pathname)) {
       // The pinned provider's validateToken only reads/decrypts a local token record;
       // it performs no CIMD fetch or issuance. Revocation is visible after token deletion.
       let auth; try {auth = await scheduling.validate(() => authenticate(request));} catch {return oauthFailure(503);}
-      if (!auth) return oauthChallenge();
+      if (!auth) return oauthChallenge(scopes);
       // Streaming protocol requests do not hold the OAuth serialization lock.
       return protectedHandler.fetch(request, env, Object.assign(Object.create(ctx || null), auth));
     }

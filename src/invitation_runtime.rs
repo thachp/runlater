@@ -1,5 +1,7 @@
 #[path = "invitation_transport.rs"]
 pub(crate) mod delivery_transport;
+#[path = "general_http_runtime.rs"]
+pub(crate) mod general_runtime;
 #[path = "public_beta_runtime.rs"]
 pub(crate) mod public_runtime;
 // Explicit invitation mode; defaults closed.
@@ -60,6 +62,9 @@ impl Checked for Enrollment {
         if self.version != 1 {
             return Err(Error::RustError("Unknown enrollment schema".into()));
         }
+        self.http
+            .validate(&self.project)
+            .map_err(|_| Error::RustError("Invalid general HTTP state".into()))?;
         self.outbound
             .validate(self.project_id())
             .map_err(|_| Error::RustError("Invalid invitation outbound state".into()))
@@ -762,6 +767,12 @@ impl DurableObject for InvitationProject {
         if public_runtime::mode(&self.env) && req.path() == "/public/enroll" {
             return self.public_install(value, &project);
         }
+        if public_runtime::mode(&self.env) && req.path() == "/public/receiver-pin" {
+            return self.receiver_pin(value).await;
+        }
+        if public_runtime::mode(&self.env) && req.path() == "/public/receiver-call" {
+            return self.receiver_call(value).await;
+        }
         if public_runtime::mode(&self.env) && req.path() == "/public/trial-install" {
             return self.trial_install(value, &project);
         }
@@ -867,6 +878,9 @@ impl DurableObject for InvitationProject {
             }
             if public_runtime::mode(&self.env) && input.envelope.path == "/v1/callback-key" {
                 return self.public_key(s, &input, &raw);
+            }
+            if input.envelope.path == crate::general_http::CREATE {
+                return self.schedule_general(input, raw).await;
             }
             if input.envelope.method == "GET" {
                 return match s.signed_query_with_proof(&input.envelope, proof, &raw, now()) {

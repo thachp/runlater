@@ -28,6 +28,7 @@ jobs:
       - run: npm run test:web-local
       - run: npm run test:examples
       - run: npm run test:callback-wire
+      - run: npm run test:trial-receiver
       - run: cargo install worker-build --version 0.8.7 --locked
       - run: npm run test:contract
       - run: npm run test:runtime-recovery
@@ -42,4 +43,7 @@ jobs:
       - run: npm run test:public-beta
       - run: npm run test:mcp-delegation
       - run: npm run test:anonymous-trial
+      - run: npm run test:receiver-pairing
+      - run: npm run test:general-http
+      - run: npm run test:egress
       - run: npm run test:invitation-production

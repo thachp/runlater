@@ -25,6 +25,7 @@ export function buildDiscovery(output=path.join(repo,'build/discovery')){
  copy('docs/MCP.md','docs/agent/mcp.md');
  copy('docs/MCP-HOSTING.md','docs/agent/MCP-HOSTING.md');
  copy('docs/MCP-ANONYMOUS-TRIAL.md','docs/agent/MCP-ANONYMOUS-TRIAL.md');
+ for(const name of ['RECEIVER-PAIRING-WIRE.md','GENERAL-HTTPS-DESTINATIONS.md', 'GENERAL-HTTPS-ROLLOUT.md'])copy('docs/'+name,'docs/agent/'+name);
  const hostedMcpGuide=path.join(output,'docs/agent/MCP-HOSTING.md');fs.writeFileSync(hostedMcpGuide,fs.readFileSync(hostedMcpGuide,'utf8').replace('(MCP.md)','(https://docs.runlater.io/agent/mcp.md)'));
  copy('docs/AGENT-QUICKSTART.md','docs/agent/quickstart.md');copy('docs/openapi.json','docs/openapi.json');
  const receiverReadme=path.join(output,'docs/agent/public-beta-receiver/README.md');fs.writeFileSync(receiverReadme,fs.readFileSync(receiverReadme,'utf8').replace('../../docs/PUBLIC-BETA-QUICKSTART-v1.md','https://docs.runlater.io/agent/quickstart.md'));

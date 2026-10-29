@@ -6,8 +6,10 @@ import {WebStandardStreamableHTTPServerTransport} from '@modelcontextprotocol/sd
 import {CallToolRequestSchema, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema,
   JSONRPCMessageSchema, McpError, ErrorCode} from '@modelcontextprotocol/sdk/types.js';
 import {TOOLS, toolHandler} from './tools.mjs';
-import {TRIAL_TOOLS, trialToolHandler} from './trial-tools.mjs';
+import {TRIAL_TOOLS, RECEIVER_PAIRING_TOOL, trialToolHandler} from './trial-tools.mjs';
 import {canonicalTrialDescriptor, trialProjectId} from './trial-client.mjs';
+import {MCP_SCOPES, TRIAL_SCOPES} from './oauth-consent.mjs';
+import {HTTP_SCHEDULE_TOOL, httpToolHandler} from './http-tools.mjs';
 
 export const MCP_ORIGIN = 'https://mcp.runlater.io';
 export const HOSTED_SERVICE = Object.freeze({service: 'RunLater', intended_endpoint: MCP_ORIGIN + '/sse',
@@ -26,7 +28,7 @@ const principalProject = p => trialPrincipal(p) ? trialProjectId(p.trial.descrip
 const principalId = p => trialPrincipal(p) ? p.trial.descriptor.bootstrap_id : p.delegation.delegation_id;
 function validPrincipal(p) {
   if (!p || !/^[a-f0-9]{64}$/.test(p.tokenHash) || !Array.isArray(p.scopes) || !p.scopes.length
-    || p.scopes.some(scope => !['cancel', 'enqueue', 'read'].includes(scope)) || !Number.isSafeInteger(p.expiresAt)) return false;
+    || p.scopes.some(scope => !(trialPrincipal(p) ? TRIAL_SCOPES : MCP_SCOPES).includes(scope)) || !Number.isSafeInteger(p.expiresAt)) return false;
   if (!trialPrincipal(p)) return p.kind === undefined && /^p_[a-f0-9]{60}$/.test(p.delegation?.project_id)
     && typeof p.delegation.delegation_id === 'string';
   try {const d = canonicalTrialDescriptor(p.trial?.descriptor);
@@ -38,8 +40,8 @@ const principalBinding = p => createHash('sha256').update(JSON.stringify([trialP
 const serviceFor = p => trialPrincipal(p) ? {...HOSTED_SERVICE,
   authentication: 'Standard OAuth anonymous trial; no mandatory human account or owner-key UI. Trial authority is token-bound encrypted gateway storage, not owner-local asymmetric custody.',
   authorization: 'Explicit provision_trial allocates once; connect, discovery and status do not. The API independently checks dedicated capability, gateway signature, fixed expiry, revocation and shared finite budgets.',
-  onboarding: 'Connected; receiver setup required. No receiver runtime installation or recovery mechanism is configured by this source milestone.',
-  omissions: [...HOSTED_SERVICE.omissions.filter(value => value !== 'registration'), 'receiver_secret_transfer', 'automatic_recovery']} : HOSTED_SERVICE;
+  onboarding: p.scopes.includes('http_schedule') ? 'Connected trial with explicit general HTTP authority. No special receiver is required; an independently reviewed authenticated secure transport must be available before task admission. Source presence or provisioning is not activation.' : 'Connected; receiver setup required until trial_status confirms readiness. Pairing requires separate explicit scope, operator activation, and a privately configured receiver runtime. No automatic infrastructure or recovery is provided; HTTP delivery does not imply an agent conversation wakes.',
+  omissions: [...HOSTED_SERVICE.omissions.filter(value => value !== 'registration'), 'automatic_receiver_deployment', 'automatic_recovery', 'generic_agent_wakeup']} : HOSTED_SERVICE;
 const safeMessage = message => message.error ? {...message, error: {code: message.error.code, message: 'Invalid or unsupported MCP request'}} : message;
 
 async function readMessage(request) {
@@ -103,23 +105,25 @@ class LegacySseTransport {
 }
 
 function scopeChallenge(message, principal) {
-  const required = message.method === 'tools/call' && {schedule_task: 'enqueue', task_status: 'read', cancel_task: 'cancel'}[message.params?.name];
+  const required = message.method === 'tools/call' && {schedule_task: 'enqueue', schedule_http_request: 'http_schedule', task_status: 'read', cancel_task: 'cancel', pair_receiver: 'receiver_setup'}[message.params?.name];
   if (!required || principal.scopes.includes(required)) return null;
   return Response.json({error: 'insufficient_scope'}, {status: 403, headers: {'Cache-Control': 'no-store',
     'WWW-Authenticate': `Bearer error="insufficient_scope", resource_metadata="${MCP_ORIGIN}/.well-known/oauth-protected-resource", scope="${required}"`}});
 }
 
-export function createHostedProtocol({makeClient, setup, status, clock = Date.now, maxSessions = 32, sessionMs = 900000} = {}) {
+export function createHostedProtocol({makeClient, setup, status, receiverPairingEnabled = false, generalHttpEnabled = false, clock = Date.now, maxSessions = 32, sessionMs = 900000} = {}) {
   if (typeof makeClient !== 'function' || typeof setup !== 'string') throw new Error('Invalid hosted protocol configuration');
   const sessions = new Map(); let active = 0, activeTrials = 0;
   function makeServer(principal) {
     const client = makeClient(principal), taskHandler = toolHandler({client, allowedScopes: principal.scopes, status});
-    const call = trialPrincipal(principal) ? trialToolHandler({client, revokeTrial: principal.revokeTrial,
-      markTrialProvisioned: principal.markTrialProvisioned, taskHandler}) : taskHandler;
+    const lifecycle = trialPrincipal(principal) ? trialToolHandler({client, revokeTrial: principal.revokeTrial,
+      markTrialProvisioned: principal.markTrialProvisioned, taskHandler, receiverPairingEnabled, allowedScopes: principal.scopes}) : taskHandler;
+    const call = trialPrincipal(principal) ? httpToolHandler({client, allowedScopes: principal.scopes, enabled: generalHttpEnabled, next: lifecycle}) : lifecycle;
     const server = new Server({name: 'runlater', version: '0.2.0'}, {capabilities: {tools: {}, resources: {}}, instructions: HOSTED_SERVICE.guarantees,
       jsonSchemaValidator: {getValidator() {throw new Error('Dynamic schemas are not supported');}}});
     server.onerror = () => {};
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({tools: trialPrincipal(principal) ? [...TOOLS, ...TRIAL_TOOLS] : TOOLS}));
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({tools: trialPrincipal(principal)
+      ? [...TOOLS, ...TRIAL_TOOLS, ...(receiverPairingEnabled ? [RECEIVER_PAIRING_TOOL] : []), ...(generalHttpEnabled ? [HTTP_SCHEDULE_TOOL] : [])] : TOOLS}));
     server.setRequestHandler(ListResourcesRequestSchema, async () => ({resources}));
     server.setRequestHandler(ReadResourceRequestSchema, async ({params}) => {
       const resource = resources.find(r => r.uri === params.uri);

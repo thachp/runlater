@@ -256,3 +256,29 @@ test('anonymous trial activation requires exact reviewed profile and existing ga
  c.vars.MCP_ANONYMOUS_TRIAL_ENABLED='disabled'; delete c.vars.MCP_DELEGATION_GATEWAY_PUBLIC_KEY;
  a.config_sha256=digest(c); assert.doesNotThrow(()=>validate(c,a,e));
 });
+
+test('receiver pairing remains optional, separately approved and trial-dependent',()=>{
+ const {c,a,e}=fixture(); c.vars.MCP_RECEIVER_PAIRING_ENABLED='operator-approved';a.config_sha256=digest(c);assert.throws(()=>validate(c,a,e));
+ c.vars.MCP_ANONYMOUS_TRIAL_ENABLED='operator-approved';c.vars.MCP_DELEGATION_GATEWAY_PUBLIC_KEY='a'.repeat(64);a.config_sha256=digest(c);validate(c,a,e);
+ for(const invalid of ['true',true,'enabled','']){c.vars.MCP_RECEIVER_PAIRING_ENABLED=invalid;a.config_sha256=digest(c);assert.throws(()=>validate(c,a,e));}
+ c.vars.MCP_RECEIVER_PAIRING_ENABLED='disabled';delete c.vars.MCP_ANONYMOUS_TRIAL_ENABLED;delete c.vars.MCP_DELEGATION_GATEWAY_PUBLIC_KEY;a.config_sha256=digest(c);validate(c,a,e);
+ c.vars.MCP_RECEIVER_PAIRING_ENABLED='operator-approved';assert.throws(()=>validate(c,a,e));
+});
+test('general HTTPS requires exact private binding/revision, separate trial authority and refreshed approval',()=>{
+ const {c,a,e}=fixture();c.vars.GENERAL_HTTPS_ENABLED='operator-approved';a.config_sha256=digest(c);assert.throws(()=>validate(c,a,e));
+ c.vars.MCP_ANONYMOUS_TRIAL_ENABLED='operator-approved';c.vars.MCP_DELEGATION_GATEWAY_PUBLIC_KEY='a'.repeat(64);a.config_sha256=digest(c);assert.throws(()=>validate(c,a,e));
+ c.services=[{binding:'GENERAL_HTTPS_EGRESS',service:'runlater-general-egress',entrypoint:'EgressBinding'}];c.vars.GENERAL_HTTPS_EGRESS_REVIEW_REVISION='b'.repeat(64);a.config_sha256=digest(c);validate(c,a,e);
+ for(const invalid of ['true',true,'enabled','']){c.vars.GENERAL_HTTPS_ENABLED=invalid;a.config_sha256=digest(c);assert.throws(()=>validate(c,a,e));}
+ c.vars.GENERAL_HTTPS_ENABLED='disabled';delete c.vars.MCP_ANONYMOUS_TRIAL_ENABLED;delete c.vars.MCP_DELEGATION_GATEWAY_PUBLIC_KEY;a.config_sha256=digest(c);validate(c,a,e);
+ const valid=structuredClone(c);
+ for(const services of [[],[...c.services,...c.services],[{...c.services[0],service:'other'}],[{...c.services[0],entrypoint:'default'}],[{...c.services[0],environment:'other'}],[{...c.services[0],binding:'OTHER'}]]){c.services=services;a.config_sha256=digest(c);assert.throws(()=>validate(c,a,e));}
+ Object.assign(c,structuredClone(valid));
+ for(const revision of ['0'.repeat(64),'A'.repeat(64),'short',true,undefined]){if(revision===undefined)delete c.vars.GENERAL_HTTPS_EGRESS_REVIEW_REVISION;else c.vars.GENERAL_HTTPS_EGRESS_REVIEW_REVISION=revision;a.config_sha256=digest(c);assert.throws(()=>validate(c,a,e));}
+ Object.assign(c,structuredClone(valid));delete c.services;a.config_sha256=digest(c);assert.throws(()=>validate(c,a,e));
+ delete c.vars.GENERAL_HTTPS_EGRESS_REVIEW_REVISION;a.config_sha256=digest(c);validate(c,a,e);
+ c.vars.GENERAL_HTTPS_ENABLED='operator-approved';assert.throws(()=>validate(c,a,e));
+});
+test('private egress binding cannot collide with a provider secret',()=>{
+ const c=fixture().c;c.services=[{binding:'GENERAL_HTTPS_EGRESS',service:'runlater-general-egress',entrypoint:'EgressBinding'}];
+ assert.throws(()=>checkSecretCollisions(c,{bindings:[{name:'GENERAL_HTTPS_EGRESS',type:'secret_text'}]},[{name:'GENERAL_HTTPS_EGRESS',type:'secret_text'}]));
+});

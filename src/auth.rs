@@ -16,6 +16,8 @@ pub enum Permission {
     Configure,
     ManageKeys,
     ManageDestinations,
+    ReceiverSetup,
+    HttpSchedule,
 }
 impl Permission {
     /// The six legacy local-key permissions. Invitation-only scopes require explicit enrollment terms.

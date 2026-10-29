@@ -19,8 +19,12 @@ projects and their locally signed approval path are unchanged.
    allocates that connection's one immutable trial. Repeating it after an uncertain
    result uses the same bootstrap identity; it cannot refill or extend the project.
 5. The result says **connected; receiver setup required**, not “ready to schedule.”
-   This milestone intentionally refuses trial scheduling. Receiver installation and
-   secure callback-secret transfer are not yet implemented.
+   The separate default-off [receiver pairing path](RECEIVER-PAIRING-WIRE.md) can bind
+   one privately configured beta runtime, but only with explicitly consented
+   `receiver_setup` authority. `pair_receiver({confirm:true,manifest:...})` never
+   deploys infrastructure or returns secret material. The receiver privately pulls
+   its installation and completes ownership verification; only then does status
+   report readiness. Task permissions and finite budgets still apply.
 
 The seven-day deadline starts at OAuth consent, not at a later provisioning call.
 No payment, account creation, external identity service or automatic replacement
@@ -113,12 +117,24 @@ slot exhaustion or impose a hard Cloudflare spending cap.
 
 ## Receiver and recovery gates
 
-A new project has no verified destination. Existing callback delivery requires secret
-installation in a receiver runtime, not disclosure to a model. This change does not
-quietly create a Workers.dev receiver, install credentials, select a provider or add
-Cloudflare permissions. An authorized runtime-to-runtime setup mechanism, explicit
-ownership verification, tests and approval are required before trial scheduling can
-be enabled. Showing “connected” alone must not be marketed as a functioning scheduler.
+A new project has no verified destination. The optional managed-beta receiver path
+privately pulls callback material from the fixed API origin after capability-scoped
+binding and receiver-key proof. It needs a separately authorized, privately
+configured runtime; it never creates infrastructure or adds provider permissions.
+The five-minute immutable setup window can expire, with no automatic replacement
+or quota refund. `MCP_RECEIVER_PAIRING_ENABLED` is a separate default-off admission
+gate on API and gateway; old credentials do not acquire `receiver_setup` via refresh.
+Disabling new pairing does not undo installed receivers or already accepted callbacks.
+Showing “connected” alone must not be marketed as a functioning scheduler.
+
+The product target is delivery to any customer-provided HTTPS endpoint, not a
+bot-specific or Workers.dev-only architecture. Third-party endpoints need not support
+RunLater's HMAC/proof protocol in the staged general profile. Its separate
+`http_schedule` scope and `schedule_http_request` tool support fixed POST/JSON
+without endpoint auth or custom headers; an unavailable secure adapter causes
+explicit task non-admission; a mid-request readiness loss can still consume one
+counted registry operation. See [general HTTPS safety
+and authorization gates](GENERAL-HTTPS-DESTINATIONS.md); live egress policy is unchanged.
 
 Optional human recovery/management is a future extension. **None is configured here.**
 Losing all client credentials can permanently lose access. A client name, browser
@@ -135,14 +151,18 @@ owner's explicit approval. Payment or broader access needs separate authorizatio
 - Run actual pinned OAuth library tests for authenticated oldest-refresh replay,
   wrong-client/fake-token non-revocation, concurrent refresh, transaction rollback,
   persistence, queue backoff and plaintext-capability absence.
-- Exercise both official SDK transports against the bundled gateway and compiled
-  Rust API locally. Secret redaction and missing-receiver refusal are required.
+- Exercise both official SDK transports against the bundled gateway, compiled
+  Rust API and ordinary HTTPS fixture locally for the general path. No proprietary
+  receiver proof/HMAC may be required. Test secret redaction, dedicated scope,
+  connected-IP/TLS policy, absolute deadlines and uncertain attempt recovery.
+  The optional managed-beta path has separate reference-receiver composition tests.
 - Measure worst-case storage/refresh/cleanup CPU with full bounded partitions
   against the existing 50 ms Worker ceiling before activation. Functional workerd
   wall-clock timings are not production CPU evidence. Do not raise limits silently.
 - Obtain independent exact-source security QA and CI, then separately approve new
   credential generation/custody, API trust expansion, durable data compatibility,
-  budgets, receiver setup, rollout/rollback and a finite genuine-client live proof.
+  budgets, the private egress host/binding, rollout/rollback and a finite genuine-client
+  live proof. Optional receiver setup is not a general-HTTPS prerequisite.
 - `MCP_ANONYMOUS_TRIAL_ENABLED` must remain absent or `disabled` in both the API and
   MCP Worker until that approval. The example MCP configuration defaults to disabled.
   Enabling one side alone must fail closed. No existing credentials are broadened

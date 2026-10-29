@@ -45,11 +45,13 @@ impl Descriptor {
             || self.issued_at_ms.checked_add(crate::public_beta::DURATION)
                 != Some(self.expires_at_ms)
             || self.permissions.is_empty()
-            || self.permissions.len() > 3
-            || self
-                .permissions
-                .iter()
-                .any(|p| !matches!(p.as_str(), "cancel" | "enqueue" | "read"))
+            || self.permissions.len() > 5
+            || self.permissions.iter().any(|p| {
+                !matches!(
+                    p.as_str(),
+                    "cancel" | "enqueue" | "http_schedule" | "read" | "receiver_setup"
+                )
+            })
             || self.permissions.windows(2).any(|p| p[0] >= p[1])
         {
             return Err(Error::Invalid);
@@ -63,12 +65,20 @@ impl Descriptor {
                 ("cancel", crate::auth::Permission::Cancel)
                     | ("enqueue", crate::auth::Permission::Enqueue)
                     | ("read", crate::auth::Permission::Read)
+                    | ("receiver_setup", crate::auth::Permission::ReceiverSetup)
+                    | ("http_schedule", crate::auth::Permission::HttpSchedule)
             )
         })
     }
     pub fn terms(&self) -> crate::invitation::Terms {
         let mut t = crate::public_beta::Profile::terms();
         t.permissions.retain(|p| self.allows(*p));
+        if self.allows(crate::auth::Permission::ReceiverSetup) {
+            t.permissions.insert(crate::auth::Permission::ReceiverSetup);
+        }
+        if self.allows(crate::auth::Permission::HttpSchedule) {
+            t.permissions.insert(crate::auth::Permission::HttpSchedule);
+        }
         t
     }
     pub fn status(&self, active: bool) -> serde_json::Value {
