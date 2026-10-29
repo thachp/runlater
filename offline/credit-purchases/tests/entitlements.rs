@@ -612,3 +612,30 @@ fn purchased_cancel_returns_once_until_reversal_without_affecting_trial_slots() 
     );
     assert!(!create(&mut s, "third", 28).task_accepted);
 }
+
+#[test]
+fn snapshot_cannot_move_spent_units_back_to_available_or_forge_settlement() {
+    let mut s = state(false);
+    let i = intent(&mut s, "buy");
+    reconcile(&mut s, &i, false, 20);
+    let t = create(&mut s, "task", 21).task.unwrap();
+    let d = dispatch(&s, &t.id);
+    let running = s.claim(s.revision(), &d, 22).unwrap().unwrap();
+    let mut v: serde_json::Value = serde_json::from_slice(&s.snapshot().unwrap()).unwrap();
+    // Total conservation alone still holds, but this contradicts the task fence.
+    v["funding"]["grants"][&i.id]["spent"] = 0.into();
+    v["funding"]["grants"][&i.id]["available"] = 1.into();
+    assert!(Entitlements::restore(&serde_json::to_vec(&v).unwrap()).is_err());
+    s.finish(
+        s.revision(),
+        "alpha",
+        &t.id,
+        running.fence,
+        Outcome::Http(204),
+        23,
+    )
+    .unwrap();
+    let mut v: serde_json::Value = serde_json::from_slice(&s.snapshot().unwrap()).unwrap();
+    v["funding"]["reservations"][&t.id]["settlement"]["unused_units"] = 5.into();
+    assert!(serde_json::from_value::<Entitlements>(v).is_err());
+}

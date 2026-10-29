@@ -530,8 +530,30 @@ impl Entitlements {
                 .get(id)
                 .is_some_and(|p| p.receipt.reversed.is_some());
             if &g.spec != spec
+                || !positive(spec.total_attempt_units)
+                || !timestamp(spec.admission_expires_at_ms)
                 || (self.clock_ms >= spec.admission_expires_at_ms || reversed) && !g.closed
+                || !g.closed && g.retired != 0
             {
+                return Err(Error::Corrupt);
+            }
+            // No retention pruning exists in this aggregate, so every spent fence
+            // and outstanding reservation must still be backed by its task.
+            let (mut spent, mut reserved) = (0, 0);
+            for task_id in self.ledger.tasks.keys() {
+                let r = self.funding.reservation(task_id)?;
+                if &r.grant_id == id {
+                    let units = r.spent_fences.len() as u64;
+                    spent = add(spent, units)?;
+                    if r.settlement.is_none() {
+                        reserved = add(
+                            reserved,
+                            r.allocated_units.checked_sub(units).ok_or(Error::Corrupt)?,
+                        )?;
+                    }
+                }
+            }
+            if (g.spent, g.reserved) != (spent, reserved) {
                 return Err(Error::Corrupt);
             }
         }
@@ -543,6 +565,20 @@ impl Entitlements {
                 || task.status.terminal() != r.settlement.is_some()
             {
                 return Err(Error::Corrupt);
+            }
+            if let Some(s) = &r.settlement {
+                if s.spent_units != r.spent_fences.len() as u64
+                    || s.unused_units
+                        != r.allocated_units
+                            .checked_sub(s.spent_units)
+                            .ok_or(Error::Corrupt)?
+                    || s.terminal_status != task.status
+                    || Some(s.terminal_at_ms) != task.terminal_ms
+                    || s.settled_at_ms < s.terminal_at_ms
+                    || s.settled_at_ms > self.clock_ms
+                {
+                    return Err(Error::Corrupt);
+                }
             }
             if r.grant_id == TRIAL_GRANT {
                 trial_tasks += 1;
