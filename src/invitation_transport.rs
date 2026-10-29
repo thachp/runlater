@@ -405,17 +405,14 @@ impl InvitationProject {
             .registered_outbox(&project, now())
             .map_err(|_| Error::RustError("Outbox rejected".into()))?;
         save(&self.state, &s)?;
-        for d in refs {
-            if self
-                .env
-                .queue(queue_binding(&self.env))?
-                .send(d)
-                .await
-                .is_err()
-            {
-                self.state.storage().set_alarm(1000).await?;
-                return Err(Error::RustError("Invitation publication uncertain".into()));
-            }
+        if crate::publication::publish_batch(refs, |d| async move {
+            self.env.queue(queue_binding(&self.env))?.send(d).await
+        })
+        .await
+        .is_err()
+        {
+            self.state.storage().set_alarm(1000).await?;
+            return Err(Error::RustError("Invitation publication uncertain".into()));
         }
         self.rearm().await
     }
