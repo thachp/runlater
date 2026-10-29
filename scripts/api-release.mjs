@@ -42,18 +42,46 @@ export function runWrangler(args,e,out,exec=execFileSync,onFailure=()=>{}) {
   try{return exec('node',['node_modules/wrangler/bin/wrangler.js',...args],{timeout:120000,stdio:'pipe',env:{...e,WRANGLER_SEND_METRICS:'false',WRANGLER_OUTPUT_FILE_PATH:out}});}
   catch(error){onFailure(Number.isInteger(error?.status)&&error.status>=0&&error.status<=255?error.status:'unknown');throw new Error('wrangler_child_failed');}
 }
-export async function deployExisting(a,get,upload,promote,stillCurrent=async()=>true,onUploaded=()=>{},onStage=()=>{}) {
+export function checkSecretCollisions(config,settings,secrets) {
+  guard(config&&typeof config==='object'&&Array.isArray(settings?.bindings)&&Array.isArray(secrets));
+  const localNames=new Set([
+    ...Object.keys(config.vars??{}),
+    ...(config.durable_objects?.bindings??[]).map(b=>b.name),
+    ...(config.queues?.producers??[]).map(b=>b.binding),
+    ...(config.ratelimits??[]).map(b=>b.name),
+    config.version_metadata?.binding
+  ].filter(name=>name!==undefined));
+  guard(localNames.size>0&&[...localNames].every(name=>typeof name==='string'&&name.length>0));
+  const names=bindings=>{
+    const result=new Set();
+    for(const binding of bindings){
+      guard(typeof binding?.name==='string'&&binding.name.length>0);
+      guard(!localNames.has(binding.name));
+      result.add(binding.name);
+    }
+    return [...result].sort();
+  };
+  return {listed:names(secrets),metadata:names(settings.bindings.filter(b=>typeof b.type==='string'&&b.type.includes('secret')))};
+}
+export async function deployExisting(a,get,upload,promote,stillCurrent=async()=>true,onUploaded=()=>{},onStage=()=>{},config) {
   onStage('source_preflight');
   guard(await stillCurrent());
   onStage('settings_preflight');
   const s=await get('/settings');
   guard(digest(s)===a.settings_sha256 && s.bindings?.some(b=>b.name==='BETA_CALLBACK_MASTER' && b.type==='secret_text'));
+  onStage('secret_preflight');
+  const secrets=await get('/secrets');
+  guard(Array.isArray(secrets)&&secrets.some(b=>b?.name==='BETA_CALLBACK_MASTER'));
+  const secretNames=checkSecretCollisions(config,s,secrets);
   onStage('deployment_preflight');
   const before=digest(await get('/deployments'));
   onStage('version_upload');
   const id=uploadedVersion(await upload(),a.worker_tag,onUploaded);
   onStage('settings_post_upload');
-  guard(digest(await get('/settings'))===a.settings_sha256);
+  const afterSettings=await get('/settings');
+  guard(digest(afterSettings)===a.settings_sha256);
+  onStage('secret_post_upload');
+  guard(digest(checkSecretCollisions(config,afterSettings,await get('/secrets')))===digest(secretNames));
   onStage('deployment_post_upload');
   guard(digest(await get('/deployments'))===before);
   onStage('source_post_upload');
@@ -96,7 +124,7 @@ export async function release(e=process.env) {
       console.log('Release phase: upload_cli');
       run(args);
       return readFile(out,'utf8');
-    },async id=>run(['versions','deploy',`${id}@100%`,'--config',file,'--yes','--message',`Reviewed main ${e.RELEASE_SHA}`]),stillCurrent,id=>console.log(`Uploaded Worker version ${id} for ${e.RELEASE_SHA}; retain this receipt even if later checks fail.`),stage=>console.log(`Release phase: ${stage}`));
+    },async id=>run(['versions','deploy',`${id}@100%`,'--config',file,'--yes','--message',`Reviewed main ${e.RELEASE_SHA}`]),stillCurrent,id=>console.log(`Uploaded Worker version ${id} for ${e.RELEASE_SHA}; retain this receipt even if later checks fail.`),stage=>console.log(`Release phase: ${stage}`),c);
     console.log('Release phase: health_verify');
     const health=await fetch('https://api.runlater.io/health',{signal:AbortSignal.timeout(5000),redirect:'error'});
     guard(health.status===200);

@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {spawnSync} from 'node:child_process';
 const workerTag='d'.repeat(32);
-import {canonical,digest,validate,uploadedVersion,release,deployExisting,verifyHealth,uploadArguments,runWrangler} from './api-release.mjs';
+import {canonical,digest,validate,uploadedVersion,release,deployExisting,verifyHealth,uploadArguments,runWrangler,checkSecretCollisions} from './api-release.mjs';
 function fixture(){
  const c={name:'runlater-public-api',main:'build/worker/shim.mjs',version_metadata:{binding:'RELEASE_VERSION'},compatibility_date:'2026-10-27',compatibility_flags:['global_fetch_strictly_public'],workers_dev:false,preview_urls:false,limits:{cpu_ms:50},observability:{enabled:false},durable_objects:{bindings:[{name:'ADMISSION',class_name:'AdmissionRegistry'},{name:'PROJECTS',class_name:'InvitationProject'}]},queues:{producers:[{binding:'BETA_READY',queue:'runlater-public-ready'}]},ratelimits:[{name:'BETA_IP_RATE',namespace_id:'1001',simple:{limit:60,period:60}},{name:'BETA_REG_IP_RATE',namespace_id:'1002',simple:{limit:6,period:60}}],vars:{PUBLIC_BETA_ENABLED:'operator-approved',PUBLIC_BETA_PROFILE:JSON.stringify({release_id:'test',opens_at_ms:1000,closes_at_ms:2000,callback_end_sec:1000000}),BETA_REVOKED_PROJECTS:'[]',BETA_READY_QUEUE:'runlater-public-ready'}};
  return {c,a:{worker:c.name,worker_tag:workerTag,account_id:'a'.repeat(32),config_sha256:digest(c),settings_sha256:'b'.repeat(64)},e:{RUNLATER_RELEASE_ENABLED:'true',GITHUB_REPOSITORY:'thachp/runlater',RELEASE_SHA:'c'.repeat(40)}};
@@ -20,20 +20,20 @@ test('workflow has CI gating, fixed target environment, no PR secrets or cancell
 
 test('provider flow checks twice and promotes only exact returned version',async()=>{
  const settings={bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]}, a={worker_tag:workerTag,settings_sha256:digest(settings)}, events=[];
- let promoted=false;const get=async path=>{events.push(path);return path==='/settings'?settings:promoted?{deployments:[{versions:[{version_id:record.version_id,percentage:100}]}]}:{deployments:['old']}};
- const id=await deployExisting(a,get,async()=>{events.push('upload');return JSON.stringify(record)},async id=>{events.push(id);promoted=true});
- assert.equal(id,record.version_id);assert.deepEqual(events,['/settings','/deployments','upload','/settings','/deployments',id,'/deployments']);
+ let promoted=false;const get=async path=>{events.push(path);return path==='/settings'?settings:path==='/secrets'?settings.bindings:promoted?{deployments:[{versions:[{version_id:record.version_id,percentage:100}]}]}:{deployments:['old']}};
+ const id=await deployExisting(a,get,async()=>{events.push('upload');return JSON.stringify(record)},async id=>{events.push(id);promoted=true},undefined,undefined,undefined,fixture().c);
+ assert.equal(id,record.version_id);assert.deepEqual(events,['/settings','/secrets','/deployments','upload','/settings','/secrets','/deployments',id,'/deployments']);
 });
 for(const failure of ['absent','secret','settings-drift','deployment-drift','uncertain-upload','uncertain-promote'])test(`no unsafe retry for ${failure}`,async()=>{
- const settings={bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]}, a={worker_tag:workerTag,settings_sha256:digest(settings)};let gets=0,uploads=0,promotes=0;
- const get=async path=>{gets++;if(failure==='absent')throw Error('404');if(path==='/settings')return failure==='secret'?{bindings:[]}:failure==='settings-drift'&&gets>2?{}:settings;return {deployments:failure==='deployment-drift'&&gets>2?['other']:['old']}};
- await assert.rejects(deployExisting(a,get,async()=>{uploads++;if(failure==='uncertain-upload')throw Error('timeout');return JSON.stringify(record)},async()=>{promotes++;if(failure==='uncertain-promote')throw Error('timeout')}));
+ const settings={bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]}, a={worker_tag:workerTag,settings_sha256:digest(settings)};let uploads=0,promotes=0;const reads={};
+ const get=async path=>{reads[path]=(reads[path]??0)+1;if(failure==='absent')throw Error('404');if(path==='/settings')return failure==='secret'?{bindings:[]}:failure==='settings-drift'&&reads[path]>1?{}:settings;if(path==='/secrets')return settings.bindings;return {deployments:failure==='deployment-drift'&&reads[path]>1?['other']:['old']}};
+ await assert.rejects(deployExisting(a,get,async()=>{uploads++;if(failure==='uncertain-upload')throw Error('timeout');return JSON.stringify(record)},async()=>{promotes++;if(failure==='uncertain-promote')throw Error('timeout')},undefined,undefined,undefined,fixture().c));
  assert.ok(uploads<=1);assert.equal(promotes,failure==='uncertain-promote'?1:0);
 });
 
 test('main advancing during upload blocks promotion',async()=>{
  const s={bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]};let checks=0,promoted=false;
- await assert.rejects(deployExisting({worker_tag:workerTag,settings_sha256:digest(s)},async path=>path==='/settings'?s:{deployments:['old']},async()=>JSON.stringify(record),async()=>{promoted=true},async()=>++checks===1));
+ await assert.rejects(deployExisting({worker_tag:workerTag,settings_sha256:digest(s)},async path=>path==='/settings'?s:path==='/secrets'?s.bindings:{deployments:['old']},async()=>JSON.stringify(record),async()=>{promoted=true},async()=>++checks===1,undefined,undefined,fixture().c));
  assert.equal(promoted,false);assert.equal(checks,2);
 });
 
@@ -48,7 +48,7 @@ test('repository automatic trigger cannot satisfy separate execution gate',()=>{
 
 test('upload receipt survives later drift; wrong active version never succeeds',async()=>{
  const s={bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]};const receipts=[];let promoted=false;
- await assert.rejects(deployExisting({worker_tag:workerTag,settings_sha256:digest(s)},async path=>path==='/settings'?s:{deployments:[{versions:[{version_id:'old',percentage:100}]}]},async()=>JSON.stringify(record),async()=>{promoted=true},async()=>true,id=>receipts.push(id)));
+ await assert.rejects(deployExisting({worker_tag:workerTag,settings_sha256:digest(s)},async path=>path==='/settings'?s:path==='/secrets'?s.bindings:{deployments:[{versions:[{version_id:'old',percentage:100}]}]},async()=>JSON.stringify(record),async()=>{promoted=true},async()=>true,id=>receipts.push(id),undefined,fixture().c));
  assert.equal(promoted,true);assert.deepEqual(receipts,[record.version_id]);
 });
 test('public host must serve exact uploaded beta version, not alpha health',()=>{
@@ -86,7 +86,7 @@ test('immutable Worker tag is mandatory in approval and upload receipts match it
 });
 test('fixed phase breadcrumbs locate failure without serializing provider errors',async()=>{
  const phases=[];
- await assert.rejects(deployExisting({},async()=>{throw Error('PRIVATE-SENTINEL');},async()=>{throw Error('unexpected upload');},async()=>{},async()=>true,()=>{},phase=>phases.push(phase)));
+ await assert.rejects(deployExisting({},async()=>{throw Error('PRIVATE-SENTINEL');},async()=>{throw Error('unexpected upload');},async()=>{},async()=>true,()=>{},phase=>phases.push(phase),fixture().c));
  assert.deepEqual(phases,['source_preflight','settings_preflight']);
  assert.doesNotMatch(JSON.stringify(phases),/PRIVATE-SENTINEL/);
 });
@@ -105,7 +105,67 @@ test('a valid uploaded UUID is retained before tag or preview rejection without 
  const s={bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]},a={worker_tag:workerTag,settings_sha256:digest(s)};
  for(const extra of [{worker_tag:'e'.repeat(32)},{preview_url:'https://unexpected.invalid'}]){
   const receipts=[];let promoted=false;
-  await assert.rejects(deployExisting(a,async path=>path==='/settings'?s:{deployments:['old']},async()=>JSON.stringify({...record,...extra}),async()=>{promoted=true;},async()=>true,id=>receipts.push(id)));
+  await assert.rejects(deployExisting(a,async path=>path==='/settings'?s:path==='/secrets'?s.bindings:{deployments:['old']},async()=>JSON.stringify({...record,...extra}),async()=>{promoted=true;},async()=>true,id=>receipts.push(id),undefined,fixture().c));
   assert.deepEqual(receipts,[record.version_id]);assert.equal(promoted,false);
  }
+});
+
+test('remote secret collision is rejected before upload even with an approved matching baseline',async()=>{
+ const {c,a}=fixture();
+ const secrets=[{name:'BETA_CALLBACK_MASTER',type:'secret_text'},{name:'PUBLIC_BETA_PROFILE',type:'secret_text'}];
+ const settings={bindings:secrets};a.settings_sha256=digest(settings);
+ let uploads=0,promotes=0;
+ const get=async path=>path==='/settings'?settings:path==='/secrets'?secrets:{deployments:[{versions:[{version_id:record.version_id,percentage:100}]}]};
+ await assert.rejects(deployExisting(a,get,async()=>{uploads++;return JSON.stringify(record);},async()=>{promotes++;},async()=>true,()=>{},()=>{},c));
+ assert.equal(uploads,0);assert.equal(promotes,0);
+});
+
+for(const name of ['BETA_READY_QUEUE','BETA_REVOKED_PROJECTS','PUBLIC_BETA_ENABLED','PUBLIC_BETA_PROFILE','ADMISSION','PROJECTS','BETA_READY','BETA_IP_RATE','BETA_REG_IP_RATE','RELEASE_VERSION'])test(`secret collision with ${name} blocks upload from either metadata source`,async()=>{
+ for(const source of ['settings','secrets']){
+  const {c,a}=fixture(),master={name:'BETA_CALLBACK_MASTER',type:'secret_text'},collision={name,type:'secrets_store_secret'};
+  const settings={bindings:[master,...(source==='settings'?[collision]:[])]},secrets=[master,...(source==='secrets'?[collision]:[])];
+  a.settings_sha256=digest(settings);let uploads=0,promotes=0;
+  await assert.rejects(deployExisting(a,async path=>path==='/settings'?settings:path==='/secrets'?secrets:{deployments:['old']},async()=>{uploads++;return JSON.stringify(record);},async()=>{promotes++;},undefined,undefined,undefined,c));
+  assert.equal(uploads,0);assert.equal(promotes,0);
+ }
+});
+test('pinned Wrangler reports a real secret overwrite which non-strict confirmation accepts',async()=>{
+ const {c}=fixture(),secrets=[{name:'PUBLIC_BETA_PROFILE',type:'secret_text'}];
+ const source=readFileSync('node_modules/wrangler/wrangler-dist/cli.js','utf8');
+ const start=source.indexOf('async function checkRemoteSecretsOverride('),end=source.indexOf('\nvar init_check_remote_secrets_override',start);
+ assert.ok(start>=0&&end>start,'pinned secret check seam changed');
+ const check=vm.runInNewContext('(()=>{'+source.slice(start,end)+';return checkRemoteSecretsOverride;})()',{fetchSecrets:async()=>secrets,isWorkerNotFoundError:()=>false});
+ const conflict=await check(c,'runlater-public-api','a'.repeat(32));
+ assert.equal(conflict.override,true);assert.match(conflict.deployErrorMessage,/replace/);
+ const confirmStart=source.indexOf('function getDeployConfirmFunction(options) {'),confirmEnd=source.indexOf('\nvar init_deploy_confirm',confirmStart);
+ const confirm=vm.runInNewContext('('+source.slice(confirmStart,confirmEnd)+')',{isNonInteractiveOrCI:()=>true,logger:{error:()=>{}},process:{exitCode:0},confirm:async()=>false});
+ assert.equal(await confirm({strictMode:false})('Would you like to continue?'),true);
+ assert.throws(()=>checkSecretCollisions(c,{bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]},secrets));
+});
+test('missing or malformed secret metadata fails closed',()=>{
+ const {c}=fixture(),settings={bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]};
+ for(const secrets of [undefined,{},[{name:''}],[{name:42}]])assert.throws(()=>checkSecretCollisions(c,settings,secrets));
+ assert.throws(()=>checkSecretCollisions(undefined,settings,[]));
+ assert.throws(()=>checkSecretCollisions(c,{bindings:[{type:'secret_key'}]},[]));
+});
+test('secret-name drift after upload blocks promotion while retaining the version receipt',async()=>{
+ const {c,a}=fixture(),master={name:'BETA_CALLBACK_MASTER',type:'secret_text'},settings={bindings:[master]};a.settings_sha256=digest(settings);
+ for(const later of [[master,{name:'UNEXPECTED_SECRET'}],[],[master,{name:'PUBLIC_BETA_PROFILE'}]]){
+  let secretReads=0,uploads=0,promotes=0;const receipts=[];
+  const get=async path=>path==='/settings'?settings:path==='/secrets'?(++secretReads===1?[master]:later):{deployments:['old']};
+  await assert.rejects(deployExisting(a,get,async()=>{uploads++;return JSON.stringify(record);},async()=>{promotes++;},undefined,id=>receipts.push(id),undefined,c));
+  assert.equal(uploads,1);assert.equal(promotes,0);assert.deepEqual(receipts,[record.version_id]);
+ }
+});
+test('unchanged secret-name sets tolerate provider list reordering',async()=>{
+ const {c,a}=fixture(),master={name:'BETA_CALLBACK_MASTER',type:'secret_text'},extra={name:'UNUSED_SECRET'},settings={bindings:[master]};a.settings_sha256=digest(settings);
+ let reads=0,promoted=false;
+ const get=async path=>path==='/settings'?settings:path==='/secrets'?(++reads===1?[master,extra]:[extra,master]):{deployments:promoted?[{versions:[{version_id:record.version_id,percentage:100}]}]:['old']};
+ assert.equal(await deployExisting(a,get,async()=>JSON.stringify(record),async()=>{promoted=true;},undefined,undefined,undefined,c),record.version_id);
+ assert.equal(promoted,true);
+});
+test('master absent from fresh secret listing prevents any upload',async()=>{
+ const {c,a}=fixture(),s={bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]};a.settings_sha256=digest(s);let uploads=0;
+ await assert.rejects(deployExisting(a,async path=>path==='/settings'?s:path==='/secrets'?[]:{deployments:['old']},async()=>{uploads++;return JSON.stringify(record);},async()=>{},undefined,undefined,undefined,c));
+ assert.equal(uploads,0);
 });
