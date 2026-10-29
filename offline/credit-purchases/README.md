@@ -36,9 +36,13 @@ All purchase commands check an expected revision, validate a clone and replace s
 
 Snapshots validate on every deserialization and command commit. Storage is trusted; snapshots are not public request formats or signed proof. There are 32 lifetime intent/grant identities and 256 event tombstones, bounded evidence (8 KiB) and snapshot input (256 KiB). Unpaid, reversed and duplicate identities are never pruned or recycled. Exhaustion fails closed and requires an explicitly reviewed migration. This is a bounded offline model, not a production database, webhook handler or distributed transaction proof.
 
+## Read-only quote lookup for offline MPP journaling
+
+`intent(project, id)` returns the immutable cap-reserved quote from this ledger, including after restore, expiry or settlement. It performs the same project check as `receipt` and cannot create a purchase or confer purchase authority. The sibling `offline/mpp-http` journal uses it instead of accepting arbitrary quote terms. Its snapshot/restart fixtures pin challenge and first-credential/provider identity, but do not replace this ledger's verifier, cap holds or funding journal. A host must atomically validate **both** current ledger and challenge-journal revisions; neither a stale ledger clone nor journal-only CAS proves current purchase state.
+
 ## MPP adapter follow-up and primary references
 
-The intended future adapter is narrow Rust HTTP protocol handling, since prior compatibility findings rule out assuming full native MPP SDK Wasm support. This crate uses no MPP SDK and claims no MPP wire interoperability. Its fixture identifiers are not `WWW-Authenticate`, credentials, receipts, provider signatures or actual settlement. The wire parser/encoder, provider verification, reconciliation transport, merchant eligibility and live configuration remain in #29; entitlement/action routes remain in #30.
+The intended future adapter is narrow Rust HTTP protocol handling, since prior compatibility findings rule out assuming full native MPP SDK Wasm support. This crate uses no MPP SDK and claims no MPP wire interoperability. Its fixture identifiers are not `WWW-Authenticate`, credentials, receipts, provider signatures or actual settlement. The sibling offline MPP crate supplies a narrow wire codec and snapshot fixture journal, not a live adapter. Provider verification, durable storage integration, reconciliation transport, merchant eligibility and live configuration remain in #29; entitlement/action routes remain in #30.
 
 References reviewed on 2026-10-28:
 

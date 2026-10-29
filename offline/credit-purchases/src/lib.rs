@@ -436,6 +436,12 @@ impl OfflineLedger {
         self.commit(next, now)?;
         Ok(intent)
     }
+    /// Read the immutable quote from trusted persisted purchase state. A codec must
+    /// not replace this lookup with a caller-supplied quote or task authority.
+    pub fn intent(&self, project: &str, id: &str) -> Result<&Intent, Error> {
+        self.project(project)?;
+        Ok(&self.purchases.get(id).ok_or(Error::Invalid)?.intent)
+    }
     pub fn receipt(&self, project: &str, id: &str) -> Result<&Receipt, Error> {
         self.project(project)?;
         Ok(&self.purchases.get(id).ok_or(Error::Invalid)?.receipt)
