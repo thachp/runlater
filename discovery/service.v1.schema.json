@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://docs.runlater.io/agent/service.v1.schema.json",
-  "title": "RunLater-owned discovery v1.2; public free beta",
+  "title": "RunLater-owned discovery v1.3; public free beta",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -9,7 +9,7 @@
       "const": "https://docs.runlater.io/agent/service.v1.schema.json"
     },
     "descriptor_version": {
-      "const": "1.2.0"
+      "const": "1.3.0"
     },
     "service": {
       "const": "RunLater"
@@ -116,6 +116,9 @@
         },
         "release_metadata": {
           "const": "https://docs.runlater.io/agent/public-beta-release.v1.json"
+        },
+        "mcp_setup": {
+          "const": "https://docs.runlater.io/agent/mcp.md"
         }
       },
       "required": [
@@ -133,7 +136,8 @@
         "hosted_beta_contract",
         "public_beta_client",
         "receiver_example",
-        "release_metadata"
+        "release_metadata",
+        "mcp_setup"
       ]
     },
     "link_availability": {

@@ -11,3 +11,7 @@ The separate `/agent/alpha.v1.json` and schema describe the actual hosted task/e
 The pricing-status schema still permits no offered price/currency/trial, payment methods, live purchases or auto-top-up. The provisioned24-hour operator/20-attempt internal allowance is not a public commercial offer. Unknown/disabled capabilities are not inferred from tool names or discovery text. Public registration and purchases require their separately reviewed implementations and activation.
 
 Tests validate schema conformance, deterministic assembly, offline links including page anchors, local OpenAPI identity, hosted body definitions, fixed origin, exact request/proof bytes, bounded responses and redaction. Actual local Wrangler HTTP checks verify static MIME/security headers and404 behavior. These source/local checks do not replace TLS/link verification after publication or another controlled real delivery campaign.
+
+## MCP implementation source
+
+[The separate MCP server](MCP.md) implements legacy HTTP+SSE with typed signed-task tools. Its intended endpoint is `https://mcp.runlater.io/sse`; hosted publication and authorized live verification remain pending. The local/proposed tool bundle above is still non-executable metadata, not this MCP server or an authorization grant.

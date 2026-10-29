@@ -17,6 +17,7 @@ The responsive landing at [runlater.io](https://runlater.io) and docs at [docs.r
 - [Agent quickstart](docs/AGENT-QUICKSTART.md): public health check and executable signed client for an already approved operator key.
 - [Host ownership, build, release and rollback](docs/HOSTS.md): separate static/redirect configurations and actual verification requirements.
 - [Discovery formats](docs/AGENT-DISCOVERY.md): custom capability metadata, local versus hosted contracts and disabled payment proposals.
+- [MCP server source and setup](docs/MCP.md): legacy SSE adapter, project-bound signed tools and local tests; intended `https://mcp.runlater.io/sse` is not yet deployment-verified.
 - [Local setup](docs/LOCAL.md): loopback-only public bearer/fixture development. Do not use these tokens or destinations on the hosted API.
 
 Run `npm run build:web`, `npm run test:web` and `npm run test:web-local` for this static slice. The API preserves CQRS, authoritative tenant/project SQLite state, durable idempotency/outbox/alarms, fenced leases, finite grant reservations, scoped authentication and bounded attempt/age/admission/publication limits. The retained transport permits exactly one owned synthetic endpoint; it does not establish arbitrary-host SSRF/DNS-rebinding safety. See [registered delivery](docs/REGISTERED-DELIVERY.md), [funding](docs/FUNDING.md) and [verification history](docs/VERIFICATION.md) for source evolution and earlier checkpoints.
