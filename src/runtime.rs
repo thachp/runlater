@@ -715,6 +715,13 @@ pub async fn consume(
             message.ack();
             continue;
         };
+        #[cfg(feature = "runtime-tests")]
+        test_point(
+            &env,
+            "after_claim",
+            json!({"id":task.id,"fence":task.fence,"generation":task.generation}),
+        )
+        .await?;
         // In-process receiver: never fetches URLs, follows redirects, resolves DNS, or touches external systems.
         let enabled = env
             .var("LOCAL_FIXTURES")
