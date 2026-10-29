@@ -218,6 +218,9 @@ impl State {
         }
         Ok(())
     }
+    pub(crate) fn prune(&mut self, ledger: &crate::core::Ledger) {
+        self.targets.retain(|id, _| ledger.tasks.contains_key(id));
+    }
     pub fn target(&self, id: &str) -> Option<&Target> {
         self.targets.get(id)
     }
