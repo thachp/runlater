@@ -55,3 +55,16 @@ test('actual diagnostic entry redacts malformed private input',()=>{
 test('manual diagnostic workflow is main-only, environment scoped and cannot deploy',()=>{
  const w=readFileSync('.github/workflows/diagnose-api-release.yml','utf8');assert.match(w,/workflow_dispatch:/);assert.match(w,/github.ref == 'refs\/heads\/main'/);assert.match(w,/environment: runlater-public-api/);assert.match(w,/timeout-minutes: 3/);assert.match(w,/persist-credentials: false/);assert.match(w,/permissions:\n  contents: read/);assert.doesNotMatch(w,/wrangler|api-release\.mjs|build-production|RUNLATER_RELEASE_ENABLED|workflow_run|pull_request/);
 });
+
+test('explicit Worker egress profile retains the disabled four-GET diagnostic and exact baseline check',async()=>{
+ const {e,config,approval,settings}=fixture();
+ config.services=[{binding:'GENERAL_HTTPS_EGRESS',service:'runlater-public-fetch-candidate',entrypoint:'PublicFetchBinding'}];
+ config.vars.GENERAL_HTTPS_EGRESS_REVIEW_REVISION='b'.repeat(64);
+ settings.bindings.push({name:'GENERAL_HTTPS_EGRESS',type:'service',service:'runlater-public-fetch-candidate',entrypoint:'PublicFetchBinding'});
+ approval.config_sha256=digest(config);approval.settings_sha256=digest(settings);
+ const env={...e,RUNLATER_RELEASE_CONFIG:JSON.stringify(config),RUNLATER_RELEASE_APPROVAL:JSON.stringify(approval)},calls=[];
+ const result=await diagnose(env,responder(env,settings,calls));
+ assert.equal(result.requests,4);assert.equal(result.settings_match_baseline,true);assert.equal(result.main_matches_source,true);
+ assert.equal(env.RUNLATER_RELEASE_ENABLED,'false');assert.equal(config.vars.GENERAL_HTTPS_ENABLED,undefined);
+ assert.ok(calls.every(({options})=>options.method==='GET'&&options.body===undefined));
+});

@@ -44,6 +44,52 @@ The settings endpoint describes the latest uploaded version, which may be staged
 
 The initial reviewed configuration replaces the nonsecret `RUNLATER_RELEASE_RUN` binding with `RELEASE_VERSION` version metadata. This binding change is deliberately **not** normalized away: review it against the approved configuration and explicitly install a `runtime-v1` baseline for that configuration before enabling another release. Do not refresh a baseline merely because a guard failed. Reconcile the exact staged version, immutable Worker identity, secret-name sets, bindings and active deployment first. A failed upload or post-upload check does not authorize promoting the staged version.
 
+## Optional general HTTPS transport selection
+
+The API release guard accepts exactly one of these private service bindings, or no
+egress binding at all:
+
+| Transport | Binding | Service | Named entrypoint |
+| --- | --- | --- | --- |
+| Native observed-peer/IP pinning | `GENERAL_HTTPS_EGRESS` | `runlater-general-egress` | `EgressBinding` |
+| Worker provider public-network boundary | `GENERAL_HTTPS_EGRESS` | `runlater-public-fetch-candidate` | `PublicFetchBinding` |
+
+The exact tuple is the selector. Crossed service/entrypoint pairs, aliases, default
+entrypoints, extra properties, multiple bindings and fallback lists are rejected,
+even with a refreshed config digest. The native tuple remains valid as before;
+absent egress configuration stays absent. Source support changes no release profile,
+feature flag, provider binding, adapter setting, trust key or namespace.
+
+Either binding requires an explicit nonzero lowercase 64-hex
+`GENERAL_HTTPS_EGRESS_REVIEW_REVISION`. This value identifies a separately reviewed
+artifact; its syntax is not proof of its code, runtime or network behavior. Existing
+API admission still requires protocol-1 readiness, the exact matching revision and
+positive bounded receipt capacity, then sends that revision in the immutable attempt
+envelope. The adapter rejects a different revision. The release script does not probe
+the adapter or infer readiness from its binding name. General HTTPS admission still
+requires its separate `GENERAL_HTTPS_ENABLED=operator-approved` flag and the existing
+trial/gateway authority gates. Missing flags do not activate it.
+
+Both complete approved-config and runtime-settings fingerprints remain mandatory.
+Changing a transport or its reviewed revision invalidates the old config approval;
+changing provider bindings also invalidates the runtime baseline. Review/reconcile
+the intended provider transition separately before a normal release. Never refresh
+an approval merely to bypass a failure, reinterpret a native revision as Worker
+proof, repoint the native service behind its existing name, or silently choose an
+available alternative. This workflow releases only the existing API; it never deploys adapter code, creates
+adapter storage, enables adapter flags or changes adapter receipt identities. An API
+binding installation/change is an explicit reviewed runtime configuration transition,
+not an ordinary code-only release.
+
+Native `EgressContainer` and Worker `PublicFetchReceipts` retain separate permanent
+receipt namespaces and fixed singleton identities (`runlater-egress-v1` and
+`runlater-public-fetch-v1`, respectively). Do not copy, clear, migrate or
+substitute receipt stores to change transports. Account for running/uncertain
+attempts before any transport transition, and preserve same-fence replay truth.
+The Worker candidate's hosted boundary/recovery/TLS proof and authenticated API/MCP
+integration gates remain separate activation work; allowing its tuple is not that
+proof. See [the Worker candidate](../egress/public-fetch/README.md).
+
 ## Optional MCP delegated authorization
 
 A separately approved deployment may include nonsecret
