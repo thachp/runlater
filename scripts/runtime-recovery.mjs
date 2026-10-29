@@ -20,7 +20,7 @@ for(const [signal,code]of [['SIGINT',130],['SIGTERM',143]])process.once(signal,(
 const timeout=(ms,message)=>new Promise((_,reject)=>{const t=setTimeout(()=>reject(Error(message)),ms);t.unref();});
 async function start(scenario,{holds=[],fail=()=>false,mode='enabled'}={}){
  assert.ok(!cleaning,'Local harness is stopping');
- assert.ok(++started<=10,'Subprocess budget');
+ assert.ok(++started<=14,'Subprocess budget');
  const child=spawn(process.execPath,['scripts/runtime-recovery-child.mjs',path.join(root,scenario),mode],{cwd:repo,detached:true,stdio:['ignore','pipe','pipe','ipc']});child.spawnedAtMs=Date.now();children.add(child);recordChildren();
  const bus=new EventEmitter(),events=[],held=new Map(),hold=new Set(holds);let log='',rpcId=0;
  for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{log=(log+chunk).slice(-16000);});
@@ -48,6 +48,12 @@ async function start(scenario,{holds=[],fail=()=>false,mode='enabled'}={}){
 }
 const input={destination:'fixture://success',body:'local recovery fixture',operation_key:'stable_recovery_operation'};
 async function settle(instance,id){for(let i=0;i<80;i++){const t=await instance.api('/v1/tasks/'+id);if(t.status==='succeeded')return t;await new Promise(r=>setTimeout(r,100));}throw Error('Local task did not recover');}
+async function replayIgnored(instance,reference){
+ const before=(await instance.api('/v1/queue/metrics')).totals.counts.claim_ignored;
+ assert.equal((await instance.rpc('publish',{reference,copies:3})).published,3);
+ for(let i=0;i<80;i++){const after=(await instance.api('/v1/queue/metrics')).totals.counts.claim_ignored;if(after>=before+3)return;await new Promise(r=>setTimeout(r,100));}
+ throw Error('Replayed references did not reach the authoritative claim guard');
+}
 try{
  // 1. Actual process-group death after SQLite commit; no completed enqueue response.
  let a=await start('accept',{holds:['accepted_commit','before_publish']});
@@ -66,6 +72,35 @@ try{
  b.release('before_claim');const delivered=await settle(b,created.id);await new Promise(r=>setTimeout(r,400));
  assert.equal(delivered.attempts.length,1);assert.equal(b.events.filter(e=>e.point==='callback_complete').length,1);assert.ok(b.events.filter(e=>e.point==='before_claim').length>=2);await b.stop();
  console.log('PASS injected post-send exception + real duplicate Queue references: one leased fixture attempt');
+ // Actual process death AFTER durable claim, BEFORE the fixture is invoked.
+ let claimedRuntime=await start('claim',{holds:['after_claim']});
+ const claimTask=await claimedRuntime.api('/v1/tasks',{method:'POST',body:input,key:'claim',expected:201});
+ const claimPoint=await claimedRuntime.point('after_claim');assert.equal(claimPoint.metadata.id,claimTask.id);
+ const leased=await claimedRuntime.api('/v1/tasks/'+claimTask.id);assert.equal(leased.status,'running');assert.equal(leased.attempts.length,1);assert.equal(leased.attempts[0].outcome,null);assert.equal(leased.fence,claimPoint.metadata.fence);
+ assert.equal(claimedRuntime.events.filter(e=>e.point==='callback_complete').length,0);
+ await claimedRuntime.kill();claimedRuntime=await start('claim',{holds:['after_claim']});
+ assert.deepEqual(await claimedRuntime.api('/v1/tasks/'+claimTask.id),leased,'Claim survives same-store restart unchanged before lease expiry');
+ const reclaimed=await claimedRuntime.point('after_claim');assert.ok(Date.now()>=leased.lease_until);assert.ok(reclaimed.metadata.fence>claimPoint.metadata.fence);assert.ok(reclaimed.metadata.generation>claimPoint.metadata.generation);
+ const recoveredClaim=await claimedRuntime.api('/v1/tasks/'+claimTask.id);assert.equal(recoveredClaim.attempts.length,2);assert.equal(recoveredClaim.attempts[0].outcome,'lease_expired_unknown');assert.equal(recoveredClaim.attempts[1].outcome,null);assert.ok(recoveredClaim.attempts[1].started_ms>=leased.lease_until,'Persisted retry must not start before the old lease deadline');assert.equal(recoveredClaim.input.operation_key,input.operation_key);
+ assert.equal((await claimedRuntime.rpc('finish',{value:{id:claimTask.id,fence:claimPoint.metadata.fence,status:204}})).status,409);
+ assert.equal(claimedRuntime.events.filter(e=>e.point==='callback_complete').length,0);
+ claimedRuntime.release('after_claim');const claimFinal=await settle(claimedRuntime,claimTask.id);assert.equal(claimFinal.attempts.length,2);assert.equal(claimFinal.attempts[1].outcome,'http_204');assert.equal(claimedRuntime.events.filter(e=>e.point==='callback_complete').length,1);await claimedRuntime.stop();
+ console.log('PASS actual SIGKILL after claim/before fixture: durable unknown attempt, real lease recovery, old fence rejected, one fixture invocation');
+ // Cancel durably while the pre-fixture boundary is held, then kill before it can run.
+ let cancelledRuntime=await start('claim-cancel',{holds:['after_claim']});
+ const cancelTask=await cancelledRuntime.api('/v1/tasks',{method:'POST',body:input,key:'claim-cancel',expected:201});
+ const cancelClaim=await cancelledRuntime.point('after_claim');const cancelSent=await cancelledRuntime.point('after_publish');
+ await cancelledRuntime.api('/v1/tasks/'+cancelTask.id+'/cancel',{method:'POST'});
+ const cancelling=await cancelledRuntime.api('/v1/tasks/'+cancelTask.id);assert.equal(cancelling.status,'running');assert.equal(cancelling.cancel_requested,true);
+ assert.equal(cancelledRuntime.events.filter(e=>e.point==='callback_complete').length,0);
+ await cancelledRuntime.kill();cancelledRuntime=await start('claim-cancel');
+ let cancelled;
+ for(let i=0;i<80;i++){cancelled=await cancelledRuntime.api('/v1/tasks/'+cancelTask.id);if(cancelled.status==='cancelled')break;assert.equal(cancelled.cancel_requested,true);await new Promise(r=>setTimeout(r,500));}
+ assert.equal(cancelled.status,'cancelled');assert.ok(Date.now()>=cancelling.lease_until);assert.equal(cancelled.attempts.length,1);assert.equal(cancelled.attempts[0].outcome,'lease_expired_unknown');assert.ok(cancelled.attempts[0].finished_ms>=cancelling.lease_until,'Persisted cancellation settlement must not precede lease expiry');assert.equal(cancelled.lease_until,null);
+ assert.equal((await cancelledRuntime.rpc('finish',{value:{id:cancelTask.id,fence:cancelClaim.metadata.fence,status:204}})).status,409);
+ await replayIgnored(cancelledRuntime,cancelSent.metadata);
+ assert.deepEqual(await cancelledRuntime.api('/v1/tasks/'+cancelTask.id),cancelled);assert.equal(cancelledRuntime.events.filter(e=>e.point==='after_claim').length,0);assert.equal(cancelledRuntime.events.filter(e=>e.point==='callback_complete').length,0);await cancelledRuntime.stop();
+ console.log('PASS actual SIGKILL after persisted cancellation/before fixture: lease settles cancelled; replay never claims or invokes fixture');
  // 3. Actual process death AFTER fixture completion, BEFORE authoritative finish.
  let c=await start('callback',{holds:['callback_complete']});const first=await c.api('/v1/tasks',{method:'POST',body:input,key:'callback',expected:201});
  const effect=await c.point('callback_complete');assert.equal(effect.metadata.status,204);const running=await c.api('/v1/tasks/'+first.id);assert.equal(running.status,'running');assert.equal(running.attempts[0].outcome,null);
@@ -82,11 +117,7 @@ try{
  const beforeKill=await ack.api('/v1/tasks/'+ackTask.id);assert.equal(beforeKill.status,'succeeded');assert.equal(beforeKill.attempts.length,1);assert.equal(beforeKill.attempts[0].outcome,'http_204');
  await ack.kill();ack=await start('ack');
  // Explicitly replay even if the emulator does not retain its in-flight Queue message.
- const ignoredBefore=(await ack.api('/v1/queue/metrics')).totals.counts.claim_ignored;
- await ack.rpc('publish',{reference:sentAck.metadata,copies:3});
- let ignoredAfter=ignoredBefore;
- for(let i=0;i<80&&ignoredAfter<ignoredBefore+3;i++){ignoredAfter=(await ack.api('/v1/queue/metrics')).totals.counts.claim_ignored;if(ignoredAfter<ignoredBefore+3)await new Promise(r=>setTimeout(r,100));}
- assert.ok(ignoredAfter>=ignoredBefore+3,'Replayed references must reach the authoritative claim guard');
+ await replayIgnored(ack,sentAck.metadata);
  assert.deepEqual(await ack.api('/v1/tasks/'+ackTask.id),beforeKill,'Committed task/attempt survives process death and duplicate replay unchanged');
  assert.equal(ack.events.filter(e=>e.point==='callback_complete').length,0,'Terminal replay must not invoke the fixture');
  assert.equal((await ack.api('/v1/tasks',{method:'POST',body:input,key:'ack'})).id,ackTask.id);await ack.stop();
@@ -99,5 +130,5 @@ try{
  console.log('PASS injected final pump re-arm exception: alarm republishes, retained work completes');
  for(const mode of ['disabled','unbound']){const guard=await start('guard-'+mode,{mode});await guard.api('/health',{expected:403});await guard.api('/v1/tasks',{method:'POST',body:'bad-json',expected:403});assert.equal(guard.events.filter(e=>e.kind==='point').length,0);await guard.stop();}
  console.log('PASS test artifact guards: wrong host, disabled mode and missing private binding reject before body/DO work');
- console.log(JSON.stringify({scenarios:6,actual_process_group_kills:3,subprocesses:started,http_calls:calls,live_resources:0,external_callbacks:0}));
+ console.log(JSON.stringify({scenarios:8,actual_process_group_kills:5,subprocesses:started,http_calls:calls,live_resources:0,external_callbacks:0}));
 }finally{await cleanup();}

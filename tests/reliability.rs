@@ -272,3 +272,84 @@ fn cancellation_at_each_persisted_attempt_boundary_never_reopens_terminal_work()
         }
     }
 }
+
+#[test]
+fn repeated_pre_callback_crashes_exhaust_attempts_without_resetting_history() {
+    let mut ledger = Ledger::default();
+    let original = ledger.create("crash_loop", input(0), 0).unwrap().0;
+    let mut now = 0;
+    let mut references = Vec::new();
+    let mut fences = Vec::new();
+    for attempt in 1..=MAX_ATTEMPTS {
+        let reference = ledger.outbox("tenant", now).remove(0);
+        let claimed = ledger.claim(&reference, now).unwrap().unwrap();
+        references.push(reference.clone());
+        fences.push(claimed.fence);
+        assert_eq!(claimed.attempts.len(), attempt as usize);
+        assert_eq!(claimed.input, original.input);
+        // The process dies after persisting the claim, without invoking a receiver.
+        ledger = restart(&ledger);
+        let deadline = claimed.lease_until.unwrap();
+        assert!(ledger.outbox("tenant", deadline - 1).is_empty());
+        assert!(ledger.claim(&reference, deadline - 1).unwrap().is_none());
+        assert_eq!(
+            ledger
+                .finish(&original.id, claimed.fence, Outcome::Http(204), deadline)
+                .unwrap_err(),
+            Fault::Stale
+        );
+        ledger.reconcile(deadline);
+        ledger = restart(&ledger);
+        let recovered = ledger.get(&original.id).unwrap();
+        assert!(recovered.lease_until.is_none());
+        assert!(recovered.attempts.iter().all(|a| {
+            a.outcome.as_deref() == Some("lease_expired_unknown") && a.finished_ms.is_some()
+        }));
+        assert_eq!(recovered.initial_due_ms, original.initial_due_ms);
+        assert_eq!(
+            ledger
+                .create("crash_loop", input(0), deadline)
+                .unwrap()
+                .0
+                .id,
+            original.id
+        );
+        for old in &references {
+            assert!(ledger.claim(old, deadline).unwrap().is_none());
+        }
+        if attempt < MAX_ATTEMPTS {
+            assert_eq!(recovered.status, Status::RetryWait);
+            assert!(recovered.due_ms > deadline);
+            assert!(ledger.outbox("tenant", recovered.due_ms - 1).is_empty());
+            now = recovered.due_ms;
+        } else {
+            assert_eq!(recovered.status, Status::Failed);
+            now = deadline;
+        }
+    }
+    let exhausted = serde_json::to_value(ledger.get(&original.id).unwrap()).unwrap();
+    ledger = restart(&ledger);
+    now += DAY;
+    assert!(ledger.outbox("tenant", now).is_empty());
+    for fence in fences {
+        assert_eq!(
+            ledger
+                .finish(&original.id, fence, Outcome::Http(204), now)
+                .unwrap_err(),
+            Fault::Stale
+        );
+    }
+    // Explicit redrive is the only new budget, with new identity and retained lineage.
+    let (redriven, created) = ledger
+        .redrive(&original.id, "operator_redrive", now)
+        .unwrap();
+    assert!(created);
+    assert_ne!(redriven.id, original.id);
+    assert_eq!(redriven.parent.as_deref(), Some(original.id.as_str()));
+    assert_eq!(redriven.input.operation_key, original.input.operation_key);
+    assert!(redriven.attempts.is_empty());
+    assert_eq!(
+        serde_json::to_value(ledger.get(&original.id).unwrap()).unwrap(),
+        exhausted
+    );
+}
