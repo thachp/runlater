@@ -11,7 +11,12 @@ API/private-binding integration exists and remains disabled by default. Neither 
 API's current managed-host restrictions are unchanged. Source tests do not authorize
 activation or establish a provider-level proof.
 
-## Runtime decision and exact blocker
+A separate [Worker public-Fetch candidate](public-fetch/README.md) now offers an explicit
+provider-enforced public-network boundary. It is source-only/default-off and makes no
+claim of native observed-peer pinning. Selecting it requires its own reviewed artifact
+and private binding; the native path never falls back to it.
+
+## Native runtime decision and exact blocker
 
 The current Cloudflare Workers `node:https` implementation wraps Fetch. Its official
 documentation lists `servername` and `rejectUnauthorized` as unsupported and does

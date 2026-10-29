@@ -40,7 +40,9 @@
     "test:trial-receiver": "node --test examples/trial-receiver/*.test.mjs",
     "test:receiver-pairing": "./scripts/test-receiver-pairing.sh",
     "test:general-http": "./scripts/test-general-http.sh",
-    "test:egress": "node --test egress/*.test.mjs"
+    "test:egress": "node --test egress/*.test.mjs",
+    "test:public-fetch-local": "node scripts/public-fetch-integration.mjs",
+    "build:public-fetch": "wrangler deploy --dry-run --config egress/public-fetch/wrangler.example.jsonc"
   },
   "devDependencies": {
     "wrangler": "4.154.0"
