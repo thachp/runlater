@@ -1,6 +1,6 @@
 # RunLater
 
-The [offline invitation enrollment component](docs/INVITATIONS.md) adds bounded admission and atomic key/grant enrollment tests. It is not enabled on the public API; trial terms and public signup remain unset.
+The [offline invitation enrollment component](docs/INVITATIONS.md) adds bounded admission and atomic key/grant enrollment tests. That offline component does not establish public activation; consult the current deployed status below for the separate finite trial path.
 
 RunLater is a reusable HTTP task delivery API built in **Rust on Cloudflare Workers**. Submit work now for a later signed callback, with bounded retries and an inspectable record of each attempt.
 
@@ -10,9 +10,43 @@ are temporary safeguards. See the [general HTTPS destination design and safety g
 
 ## Status
 
-**Retained restricted alpha at [api.runlater.io](https://api.runlater.io/health), not customer general availability.** Only explicitly approved Ed25519 operators and RunLater's owned, side-effect-free synthetic receiver are enabled. The controlled cloud proof covered signed HTTPS success, retry across callback-key cutover, redirect rejection and timeout/cancel. No SLA, exact-time, ordering, exactly-once or verified capacity promise.
+**Current deployed path: MCP/OAuth, separate from the proposed Agent Auth architecture below.** The [hosted MCP guide](docs/MCP-HOSTING.md) and [general HTTPS release profile](docs/GENERAL-HTTPS-DESTINATIONS.md) record MCP/OAuth Connect, finite anonymous trials and general HTTPS configuration enabled on 2026-10-30. Public configuration readback is not verified delivery or compatibility evidence for any named commercial client. Consult those guides for current setup, permissions and destination limits.
 
-Public self-service signup, arbitrary customer callbacks, commercial trials and credit purchases remain disabled. The current finite operator identity/grant is not a public offer. Request keys, callback signing material and provider credentials are never part of public examples.
+Agent Auth remains a source-only candidate, not an activated service. Merged candidate code does not prove live activation. Earlier restricted-alpha and offline-source milestones below describe their own historical scope. No SLA, exact-time, ordering, exactly-once or verified capacity promise is made. Credentials are never part of public examples.
+
+## Proposed agent architecture — in development
+
+Agent Auth identity is the canonical identity for the target architecture. An agent discovers RunLater's capabilities, registers its identity, obtains scoped access, then explicitly creates a project with a finite trial allocation. Discovery and registration alone do not allocate a trial or authorize scheduling. RunLater binds project ownership and access to that identity and enforces project isolation, permissions and admission limits on task creation and status reads.
+
+The agent schedules an HTTP request to an arbitrary **permitted public HTTPS destination** at the requested time. The destination must satisfy RunLater's security policy and the caller must be authorized to cause its effect. RunLater durably accepts the task, delivers within retry and resource budgets, records the outcome, and lets the agent retrieve status and attempt history. HTTP success records delivery success, not downstream business completion.
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Discovery as RunLater discovery
+    participant Auth as Agent Auth
+    participant RunLater
+    participant Destination as Permitted HTTPS destination
+    Agent->>Discovery: Discover capabilities and requirements
+    Discovery-->>Agent: Available operations and constraints
+    Agent->>Auth: Register agent identity
+    Auth-->>Agent: Identity and scoped access
+    Agent->>RunLater: Explicitly create project and request finite trial
+    RunLater->>RunLater: Bind project to identity and allocate trial under policy
+    RunLater-->>Agent: Project context and allocation result
+    Agent->>RunLater: Schedule HTTPS request with project-scoped authority
+    RunLater->>RunLater: Validate permissions, destination and budget; persist task
+    RunLater-->>Agent: Task identifier and accepted status
+    RunLater->>Destination: Deliver when due, subject to policy and retry budgets
+    Destination-->>RunLater: HTTP response or timeout
+    RunLater->>RunLater: Persist attempt outcome and task status
+    Agent->>RunLater: Retrieve task status with scoped authority
+    RunLater-->>Agent: Status and attempt history
+```
+
+This target requires **no legacy identity bridge or migration of OAuth grants**. Existing bridge/cutover experiments are not prerequisites for canonical Agent Auth onboarding. Agent Auth establishes identity and scoped access; RunLater remains responsible for project/trial allocation and the authoritative task ledger. Exact routes, credential formats, trial capacities and client integration remain implementation decisions.
+
+The [Agent Auth candidate](agent-auth/replacement/README.md) documents the bounded source proof and outstanding integration work; its legacy linking plan does not define this target architecture. The deployed MCP/OAuth setup remains separate. Agent Auth is not a drop-in OAuth bearer replacement, and standard MCP/OAuth client compatibility is not established by the candidate. Activation and end-to-end verification remain separate from merging source.
 
 ## Landing, docs and discovery
 
@@ -21,10 +55,10 @@ The responsive landing at [runlater.io](https://runlater.io) and docs at [docs.r
 - [Agent quickstart](docs/AGENT-QUICKSTART.md): public health check and executable signed client for an already approved operator key.
 - [Host ownership, build, release and rollback](docs/HOSTS.md): separate static/redirect configurations and actual verification requirements.
 - [Discovery formats](docs/AGENT-DISCOVERY.md): custom capability metadata, local versus hosted contracts and disabled payment proposals.
-- [MCP server source and setup](docs/MCP.md): legacy SSE adapter, project-bound signed tools and local tests; intended `https://mcp.runlater.io/sse` is not yet deployment-verified.
+- [Hosted MCP setup](docs/MCP-HOSTING.md): current MCP/OAuth configuration and transport requirements; [local MCP setup](docs/MCP.md) covers the separate single-project adapter.
 - [Local setup](docs/LOCAL.md): loopback-only public bearer/fixture development. Do not use these tokens or destinations on the hosted API.
 
-The landing/docs source now builds with Next.js on Cloudflare Workers via OpenNext; rollout is pending. Run `npm run build:web`, `npm run test:web`, `npm run test:web-next`, `npm run test:web-local` and `npm run test:web-browser`. See [web migration and rollout](docs/WEB-NEXTJS.md). The API preserves CQRS, authoritative tenant/project SQLite state, durable idempotency/outbox/alarms, fenced leases, finite grant reservations, scoped authentication and bounded attempt/age/admission/publication limits. The retained transport permits exactly one owned synthetic endpoint; it does not establish arbitrary-host SSRF/DNS-rebinding safety. See [registered delivery](docs/REGISTERED-DELIVERY.md), [funding](docs/FUNDING.md) and [verification history](docs/VERIFICATION.md) for source evolution and earlier checkpoints.
+The landing/docs source now builds with Next.js on Cloudflare Workers via OpenNext; rollout is pending. Run `npm run build:web`, `npm run test:web`, `npm run test:web-next`, `npm run test:web-local` and `npm run test:web-browser`. See [web migration and rollout](docs/WEB-NEXTJS.md). The API preserves CQRS, authoritative tenant/project SQLite state, durable idempotency/outbox/alarms, fenced leases, finite grant reservations, scoped authentication and bounded attempt/age/admission/publication limits. The earlier restricted-alpha transport permitted one owned synthetic endpoint; current general HTTPS behavior and safety limits are documented in the release profile above. See [registered delivery](docs/REGISTERED-DELIVERY.md), [funding](docs/FUNDING.md) and [verification history](docs/VERIFICATION.md) for source evolution and earlier checkpoints.
 
 Broader customer delivery, abuse resistance, self-service onboarding, payment activation, measured fairness/load, operational alerting and full cloud failure proof remain separate work. Earlier source-increment documents are historical evidence, not the current deployment status.
 
@@ -33,11 +67,11 @@ Broader customer delivery, abuse resistance, self-service onboarding, payment ac
 - Create an immediate or one-time scheduled HTTP task.
 - Read task status, list tasks, and inspect delivery attempts.
 - Cancel pending work and explicitly redrive eligible terminal tasks.
-- Authenticate with project-scoped API keys and enforce tenant isolation.
+- Use canonical Agent Auth identity with project-scoped access and enforce tenant isolation (proposed; current MCP/OAuth remains separate).
 - Deliver signed HTTPS callbacks with bounded retries, rate limits, and concurrency controls.
 - Keep auditable outcomes without logging credentials or sensitive payloads by default.
 
-Recurring cron schedules, workflow orchestration, a full dashboard, billing, and language-specific SDKs are outside the first MVP. The versioned API contract, limits, and retention policy will be finalized in [issue #1](https://github.com/thachp/runlater/issues/1); a local-only fixture prototype and setup commands are now available in [docs/LOCAL.md](docs/LOCAL.md). The retained restricted alpha is narrower than this broader product plan; customer general availability remains gated.
+Recurring cron schedules, workflow orchestration, a full dashboard, billing, and language-specific SDKs are outside the first MVP. The versioned API contract, limits, and retention policy will be finalized in [issue #1](https://github.com/thachp/runlater/issues/1); a local-only fixture prototype and setup commands are now available in [docs/LOCAL.md](docs/LOCAL.md). The deployed finite beta is narrower than this broader product plan; consult the release profile above for its current limits.
 
 ## System design
 
@@ -173,6 +207,8 @@ If the customer processes a callback but RunLater crashes before recording succe
 
 ## Implementation backlog
 
+The source milestones below retain their original scope and activation notes; use [Status](#status) and the linked release guides for the current deployed path.
+
 This tracks both completed local foundations and remaining MVP work. Issues #2 and #14 are closed for their bounded local scope; other entries can contain implemented slices without satisfying their full launch criteria. Consult each issue for current progress.
 
 | Issue | Work |
@@ -213,8 +249,10 @@ Offline destination verification source and activation boundaries: [DESTINATIONS
 
 ### Hosted MCP delegation milestone
 
-The source includes a staged multi-tenant OAuth MCP gateway: owner keys stay local,
-scoped delegation is independently verified by the existing API, and true legacy
-`/sse` is separate from Streamable HTTP `/mcp`. It is **not yet deployed or verified**.
+The deployed multi-tenant MCP/OAuth gateway remains separate from the proposed
+Agent Auth architecture. On its owner-delegation path, owner keys stay local and
+scoped delegation is independently verified by the existing API. True legacy
+`/sse` is separate from Streamable HTTP `/mcp`. Configuration activation does not
+establish verified delivery in a named commercial client.
 See [hosting/security gates](docs/MCP-HOSTING.md) and [local MCP setup](docs/MCP.md).
 Do not use the single-project local signer as a public shared credential.
