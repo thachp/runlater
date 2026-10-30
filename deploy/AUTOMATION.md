@@ -20,7 +20,36 @@ The existing alpha has no Workers Builds triggers (read-only API inspection). Na
 
 ## Failure, drift and rollback
 
-For a failed preflight with no uploaded-version receipt, use **Diagnose API release (read only)** from main while both release flags remain false. It uses the same environment credential for exactly four GETs: GitHub main, existing Worker settings/deployments, and one page of Queue metadata. Each read has an eight-second limit, total foreground budget35seconds and response bound64KiB/64chunks; the job has a three-minute limit. Output is restricted to HTTP statuses, numeric API error codes, fixed error labels and baseline/source/binding booleans. It never emits response bodies, credentials or exception messages, refreshes a baseline, or uploads/promotes anything. This diagnostic can identify which preflight failed; it does not certify the token's write permissions or authorize a broader token. Reconcile versions/deployments before any retry of an uncertain upload.
+For a failed preflight with no uploaded-version receipt, **Diagnose API release (read only)** can run from main independently of the release execution gates. It never changes those gates. It uses the same environment credential for at most ten GETs: GitHub main, existing Worker settings/deployments, one page of Queue metadata, and the six fixed dashboard metadata paths below. Each read has an eight-second limit, total foreground budget35seconds and response bound64KiB/64chunks; the job has a three-minute limit. Exhausting the shared budget skips remaining reads. There is no retry, redirect following or pagination. Output is restricted to HTTP statuses, numeric API error codes, fixed error labels and baseline/source/binding booleans. It never emits response bodies, credentials or exception messages, refreshes a baseline, or uploads/promotes anything. This diagnostic can identify which metadata read failed; it does not certify the token's write permissions or authorize a broader token. Reconcile versions/deployments before any retry of an uncertain upload.
+
+The dashboard paths match locked Wrangler's pre-upload comparison. All are GETs
+below `/accounts/<approved-account-id>`; the Worker and production environment
+are fixed in source, with no arbitrary URL or header input.
+
+| Output label | Fixed path |
+| --- | --- |
+| `dashboard_bindings` | `/workers/services/runlater-public-api/environments/production/bindings` |
+| `dashboard_routes` | `/workers/services/runlater-public-api/environments/production/routes?show_zonename=true` |
+| `dashboard_domains` | `/workers/domains/records?page=0&per_page=5&service=runlater-public-api&environment=production` |
+| `dashboard_subdomain` | `/workers/services/runlater-public-api/environments/production/subdomain` |
+| `dashboard_environment` | `/workers/services/runlater-public-api/environments/production` |
+| `dashboard_schedules` | `/workers/scripts/runlater-public-api/schedules` |
+
+The domain request intentionally checks one page, not the complete inventory.
+Bodies are discarded after bounded parsing; secret binding names/values and
+provider-provided links are never reflected or followed. Local fake responses
+and the pinned Wrangler path test prove source behavior, not CI permissions.
+
+If this workflow is disabled by the operator, source changes do not enable it.
+Running a diagnosis requires separate explicit permission to temporarily enable
+**Diagnose API release (read only)** and dispatch it once on reviewed main using
+the existing `runlater-public-api` environment's CI token, then restore its
+disabled state. The proposed run is capped at ten metadata GETs/35 seconds
+(three-minute job ceiling), exposes only the sanitized fields above in Actions
+logs, and creates no credential, resource, trial, task or delivery. It adds no
+token scope and does not enable other workflows. Coordinate any source merge
+with release automation separately; merging to main can start the normal release
+pipeline, which is outside permission for a read-only diagnostic run.
 
 Fixed release-phase labels, HTTP status numbers and numeric child exit status locate failures without exposing provider bodies, exception text or child stdout/stderr. The uploaded version UUID and source SHA are emitted immediately to the Actions log before post-upload checks, preserving a receipt even on later failure. After promotion, bounded public `/health` verification requires HTTP 200, configured public-beta mode and that exact version. Current main and the sole 100% active provider version are rechecked after a matching health response. This proves ordinary public routing, not a full signup/callback journey or a custom-domain inventory audit. No domain-administration permission is added.
 
