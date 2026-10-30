@@ -2,6 +2,17 @@
 import {validate, settingsDigest} from './api-release.mjs';
 import {pathToFileURL} from 'node:url';
 
+// Exactly the metadata reads in locked Wrangler's dashboard-origin pre-upload
+// check. A label identifies a fixed path; no provider URL or body is reflected.
+const DASHBOARD_READS=[
+  ['dashboard_bindings','/workers/services/runlater-public-api/environments/production/bindings'],
+  ['dashboard_routes','/workers/services/runlater-public-api/environments/production/routes?show_zonename=true'],
+  ['dashboard_domains','/workers/domains/records?page=0&per_page=5&service=runlater-public-api&environment=production'],
+  ['dashboard_subdomain','/workers/services/runlater-public-api/environments/production/subdomain'],
+  ['dashboard_environment','/workers/services/runlater-public-api/environments/production'],
+  ['dashboard_schedules','/workers/scripts/runlater-public-api/schedules']
+];
+
 export async function diagnose(e=process.env, fetchImpl=globalThis.fetch, clock=Date.now) {
   let config, approval;
   try {
@@ -46,6 +57,7 @@ export async function diagnose(e=process.env, fetchImpl=globalThis.fetch, clock=
   const deployments=await read('worker_deployments',`${base}/workers/scripts/runlater-public-api/deployments`,e.CLOUDFLARE_API_TOKEN);
   if(deployments?.result)report.single_active_version=deployments.result.deployments?.[0]?.versions?.length===1&&deployments.result.deployments[0].versions[0].percentage===100;
   await read('queues_read',`${base}/queues?per_page=1`,e.CLOUDFLARE_API_TOKEN);
+  for(const [check,path] of DASHBOARD_READS)await read(check,base+path,e.CLOUDFLARE_API_TOKEN);
   return report;
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
