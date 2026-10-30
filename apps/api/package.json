@@ -4,6 +4,7 @@
   "scripts": {
     "build": "worker-build --release",
     "dev": "wrangler dev",
-    "check": "wrangler deploy --dry-run --outdir dist"
+    "check": "wrangler deploy --dry-run --outdir dist",
+    "test:e2e": "node --test --test-timeout=120000 test/e2e.test.mjs"
   }
 }

@@ -21,6 +21,10 @@ pub const LEASE_MS: i64 = 30 * SECOND_MS;
 pub const RETRY_BASE_MS: i64 = 10 * SECOND_MS;
 pub const RETRY_CAP_MS: i64 = 10 * MINUTE_MS;
 
+/// Tasks a project may hold at once, finished ones included until they are purged.
+/// Bounds storage even when tasks are scheduled and canceled without using attempts.
+pub const MAX_RETAINED_TASKS: i64 = 1_000;
+
 /// Terminal tasks and their attempts are kept this long, then purged.
 pub const RETENTION_MS: i64 = 30 * DAY_MS;
 

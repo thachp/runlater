@@ -106,6 +106,7 @@ services, not a public product in v1.
 | Furthest `run_at` | 7 days out (bounded by trial expiry) |
 | Trial | 100 delivery attempts, 7 days |
 | Retention | Task + attempts kept 30 days after terminal state |
+| Tasks held per project | 1,000, finished ones included until purged. A task's body is dropped once it succeeds or is canceled; failed tasks keep it for redrive. |
 | Projects | 1 per agent host |
 
 ## Explicitly not in v1

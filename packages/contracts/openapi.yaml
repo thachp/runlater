@@ -1,15 +1,21 @@
 openapi: 3.1.0
 info:
   title: RunLater internal API
-  version: 0.1.0
+  version: 0.2.0
   description: >
-    Contract between apps/gateway (TypeScript) and apps/api (Rust). Not public:
-    the API is reached only over a service binding. See docs/spec/ARCHITECTURE.md.
-    Routes other than /health are specified here first and implemented in phase 3.
+    Contract between apps/gateway (TypeScript) and apps/api (Rust). Not public: the API
+    is reached only over a service binding. Every route except /health requires a
+    RunLater-Assertion header signed by the gateway; the project comes from the
+    assertion, never from the path or body. See docs/spec/ARCHITECTURE.md.
+servers:
+  - url: https://api.internal
+security:
+  - assertion: []
 paths:
   /health:
     get:
       operationId: health
+      security: []
       responses:
         "200":
           description: Service is up.
@@ -21,3 +27,199 @@ paths:
                 properties:
                   service: { type: string }
                   status: { const: ok }
+  /v1/projects:
+    post:
+      operationId: createProject
+      description: >
+        Creates the project with a fresh trial. Idempotent: a repeat returns the existing
+        project unchanged (200) and never refills the trial or rotates the secret.
+        Scope: project.
+      responses:
+        "201": { $ref: "#/components/responses/Project" }
+        "200": { $ref: "#/components/responses/Project" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/projects/self:
+    get:
+      operationId: getProject
+      description: "Scope: read."
+      responses:
+        "200": { $ref: "#/components/responses/Project" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/tasks:
+    post:
+      operationId: scheduleTask
+      description: >
+        Schedules an HTTP request. 201 when created; 200 when idempotency_key replays an
+        identical earlier request. Scope: schedule.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScheduleRequest" }
+      responses:
+        "201": { $ref: "#/components/responses/Task" }
+        "200": { $ref: "#/components/responses/Task" }
+        default: { $ref: "#/components/responses/Error" }
+    get:
+      operationId: listTasks
+      description: "Newest first. Scope: read."
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/Status" } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        "200":
+          description: A page of tasks, without attempt history.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tasks, next_cursor]
+                properties:
+                  tasks: { type: array, items: { $ref: "#/components/schemas/Task" } }
+                  next_cursor: { type: [string, "null"] }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/tasks/{id}:
+    get:
+      operationId: getTask
+      description: "Includes attempt history. Scope: read."
+      parameters: [{ $ref: "#/components/parameters/TaskId" }]
+      responses:
+        "200": { $ref: "#/components/responses/Task" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/tasks/{id}/cancel:
+    post:
+      operationId: cancelTask
+      description: >
+        Cancels a waiting task. If an attempt is in flight the task becomes canceled when
+        it ends, unless it succeeds. 409 task_finished if already succeeded or failed.
+        Scope: cancel.
+      parameters: [{ $ref: "#/components/parameters/TaskId" }]
+      responses:
+        "200": { $ref: "#/components/responses/Task" }
+        default: { $ref: "#/components/responses/Error" }
+  /v1/tasks/{id}/redrive:
+    post:
+      operationId: redriveTask
+      description: >
+        Gives a failed task a fresh set of attempts, starting now. 409 task_not_failed
+        otherwise. Scope: schedule.
+      parameters: [{ $ref: "#/components/parameters/TaskId" }]
+      responses:
+        "200": { $ref: "#/components/responses/Task" }
+        default: { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    assertion:
+      type: apiKey
+      in: header
+      name: RunLater-Assertion
+      description: >
+        base64url(claims JSON) "." base64url(Ed25519 signature over the first segment).
+        Claims: aud "runlater-api", sub (project id, [A-Za-z0-9_-]{1,64}), scope
+        (space-separated: project schedule read cancel), iat and exp in unix seconds,
+        lifetime at most 300 s.
+  parameters:
+    TaskId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^task_[0-9a-f]{20}$" }
+  responses:
+    Project:
+      description: The project and its trial.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Project" }
+    Task:
+      description: The task.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Task" }
+    Error:
+      description: >
+        400 invalid_request, 401 unauthorized, 402 budget_exhausted, 403 forbidden or
+        trial_expired, 404 not_found / project_not_found / task_not_found,
+        409 idempotency_conflict / task_finished / task_not_failed,
+        429 task_limit (1,000 tasks held, finished ones included until purged),
+        500 internal_error.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: object
+                required: [code, message]
+                properties:
+                  code: { type: string }
+                  message: { type: string }
+                  field: { type: string, description: Request field at fault, when known. }
+  schemas:
+    Status:
+      type: string
+      enum: [scheduled, delivering, retrying, succeeded, failed, canceled]
+    Method:
+      type: string
+      enum: [GET, POST, PUT, PATCH, DELETE]
+    Project:
+      type: object
+      required: [id, created_ms, expires_ms, attempt_budget, attempts_used, attempts_remaining, signing_secret]
+      properties:
+        id: { type: string }
+        created_ms: { type: integer }
+        expires_ms: { type: integer }
+        attempt_budget: { type: integer }
+        attempts_used: { type: integer }
+        attempts_remaining: { type: integer }
+        signing_secret: { type: string, description: Verifies RunLater-Signature on deliveries. }
+    ScheduleRequest:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        url: { type: string, maxLength: 2048, description: "https:// to a public DNS name." }
+        method: { $ref: "#/components/schemas/Method", default: POST }
+        headers:
+          type: object
+          maxProperties: 32
+          additionalProperties: { type: string }
+        body: { type: string, maxLength: 65536, description: Not allowed with GET. }
+        run_at_ms: { type: integer, minimum: 0, description: "Unix ms; absent or past means now. At most 7 days ahead." }
+        idempotency_key: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+        max_attempts: { type: integer, minimum: 1, maximum: 5, default: 5 }
+    Attempt:
+      type: object
+      required: [number, started_ms, finished_ms, outcome, http_status]
+      properties:
+        number: { type: integer }
+        started_ms: { type: integer }
+        finished_ms: { type: [integer, "null"] }
+        outcome:
+          type: [string, "null"]
+          description: http_<status>, timeout, network_error, rejected or lease_expired.
+        http_status: { type: [integer, "null"] }
+    Task:
+      type: object
+      required: [id, status, method, url, header_names, body_bytes, run_at_ms, next_attempt_ms, max_attempts, attempt_count, idempotency_key, created_ms, updated_ms, finished_ms]
+      description: Header values and the body are never returned; they may hold credentials.
+      properties:
+        id: { type: string }
+        status: { $ref: "#/components/schemas/Status" }
+        method: { $ref: "#/components/schemas/Method" }
+        url: { type: string }
+        header_names: { type: array, items: { type: string } }
+        body_bytes: { type: integer }
+        run_at_ms: { type: integer }
+        next_attempt_ms: { type: [integer, "null"] }
+        max_attempts: { type: integer }
+        attempt_count: { type: integer }
+        idempotency_key: { type: [string, "null"] }
+        created_ms: { type: integer }
+        updated_ms: { type: integer }
+        finished_ms: { type: [integer, "null"] }
+        attempts:
+          type: array
+          items: { $ref: "#/components/schemas/Attempt" }
+          description: Present on getTask and on mutations; omitted in lists.

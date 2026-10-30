@@ -1,6 +1,12 @@
 //! RunLater task API: the authoritative task ledger, scheduling and delivery.
 //!
 //! Reachable only through a service binding from `apps/gateway`; it has no public route.
+//! Everything except `worker_entry` is plain Rust and tested natively.
+
+pub mod assertion;
+pub mod db;
+pub mod http;
+pub mod ledger;
 
 #[cfg(target_arch = "wasm32")]
 mod worker_entry;

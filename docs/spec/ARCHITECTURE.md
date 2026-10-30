@@ -52,6 +52,7 @@ flowchart LR
 - Alarm wakes for earliest due task → writes outbox → publishes `{project_id, task_id, generation}` to Queue.
 - Queue consumer claims a fenced lease, re-validates destination, signs, sends (10 s timeout), records the attempt, then acks.
 - Budget is charged per attempt inside the DO, so it cannot be bypassed.
+- Assertion format, scopes and the full route contract: [`packages/contracts/openapi.yaml`](../../packages/contracts/openapi.yaml).
 
 **`apps/web` (Next.js)** — landing + docs at runlater.io / docs.runlater.io. Static-first; no auth in v1.
 
@@ -145,7 +146,9 @@ Each phase is one PR that leaves `main` green.
 
 1. **Skeleton.** ✅ Create workspaces, `crates/`, `apps/`, `packages/`. Move old code under `legacy/` so nothing is lost while porting. CI runs the new layout only; legacy workflows (including the old API auto-release) are parked in `legacy/.github/workflows` and no longer run.
 2. **Core crates.** ✅ Port domain + egress into `crates/core` and `crates/egress` with native tests. `crates/core` models one task as a pure state machine (generation guards stale dispatches, fence guards stale results) so phase 3 can store tasks as SQLite rows instead of the legacy whole-ledger snapshot. Phase 3 must enable `global_fetch_strictly_public` on the API Worker.
-3. **API.** `apps/api`: TaskLedger DO, alarm, outbox, queue consumer, internal routes, assertion verification. Miniflare tests.
+3. **API.** ✅ `apps/api`: TaskLedger DO, alarm, outbox, queue consumer, internal routes, assertion verification. The ledger's SQL runs behind a small `Db` trait, so it is tested natively against rusqlite and in workerd unchanged. `npm run test:e2e` in `apps/api` drives the built Worker in Miniflare (DO SQLite, alarms, Queues) with outbound deliveries captured locally.
+   - Admission: a project may hold at most as many waiting tasks as it has attempts left, so storage is bounded by the trial.
+   - The gateway's Ed25519 public key is the `GATEWAY_PUBLIC_KEY` secret. Queues `runlater-ready[-staging|-production]` must exist before the first deploy.
 4. **Gateway.** `apps/gateway`: Agent Auth host, D1 schema, capabilities, MCP endpoint. Tests with real Agent Auth packages.
 5. **Web.** Move Next.js app to `apps/web`, rewrite landing + docs from PRODUCT.md.
 6. **E2E + deploy.** One e2e script, staging + production envs, deploy workflow.

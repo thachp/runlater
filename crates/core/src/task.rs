@@ -198,6 +198,18 @@ impl Task {
         Ok(())
     }
 
+    /// Fails a waiting task without attempting it, e.g. because the project has no attempts
+    /// left. Returns false if the task was not waiting.
+    pub fn abandon(&mut self, now_ms: i64) -> bool {
+        if !matches!(self.status, Status::Scheduled | Status::Retrying) {
+            return false;
+        }
+        self.status = Status::Failed;
+        self.terminal_ms = Some(now_ms);
+        self.generation += 1;
+        true
+    }
+
     /// When a terminal task may be purged.
     pub fn purge_after_ms(&self) -> Option<i64> {
         self.terminal_ms.map(|t| t.saturating_add(RETENTION_MS))
@@ -421,6 +433,20 @@ mod tests {
             t.redrive(T0),
             Err(RedriveError::NotFailed(Status::Succeeded))
         );
+    }
+
+    #[test]
+    fn abandon_fails_only_waiting_tasks() {
+        let mut t = Task::new(T0, 5);
+        assert!(t.abandon(T0));
+        assert_eq!(t.status, Status::Failed);
+        assert_eq!(t.claim(1, T0), Err(ClaimError::Stale));
+        assert!(!t.abandon(T0));
+
+        let mut t = Task::new(T0, 5);
+        t.claim(1, T0).unwrap();
+        assert!(!t.abandon(T0));
+        assert_eq!(t.status, Status::Delivering);
     }
 
     #[test]
