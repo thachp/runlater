@@ -79,6 +79,9 @@ for each app; it never deploys. Preview uses local workerd on loopback ports
 requests, and saves screenshots to ignored `build/web-qa/`. Local HTTP QA uses
 14173–14175. `test:web-next` prepares inputs but does not compile; run build before
 runtime checks. No live API, MCP, OAuth connection or task creation is exercised.
+CI runs the Next unit tests and production builds on every PR. Full local HTTP
+and Chromium checks run on pushes to main, preserving the faster PR check policy.
+Run both full checks locally for independent migration QA before merging.
 There is no separate TypeScript/lint project for these JavaScript web sources;
 Next's build and Node syntax checks cover compilation, with behavior covered by
 the tests. Keep the lockfile synchronized after dependency changes.
