@@ -51,6 +51,37 @@ token scope and does not enable other workflows. Coordinate any source merge
 with release automation separately; merging to main can start the normal release
 pipeline, which is outside permission for a read-only diagnostic run.
 
+### One-read CI token identification
+
+The diagnostic has two fixed manual modes. `metadata` retains the ten-read
+behavior above. `token_identity` makes exactly one
+`GET https://api.cloudflare.com/client/v4/user/tokens/verify` with the existing
+CI credential, within eight seconds and the same 64KiB/64-chunk body bounds.
+It makes no GitHub/provider inventory reads, follows no link or redirect, and
+does not fall back to metadata mode on failure. Only a validated 32-character
+opaque token ID and recognized status are reported; the credential value,
+arbitrary result fields and provider text are never emitted. The workflow's
+main-only guard, environment and three-minute job ceiling remain unchanged.
+
+This mode requires separate explicit permission; prior permission for a ten-read
+diagnostic does not authorize another run. Dispatch once with
+`mode=token_identity`, then restore the workflow's previous disabled state even
+on failure. Do not rerun the ten-read campaign merely to identify the token.
+Token-policy inspection is a separate metadata read for that identified ID,
+only where existing authority permits it. This mode neither reads policies nor
+edits permissions, creates a credential or enumerates other tokens.
+
+If this source must first merge solely to support the read-only check, serialize
+main changes and temporarily hold repository `RUNLATER_AUTODEPLOY_ENABLED` at
+`false` using its recorded original value. Let any in-flight release reach a
+known terminal state first. Merge only reviewed source with required CI passed;
+do not change production Worker flags, secrets, profiles or the release approval.
+Keep the trigger held until the resulting main CI completes and its normal
+release job is confirmed skipped, then restore the original trigger value after
+fresh source/configuration/readback checks. Never restore it early while that
+main check could still trigger an upload. Coordinate this operational hold with
+the release owner; enabling the diagnostic itself never authorizes an upload.
+
 Fixed release-phase labels, HTTP status numbers and numeric child exit status locate failures without exposing provider bodies, exception text or child stdout/stderr. The uploaded version UUID and source SHA are emitted immediately to the Actions log before post-upload checks, preserving a receipt even on later failure. After promotion, bounded public `/health` verification requires HTTP 200, configured public-beta mode and that exact version. Current main and the sole 100% active provider version are rechecked after a matching health response. This proves ordinary public routing, not a full signup/callback journey or a custom-domain inventory audit. No domain-administration permission is added.
 
 Public health reads have a 120-second overall monotonic deadline, at most 12 requests, five seconds per request (including body), and at least five seconds between attempts. Transport failures, HTTP 429, selected transient 5xx and a well-formed beta reporting another valid version may retry. A valid `Retry-After` (seconds or HTTP date) is respected; a delay that cannot fit ends verification without retrying early. Malformed retry metadata fails closed. Redirects are rejected without following, and there are no authorization/version-override headers, fallback hosts or identity bypasses. Wrong profile/configuration, invalid identity/JSON/UTF-8, more than 4096 body bytes or 128 chunks, and non-retryable statuses fail closed. Diagnostics contain only attempt/elapsed/status numbers, fixed outcome categories and match booleans, never response bodies, raw headers or exceptions. The health endpoint's existing IP gate remains unchanged; a 429 may represent either limiting or a gate failure. A transient mismatch is not evidence of its particular cause.
