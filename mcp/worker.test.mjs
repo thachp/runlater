@@ -3,7 +3,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash, generateKeyPairSync, verify} from 'node:crypto';
-import {bundleMcp} from '../scripts/build-mcp.mjs';
+import {build} from 'esbuild';
+import {fileURLToPath} from 'node:url';
 import {Miniflare, convertV4MiniflareOptions} from 'miniflare';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {SSEClientTransport} from '@modelcontextprotocol/sdk/client/sse.js';
@@ -13,7 +14,7 @@ import {authorizeFixture} from './oauth-test-helpers.mjs';
 const origin = 'https://mcp.runlater.io', api = 'https://api.runlater.io';
 const hash = value => createHash('sha256').update(value).digest('hex');
 
-test('whole Worker OAuth-bound SSE and Streamable clients remain tenant-bound and revoke immediately', {timeout: 45000}, async t => {
+test('retained internal McpHub OAuth-bound SSE and Streamable clients remain tenant-bound and revoke immediately', {timeout: 45000}, async t => {
   const owner = generateKeyPairSync('ed25519'), gateway = generateKeyPairSync('ed25519');
   const releaseId = 'worker_mcp_fixture', key = delegationPublicKey(owner.privateKey), gatewayKey = delegationPublicKey(gateway.privateKey), now = Date.now();
   const ticket = hash(JSON.stringify(['runlater.public-beta.registration.v1', releaseId, key]));
@@ -22,7 +23,12 @@ test('whole Worker OAuth-bound SSE and Streamable clients remain tenant-bound an
     permissions: ['enqueue', 'read', 'cancel', 'redrive', 'manage_destinations']};
   const delegation = signDelegation({privateKey: owner.privateKey, receipt, releaseId, gatewayPublicKey: gatewayKey,
     permissions: ['cancel', 'enqueue', 'read'], delegationId: 'a'.repeat(64), issuedAtMs: now, expiresAtMs: now + 3600000});
-  const script = await bundleMcp();
+  // Exercise retained cleanup-era internals directly; public ingress is retired.
+  const script = (await build({stdin: {resolveDir: fileURLToPath(new URL('../', import.meta.url)), contents: `
+    import {McpHub} from './mcp/worker.mjs'; export {McpHub};
+    export default {fetch(request, env) {return env.MCP_HUB.get(env.MCP_HUB.idFromName('mcp-hub-v1')).fetch(request);}};`},
+    bundle: true, loader: {'.md': 'text'}, platform: 'neutral', mainFields: ['module', 'main'], format: 'esm',
+    external: ['cloudflare:*', 'node:*'], write: false})).outputFiles[0].text;
   const calls = [], violations = []; let state = 'scheduled';
   const mf = new Miniflare(convertV4MiniflareOptions({modules: true, script, compatibilityDate: '2026-10-29',
     compatibilityFlags: ['global_fetch_strictly_public'], durableObjects: {MCP_HUB: {className: 'McpHub', useSQLite: true}},

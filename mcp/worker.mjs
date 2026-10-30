@@ -8,6 +8,9 @@ import {delegationPublicKey} from './delegation.mjs';
 import {AnonymousTrialClientV1} from './trial-client.mjs';
 import {PublicBetaClientError} from '../examples/public-beta-client.v1.mjs';
 
+// Public retirement is independent of gateway readiness: existing cleanup alarms
+// must still initialize OAuth with the unchanged production bindings.
+const legacyPublicIngressRetired = true;
 const paths = new Set(['/sse', '/messages', '/mcp', '/authorize', '/oauth/token',
   '/.well-known/oauth-authorization-server', '/.well-known/oauth-protected-resource']);
 const response = (status, error) => Response.json({error}, {status, headers: {'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'}});
@@ -86,13 +89,16 @@ export default {
       const url = new URL(request.url);
       if (url.origin !== MCP_ORIGIN) return response(403, 'host_rejected');
       if (url.pathname === '/health' && request.method === 'GET' && !url.search) return Response.json({
-        service: 'runlater-mcp', configured: gatewayReady(env), source_sha: env.MCP_SOURCE_SHA || null,
-        version_id: env.MCP_RELEASE_VERSION?.id || null, mode: 'delegated_public_beta',
+        service: 'runlater-mcp', configured: !legacyPublicIngressRetired && gatewayReady(env),
+        legacy_public_ingress_retired: legacyPublicIngressRetired, cleanup_configured: gatewayReady(env),
+        agent_auth_ready: false, source_sha: env.MCP_SOURCE_SHA || null,
+        version_id: env.MCP_RELEASE_VERSION?.id || null, mode: legacyPublicIngressRetired ? 'legacy_retired' : 'delegated_public_beta',
         anonymous_trial_source_enabled: env.MCP_ANONYMOUS_TRIAL_ENABLED === 'operator-approved',
         receiver_pairing_source_enabled: env.MCP_RECEIVER_PAIRING_ENABLED === 'operator-approved' && env.MCP_ANONYMOUS_TRIAL_ENABLED === 'operator-approved',
         general_https_source_enabled: env.GENERAL_HTTPS_ENABLED === 'operator-approved' && env.MCP_ANONYMOUS_TRIAL_ENABLED === 'operator-approved',
       }, {headers: {'Cache-Control': 'no-store'}});
       if (!paths.has(url.pathname)) return response(404, 'not_found');
+      if (legacyPublicIngressRetired) return response(410, 'legacy_mcp_retired');
       if (!gatewayReady(env) || !env.MCP_HUB || !env.MCP_IP_RATE || !env.MCP_AUTH_RATE) return response(503, 'mcp_unavailable');
       let headerBytes = 0; for (const [key, value] of request.headers) headerBytes += key.length + value.length;
       if (headerBytes > 8192 || Number(request.headers.get('content-length') || 0) > 16384) return response(413, 'request_too_large');
