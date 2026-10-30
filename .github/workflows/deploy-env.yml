@@ -1,0 +1,56 @@
+name: Deploy environment
+# Deploys every Worker to one wrangler environment. Order matters: the gateway's
+# service binding needs the API Worker to exist first.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      ref:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      DEPLOY_ENV: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: cargo install worker-build --version 0.8.7 --locked
+      - run: npm ci
+
+      - name: Deploy api
+        run: npx wrangler deploy --env "$DEPLOY_ENV"
+        working-directory: apps/api
+
+      # Phase 4: apply D1 migrations here, before the gateway deploys.
+      # npx wrangler d1 migrations apply DB --env "$DEPLOY_ENV" --remote
+      - name: Deploy gateway
+        run: npx wrangler deploy --env "$DEPLOY_ENV"
+        working-directory: apps/gateway
+
+      - name: Deploy web
+        run: npm run deploy -w @runlater/web -- --env "$DEPLOY_ENV"
+
+      # The gateway health check also reaches the API through its binding.
+      - name: Smoke check
+        if: vars.GATEWAY_URL != ''
+        env:
+          GATEWAY_URL: ${{ vars.GATEWAY_URL }}
+        run: curl --fail --silent --show-error --max-time 10 --retry 3 --retry-all-errors "$GATEWAY_URL/health"

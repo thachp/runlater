@@ -18,7 +18,7 @@ Let an AI agent make an HTTP request later, and check whether it happened.
 | `packages/contracts` | OpenAPI contract between gateway and API | OpenAPI 3.1 |
 | `packages/tsconfig` | Shared TypeScript config | |
 
-Everything deploys to Cloudflare Workers, with `staging` and `production` environments in each app's `wrangler.jsonc`.
+Everything deploys to Cloudflare Workers, with `staging` and `production` environments in each app's `wrangler.jsonc`; see [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ## Develop
 
