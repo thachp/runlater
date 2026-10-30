@@ -53,4 +53,7 @@ jobs:
         working-directory: apps/api
       - run: npx wrangler deploy --dry-run --outdir dist
         working-directory: apps/gateway
+      # Gateway + API together, driven by the real Agent Auth SDK and the MCP bridge.
+      - run: npm run test:e2e
+        working-directory: apps/gateway
       - run: npm run check -w @runlater/web

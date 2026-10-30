@@ -1,20 +1,149 @@
-// Public entry for agents: Agent Auth host, capabilities and MCP (phase 4).
-// Every task operation is forwarded to the private Rust API over the API binding.
+// Public entry for agents. Serves Agent Auth discovery and the agent endpoints, and turns
+// capability executions into signed calls on the private Rust API (API binding).
 
-export interface Env {
-  API: Fetcher;
+import { importSigningKey } from "./api";
+import { BASE_PATH, createAuth, type AuthEnv } from "./auth";
+
+export { AuthStore } from "./store";
+
+export interface Env extends AuthEnv {
+  /** Hex-encoded 32-byte Ed25519 seed; its public key is the API's GATEWAY_PUBLIC_KEY. */
+  ASSERTION_PRIVATE_KEY: string;
+  REGISTER_RATE: RateLimit;
+}
+
+/** Agent Auth endpoints an autonomous agent needs; everything else is not served. */
+const AGENT_ROUTES = new Set([
+  "/agent/register",
+  "/agent/status",
+  "/agent/revoke",
+  "/agent/rotate-key",
+  "/agent/reactivate",
+  "/capability/list",
+  "/capability/describe",
+  "/capability/execute",
+  "/host/revoke",
+  "/host/rotate-key",
+]);
+
+/** A schedule_http body can be 64 KiB of string; leave room for JSON escaping. */
+const MAX_BODY_BYTES = 192 * 1024;
+/** Plugin JWTs live 60 s plus 30 s clock skew; replay claims must outlast them. */
+const JTI_TTL_SECS = 90;
+
+const json = (body: unknown, status = 200) =>
+  Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
+const error = (status: number, code: string, message: string) => json({ error: code, message }, status);
+
+/** The body, or null if it exceeds `limit` bytes. Counts bytes read, not Content-Length. */
+async function readLimited(request: Request, limit: number): Promise<Uint8Array | null> {
+  if (!request.body) return new Uint8Array();
+  const reader = request.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel();
+      return null;
+    }
+    parts.push(value);
+  }
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.byteLength;
+  }
+  return out;
+}
+
+/**
+ * The replay key for a bearer JWT, read without verifying it. Better Auth verifies the
+ * token afterwards; this only lets the gateway reject a second use atomically, which the
+ * plugin's own separate check-then-store cannot do under concurrency.
+ */
+function replayKey(request: Request): string | null {
+  const token = request.headers.get("Authorization")?.match(/^Bearer\s+(\S+)$/i)?.[1];
+  const payload = token?.split(".")[1];
+  if (!payload) return null;
+  try {
+    const claims = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/"))) as Record<string, unknown>;
+    if (typeof claims.jti !== "string" || claims.jti.length === 0 || claims.jti.length > 128) return null;
+    return `replay:${String(claims.iss ?? "")}:${String(claims.sub ?? "")}:${claims.jti}`;
+  } catch {
+    return null;
+  }
+}
+
+let keyCache: { seed: string; key: Promise<CryptoKey> } | undefined;
+function signingKey(env: Env): Promise<CryptoKey> {
+  if (keyCache?.seed !== env.ASSERTION_PRIVATE_KEY) {
+    keyCache = { seed: env.ASSERTION_PRIVATE_KEY, key: importSigningKey(env.ASSERTION_PRIVATE_KEY) };
+  }
+  return keyCache.key;
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
     if (request.method === "GET" && url.pathname === "/health") {
       const api = await env.API.fetch("https://api.internal/health");
-      return Response.json(
+      return json(
         { service: "runlater-gateway", status: "ok", api: api.ok ? "ok" : "unavailable" },
-        { status: api.ok ? 200 : 503 },
+        api.ok ? 200 : 503,
       );
     }
-    return Response.json({ error: "not_found" }, { status: 404 });
+
+    const isDiscovery = url.pathname === "/.well-known/agent-configuration";
+    const route = url.pathname.startsWith(BASE_PATH + "/") ? url.pathname.slice(BASE_PATH.length) : null;
+    if (!isDiscovery && !(route && AGENT_ROUTES.has(route))) return error(404, "not_found", "no such route");
+
+    const tooLarge = () => error(413, "too_large", "request body is too large");
+    if (Number(request.headers.get("Content-Length") ?? 0) > MAX_BODY_BYTES) return tooLarge();
+    const body = await readLimited(request, MAX_BODY_BYTES);
+    if (body === null) return tooLarge();
+
+    if (route === "/agent/register") {
+      const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+      const { success } = await env.REGISTER_RATE.limit({ key: ip });
+      if (!success) return error(429, "rate_limited", "too many registrations; try again shortly");
+    }
+
+    let key: CryptoKey;
+    try {
+      key = await signingKey(env);
+    } catch {
+      return error(500, "misconfigured", "assertion signing key is not configured");
+    }
+    const auth = createAuth(env, ctx, key);
+
+    if (isDiscovery) {
+      const config = await auth.api.getAgentConfiguration();
+      // Advertise only the endpoints served above.
+      if (config.endpoints) {
+        config.endpoints = Object.fromEntries(
+          Object.entries(config.endpoints).filter(([, u]) => AGENT_ROUTES.has(new URL(u).pathname.slice(BASE_PATH.length))),
+        );
+      }
+      return json(config);
+    }
+
+    const replay = replayKey(request);
+    if (replay) {
+      const store = env.AUTH_STORE.get(env.AUTH_STORE.idFromName("auth-store"));
+      if (!(await store.claim(replay, JTI_TTL_SECS))) {
+        return error(401, "invalid_jwt", "this token has already been used");
+      }
+    }
+    const buffered = new Request(request.url, {
+      method: request.method,
+      headers: request.headers,
+      body: request.method === "GET" || request.method === "HEAD" ? null : body,
+    });
+    return auth.handler(buffered);
   },
 } satisfies ExportedHandler<Env>;

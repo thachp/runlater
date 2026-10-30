@@ -72,7 +72,17 @@ scheduled ──(run_at reached)──▶ delivering ──2xx──▶ succeede
 
 ## Capabilities (the API surface)
 
-Each one is an Agent Auth capability. The same set is also exposed as MCP tools.
+Each one is an Agent Auth capability. MCP clients reach them through the Agent Auth MCP bridge, which runs locally and exposes generic tools (`connect_agent`, `list_capabilities`, `execute_capability`); the agent picks a RunLater capability by name inside `execute_capability`:
+
+```json
+{ "mcpServers": { "runlater": {
+  "command": "npx",
+  "args": ["@auth/agent-cli@0.5.1", "mcp", "--url", "https://gateway.runlater.io"],
+  "env": { "AGENT_AUTH_ENCRYPTION_KEY": "<32 random bytes, hex>" }
+} } }
+```
+
+The bridge keeps the agent's keys in `~/.agent-auth`. Losing them loses access to the project.
 
 | Capability | Input | Output |
 | --- | --- | --- |
@@ -129,7 +139,7 @@ services, not a public product in v1.
 
 ## Open questions
 
-1. **MCP client compatibility.** Agent Auth is not standard MCP OAuth. Claude Desktop, Cursor, etc. would need the `@auth/agent-cli mcp` stdio bridge, which hasn't been validated. Do we also want a hosted remote MCP endpoint, and how would it authenticate?
+1. **Remote-only MCP clients.** The local bridge works (tested end to end). Clients that only support remote MCP servers can't run it. Do we want a hosted MCP endpoint, and how would it authenticate without standard MCP OAuth?
 2. **Key loss.** If an agent loses its keys, its project is gone. Acceptable for a trial?
 3. **Abuse.** New keys are new identities (Sybil). Is a global trial cap + per-IP registration limit enough for launch?
 4. **What happens after the trial?** Even without billing, do we want a waitlist / "contact us" path?

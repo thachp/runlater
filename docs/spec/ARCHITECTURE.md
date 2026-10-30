@@ -9,7 +9,7 @@ Status: **draft for review** · Companion to [PRODUCT.md](PRODUCT.md)
 | Primary customer | AI agents |
 | Identity | Agent Auth only (Better Auth `@better-auth/agent-auth` host). API keys, MCP OAuth, invitations, anonymous trials, receiver pairing are removed. |
 | Backend | Rust (`workers-rs`) on Cloudflare Workers — task ledger, scheduling, delivery |
-| Agent-facing layer | TypeScript Worker — Agent Auth host, capabilities, MCP |
+| Agent-facing layer | TypeScript Worker — Agent Auth host and capabilities; MCP clients reach it through the Agent Auth MCP bridge |
 | Frontend | Next.js on Cloudflare Workers via OpenNext |
 | Approach | Clean rebuild in a new layout; port the proven ledger/delivery core; delete milestone code. No migration of beta data. |
 
@@ -43,7 +43,7 @@ flowchart LR
 - Agent Auth discovery, host/agent registration, capability execution (signature + `htm/htu/ath` binding checks).
 - Owns identity tables in D1: `host`, `agent`, `project(host_id → project_id, trial, expiry, revoked_at)`.
 - Maps each capability to one internal API call. Never accepts a project id from the caller; derives it from the authenticated host.
-- Exposes the same capabilities as MCP tools (`/mcp`, Streamable HTTP) for the Agent Auth MCP bridge.
+- MCP: no hosted `/mcp` endpoint. MCP clients run the Agent Auth bridge (`@auth/agent-cli mcp --url <gateway>`), a local stdio MCP server that holds the agent's keys and exposes generic Agent Auth tools (`connect_agent`, `list_capabilities`, `execute_capability`, …). Our capability names, descriptions and input schemas are what the agent reads through them.
 - Rate limits registration and capability calls (Workers Rate Limiting binding).
 
 **`apps/api` (Rust)** — the task authority. Not on a public route.
@@ -81,7 +81,7 @@ runlater/
 │   │   ├── Cargo.toml
 │   │   └── wrangler.jsonc
 │   ├── gateway/             TS Worker: Agent Auth host, capabilities, MCP
-│   │   ├── src/{auth,capabilities,mcp,api-client}.ts
+│   │   ├── src/{index,auth,capabilities,api,projects,store}.ts
 │   │   ├── migrations/      D1 SQL
 │   │   └── wrangler.jsonc
 │   └── web/                 Next.js + OpenNext
@@ -114,7 +114,7 @@ One `wrangler.jsonc` per app with `env.staging` and `env.production`. No per-mil
 | --- | --- |
 | `crates/*` | `cargo test` (native, fast) |
 | `apps/api` | `vitest` + `@cloudflare/vitest-pool-workers` against Miniflare (DO, alarms, queues) |
-| `apps/gateway` | `vitest` + vitest-pool-workers, real `@better-auth/agent-auth` against local D1 |
+| `apps/gateway` | `vitest` unit tests; `npm run test:e2e` runs the built gateway and API together in Miniflare, driven by the real `@auth/agent` SDK and the `@auth/agent-cli` MCP bridge |
 | End-to-end | One script: register agent → create project → schedule → local receiver gets signed request → `get_task` shows `succeeded` |
 | `apps/web` | `next build` + Playwright smoke |
 
@@ -149,13 +149,16 @@ Each phase is one PR that leaves `main` green.
 3. **API.** ✅ `apps/api`: TaskLedger DO, alarm, outbox, queue consumer, internal routes, assertion verification. The ledger's SQL runs behind a small `Db` trait, so it is tested natively against rusqlite and in workerd unchanged. `npm run test:e2e` in `apps/api` drives the built Worker in Miniflare (DO SQLite, alarms, Queues) with outbound deliveries captured locally.
    - Admission: a project may hold at most as many waiting tasks as it has attempts left, so storage is bounded by the trial.
    - The gateway's Ed25519 public key is the `GATEWAY_PUBLIC_KEY` secret. Queues `runlater-ready[-staging|-production]` must exist before the first deploy.
-4. **Gateway.** `apps/gateway`: Agent Auth host, D1 schema, capabilities, MCP endpoint. Tests with real Agent Auth packages.
+4. **Gateway.** ✅ `apps/gateway`: Agent Auth host (Better Auth + `@better-auth/agent-auth`) on D1, seven capabilities, Ed25519 assertions to the API, an `AuthStore` Durable Object for JWT replay and rate-limit state, and a per-IP registration rate limit.
+   - The MCP bridge is validated end to end: `@auth/agent-cli@0.5.1` (SDK 0.5.1) works against the 0.6.2 server. No hosted `/mcp` endpoint is needed for it.
+   - Capability calls are protected by single-use `jti` (replay returns 401) rather than the legacy request-binding check, which the standard SDK and the bridge do not send.
+   - A cross-language test vector pins the assertion format: a token signed by the TypeScript gateway is verified by the Rust API's tests.
 5. **Web.** Move Next.js app to `apps/web`, rewrite landing + docs from PRODUCT.md.
 6. **E2E + deploy.** One e2e script, staging + production envs, deploy workflow.
 7. **Cutover.** Inventory live resources, tear down old Workers (MCP OAuth, public beta API), delete `legacy/`.
 
 ## Risks
 
-- **MCP compatibility** — Agent Auth isn't standard MCP OAuth; mainstream MCP clients need the bridge. Validate `@auth/agent-cli mcp` in phase 4 before launch messaging depends on it.
+- **MCP compatibility** — Agent Auth isn't standard MCP OAuth; MCP clients need the `@auth/agent-cli` bridge, which stores agent keys on the user's machine. Validated in phase 4 (CI runs it); clients that can only use remote MCP servers are not supported.
 - **Agent Auth maturity** — packages are at 0.6.x and the protocol may change. Keep it isolated in `apps/gateway/src/auth`.
 - **Removing the live MCP/OAuth path** breaks any current users at cutover. Phase 7 must check for live tasks/grants first.

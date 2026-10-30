@@ -165,6 +165,17 @@ pub(crate) mod tests {
         assert!(!c.allows(Scope::Cancel));
     }
 
+    /// Signed by apps/gateway's `signAssertion` with seed `[7; 32]`; pinned in
+    /// apps/gateway/test/api.test.ts so the two sides cannot drift apart.
+    const GATEWAY_TOKEN: &str = "eyJhdWQiOiJydW5sYXRlci1hcGkiLCJzdWIiOiJwcmpfMSIsInNjb3BlIjoicmVhZCBzY2hlZHVsZSIsImlhdCI6MTc2NzIyNTYwMCwiZXhwIjoxNzY3MjI1NjYwfQ.M-yCfOuEo_oLgifHXheOnecRoRyAjPf8bOIvfB40Nn5gBX1nYyubLruWjKOqCQSJXjcv81ogOT6yvv0MbHNECQ";
+
+    #[test]
+    fn accepts_a_token_signed_by_the_gateway() {
+        let c = verify(GATEWAY_TOKEN, &key().verifying_key(), NOW).unwrap();
+        assert_eq!(c.project_id, "prj_1");
+        assert_eq!(c.scopes, [Scope::Read, Scope::Schedule]);
+    }
+
     #[test]
     fn parses_hex_public_keys() {
         let hex_key = hex::encode(key().verifying_key().to_bytes());

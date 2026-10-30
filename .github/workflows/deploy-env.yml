@@ -39,8 +39,11 @@ jobs:
         run: npx wrangler deploy --env "$DEPLOY_ENV"
         working-directory: apps/api
 
-      # Phase 4: apply D1 migrations here, before the gateway deploys.
-      # npx wrangler d1 migrations apply DB --env "$DEPLOY_ENV" --remote
+      # Forward-only; must apply before the gateway that reads the new schema deploys.
+      - name: Apply gateway D1 migrations
+        run: npx wrangler d1 migrations apply DB --env "$DEPLOY_ENV" --remote
+        working-directory: apps/gateway
+
       - name: Deploy gateway
         run: npx wrangler deploy --env "$DEPLOY_ENV"
         working-directory: apps/gateway
