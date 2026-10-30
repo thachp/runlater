@@ -1,4 +1,14 @@
-//! Pure task domain: lifecycle, retry policy, limits and validation.
+//! Pure task domain: request validation, the task lifecycle, retry policy and limits.
 //!
 //! No Cloudflare dependencies, so everything here is tested natively with `cargo test`.
-//! Ported from `legacy/src` in phase 2; see `docs/spec/ARCHITECTURE.md`.
+//! Time is always passed in as unix milliseconds; nothing here reads a clock or a RNG.
+//! The API stores tasks as rows and drives them through [`Task`]'s transitions.
+
+pub mod limits;
+mod request;
+mod retry;
+mod task;
+
+pub use request::{Method, ScheduleRequest, TaskSpec, ValidationError};
+pub use retry::{backoff_ms, classify, Outcome, Verdict};
+pub use task::{Attempt, CancelError, Cancelled, ClaimError, RedriveError, Stale, Status, Task};

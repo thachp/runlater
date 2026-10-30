@@ -144,7 +144,7 @@ Replaces the 89 files in `scripts/` and the bespoke shell harnesses.
 Each phase is one PR that leaves `main` green.
 
 1. **Skeleton.** ✅ Create workspaces, `crates/`, `apps/`, `packages/`. Move old code under `legacy/` so nothing is lost while porting. CI runs the new layout only; legacy workflows (including the old API auto-release) are parked in `legacy/.github/workflows` and no longer run.
-2. **Core crates.** Port domain + egress into `crates/core` and `crates/egress` with native tests.
+2. **Core crates.** ✅ Port domain + egress into `crates/core` and `crates/egress` with native tests. `crates/core` models one task as a pure state machine (generation guards stale dispatches, fence guards stale results) so phase 3 can store tasks as SQLite rows instead of the legacy whole-ledger snapshot. Phase 3 must enable `global_fetch_strictly_public` on the API Worker.
 3. **API.** `apps/api`: TaskLedger DO, alarm, outbox, queue consumer, internal routes, assertion verification. Miniflare tests.
 4. **Gateway.** `apps/gateway`: Agent Auth host, D1 schema, capabilities, MCP endpoint. Tests with real Agent Auth packages.
 5. **Web.** Move Next.js app to `apps/web`, rewrite landing + docs from PRODUCT.md.
