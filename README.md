@@ -35,7 +35,7 @@ sequenceDiagram
     RunLater->>RunLater: Bind project to identity and allocate trial under policy
     RunLater-->>Agent: Project context and allocation result
     Agent->>RunLater: Schedule HTTPS request with project-scoped authority
-    RunLater->>RunLater: Validate permissions, destination and budget; persist task
+    RunLater->>RunLater: Validate permissions, destination and budget<br/>Persist task
     RunLater-->>Agent: Task identifier and accepted status
     RunLater->>Destination: Deliver when due, subject to policy and retry budgets
     Destination-->>RunLater: HTTP response or timeout
@@ -135,37 +135,58 @@ The local runtime uses Rust 1.92.0, released worker/worker-build 0.8.7, and Wran
 
 ## Task state diagram
 
-Proposed task states are separate from transport-message status and individual attempt records.
+This proposed lifecycle sequence shows task states, separate from transport-message status and individual attempt records. Cancellation can also terminate a scheduled task before it becomes ready.
 
 ```mermaid
-stateDiagram-v2
-    [*] --> scheduled: accepted with a future time
-    [*] --> ready: accepted for immediate delivery
-    scheduled --> ready: due time reached
-    ready --> running: lease and capacity granted
-    running --> succeeded: success durably recorded
-    running --> retry_wait: retryable outcome within budgets
-    retry_wait --> ready: retry time reached
-    running --> failed: permanent error or budget exhausted
-    ready --> failed: delivery age budget exhausted
-    retry_wait --> failed: delivery age budget exhausted
-    scheduled --> cancelled: cancellation accepted
-    ready --> cancelled: cancellation accepted before claim
-    retry_wait --> cancelled: cancellation accepted
-    running --> cancelled: cancellation requested and attempt settles without recorded success
-    succeeded --> [*]
-    failed --> [*]
-    cancelled --> [*]
-
-    note right of running
-        Cancellation sets a flag while an attempt is in flight.
-        It cannot undo an external effect.
-        A recorded success may still win the race.
-    end note
-    note right of failed
-        Explicit redrive creates a new linked task.
-        Terminal history is never reset in place.
-    end note
+sequenceDiagram
+    participant Client
+    participant Ledger as Task ledger
+    participant Worker as Delivery worker
+    participant Endpoint as HTTPS destination
+    Client->>Ledger: Create task
+    alt Future delivery time
+        Ledger->>Ledger: scheduled
+        alt Cancellation accepted before due
+            Client->>Ledger: Cancel task
+            Ledger->>Ledger: cancelled - terminal
+        else Due time reached
+            Ledger->>Ledger: ready
+        end
+    else Immediate delivery
+        Ledger->>Ledger: ready
+    end
+    loop While nonterminal and eligible for another attempt
+        alt Cancellation accepted before claim (ready or retry_wait)
+            Client->>Ledger: Cancel task
+            Ledger->>Ledger: cancelled - no further attempts
+        else Age budget exhausted while ready or retry_wait
+            Ledger->>Ledger: failed - no further attempts
+        else Ready with lease and capacity granted
+            Ledger->>Worker: Claim attempt - running
+            Worker->>Endpoint: Deliver request
+            opt Cancellation requested while running
+                Client->>Ledger: Set cancel_requested
+                Note over Ledger,Endpoint: Cannot undo an external effect<br/>Recorded success may win the race
+            end
+            Endpoint-->>Worker: HTTP response or timeout
+            Worker->>Ledger: Persist attempt outcome
+            alt Success durably recorded
+                Ledger->>Ledger: succeeded - terminal
+            else Cancellation requested and no recorded success
+                Ledger->>Ledger: cancelled - terminal
+            else Permanent error or attempt/age budget exhausted
+                Ledger->>Ledger: failed - terminal
+            else Retryable outcome within budgets
+                Ledger->>Ledger: retry_wait
+                Ledger->>Ledger: Retry time reached - ready
+            end
+        end
+    end
+    Note over Ledger: succeeded, failed and cancelled are terminal<br/>Terminal history is never reset in place
+    opt Explicit redrive of eligible failed or cancelled task
+        Client->>Ledger: Request redrive
+        Ledger-->>Client: New task ID linked to original, with fresh attempt budget
+    end
 ```
 
 | State | Meaning |
