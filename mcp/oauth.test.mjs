@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createHash, generateKeyPairSync, sign} from 'node:crypto';
 import {signDelegation, delegationPublicKey} from './delegation.mjs';
 import {ownerChallenge, oauthConsentBytes, verifyOwnerApproval, normalizedAuthRequest} from './oauth-consent.mjs';
-import {authorizeOwner} from './oauth-app.mjs';
+import {authorizeOwner, authorizationFailure} from './oauth-app.mjs';
 import {createOAuthStorage} from './oauth-storage.mjs';
 import {createOAuthScheduling} from './oauth-scheduling.mjs';
 
@@ -122,10 +122,58 @@ test('browser guidance never accepts partial OAuth input or changes machine erro
     const response = await authorizeOwner(new Request('https://mcp.runlater.io/authorize' + suffix,
       {headers: {Accept: accept}}), oauth, {});
     assert.equal(response.status, 400);
-    assert.match(response.headers.get('content-type'), /application\/json/);
-    assert.deepEqual(await response.json(), {error: 'invalid_request'});
+    if (accept === 'text/html') {
+      assert.match(response.headers.get('content-type'), /text\/html/);
+      assert.match(await response.text(), /Check your connection request/);
+    } else {
+      assert.match(response.headers.get('content-type'), /application\/json/);
+      assert.deepEqual(await response.json(), {error: 'invalid_request'});
+    }
     assert.equal(response.headers.get('set-cookie'), null);
     assert.equal(response.headers.get('location'), null);
   }
   assert.equal(parsed, 5);
+});
+
+test('browser request and approval errors stay actionable without exposing inputs', async () => {
+  const secret = 'SENSITIVE_FIXTURE_DO_NOT_REFLECT';
+  const oauth = {parseAuthRequest: async () => {throw Error(secret);}, approveConsent: async () => {throw Error(secret);}};
+  for (const req of [new Request('https://mcp.runlater.io/authorize?client_id='+secret, {headers:{Accept:'text/html'}}),
+    new Request('https://mcp.runlater.io/authorize',{method:'POST',headers:{Accept:'text/html',Origin:'https://mcp.runlater.io','Content-Type':'application/x-www-form-urlencoded'},body:'handle=missing&decision=trial'})]) {
+    const r=await authorizeOwner(req,oauth,{trialEnabled:true});
+    assert.equal(r.status,400); assert.match(r.headers.get('content-type'),/text\/html/);
+    assert.equal(r.headers.get('cache-control'),'no-store'); assert.equal(r.headers.get('set-cookie'),null);assert.equal(r.headers.get('location'),null);
+    const html=await r.text();assert.match(html,/https:\/\/docs.runlater.io\/#connect/);assert.doesNotMatch(html,new RegExp(secret+'|<form|<button'));
+    assert.match(html,/connection request|approval could not be verified/);
+  }
+});
+
+test('unconfirmed browser completion never instructs automatic retry or replacement', async () => {
+  const f=oauthFixture();let attempts=0;
+  const oauth={approveConsent:async()=>({request:f.request,headers:new Headers()}),completeAuthorization:async()=>{attempts++;throw Error('SENSITIVE_COMPLETION_FAILURE');}};
+  const r=await authorizeOwner(new Request('https://mcp.runlater.io/authorize',{method:'POST',headers:{Accept:'text/html',Origin:'https://mcp.runlater.io','Content-Type':'application/x-www-form-urlencoded'},body:'handle=fixture&decision=trial'}),oauth,{...f.config,trialEnabled:true});
+  assert.equal(r.status,400);assert.match(r.headers.get('content-type'),/text\/html/);const html=await r.text();
+  assert.match(html,/Check whether your agent connected/);assert.match(html,/Do not create a replacement trial/);assert.doesNotMatch(html,/SENSITIVE_COMPLETION_FAILURE|<form|<button/);assert.equal(attempts,1);
+});
+
+test('navigation formatting hints never change explicit JSON errors or OAuth rejection',async()=>{
+ let calls=0;const oauth={parseAuthRequest:async()=>{calls++;throw Error('invalid_fixture');}};
+ const browser=await authorizeOwner(new Request('https://mcp.runlater.io/authorize',{headers:{Accept:'*/*','Sec-Fetch-Mode':'navigate','Sec-Fetch-Dest':'document'}}),oauth,{});
+ assert.equal(browser.status,400);assert.match(browser.headers.get('content-type'),/text\/html/);assert.equal(calls,0);
+ for(const accept of ['application/json','application/json,text/html','text/html;q=0']){
+  const r=await authorizeOwner(new Request('https://mcp.runlater.io/authorize?client_id=missing',{headers:{Accept:accept,'Sec-Fetch-Mode':'navigate','Sec-Fetch-Dest':'document'}}),oauth,{});
+  assert.equal(r.status,400);assert.match(r.headers.get('content-type'),/application\/json/);assert.deepEqual(await r.json(),{error:'invalid_request'});
+ }
+ assert.equal(calls,3);
+});
+
+
+test('metadata and service errors expose fixed guidance, never upstream detail',async()=>{
+ const failure=Error('PRIVATE_UPSTREAM_URL_OR_RESPONSE');
+ const browser=new Request('https://mcp.runlater.io/authorize?client_id=fixture',{headers:{Accept:'text/html'}});
+ const metadata=await authorizeOwner(browser,{parseAuthRequest:async()=>{throw failure;}},{isMetadataError:error=>error===failure});
+ assert.equal(metadata.status,400);const html=await metadata.text();assert.match(html,/public connection metadata/);assert.doesNotMatch(html,/PRIVATE_UPSTREAM/);
+ const unavailable=authorizationFailure(browser,'unavailable',503);assert.equal(unavailable.status,503);assert.match(await unavailable.text(),/Check whether your agent connected/);
+ const machine=authorizationFailure(new Request(browser.url,{headers:{Accept:'application/json'}}),'unavailable',503);
+ assert.equal(machine.status,503);assert.deepEqual(await machine.json(),{error:'temporarily_unavailable'});
 });

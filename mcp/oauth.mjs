@@ -2,10 +2,10 @@ import {strictRefreshFetch} from './oauth-strict.mjs';
 import {oauthTransaction} from './oauth-transaction.mjs';
 import {validateTrialAuthority} from './oauth-trial.mjs';
 import {createHash} from 'node:crypto';
-import {OAuthAuthorizationServer, OAuthError} from '@cloudflare/workers-oauth-provider';
+import {OAuthAuthorizationServer, OAuthError, CimdFetchError} from '@cloudflare/workers-oauth-provider';
 import {verifyDelegation} from './delegation.mjs';
 import {MCP_RESOURCE, MCP_SCOPES} from './oauth-consent.mjs';
-import {authorizeOwner, oauthFailure, privateHeaders, requireActiveDelegation} from './oauth-app.mjs';
+import {authorizeOwner, authorizationFailure, oauthFailure, privateHeaders, requireActiveDelegation} from './oauth-app.mjs';
 import {createOAuthStorage} from './oauth-storage.mjs';
 import {createOAuthScheduling} from './oauth-scheduling.mjs';
 
@@ -23,7 +23,7 @@ export function createRunLaterOAuth({env, storage, protectedHandler, validateDel
   const receiverPairingEnabled = trialEnabled && env.MCP_RECEIVER_PAIRING_ENABLED === 'operator-approved';
   const generalHttpEnabled = trialEnabled && env.GENERAL_HTTPS_ENABLED === 'operator-approved';
   const scopes = [...MCP_SCOPES, ...(receiverPairingEnabled ? ['receiver_setup'] : []), ...(generalHttpEnabled ? ['http_schedule'] : [])].sort();
-  const config = {trialEnabled, receiverPairingEnabled, generalHttpEnabled, releaseId: env.MCP_RELEASE_ID, gatewayPublicKey: env.MCP_GATEWAY_PUBLIC_KEY};
+  const config = {isMetadataError: error => error instanceof CimdFetchError, trialEnabled, receiverPairingEnabled, generalHttpEnabled, releaseId: env.MCP_RELEASE_ID, gatewayPublicKey: env.MCP_GATEWAY_PUBLIC_KEY};
   const enabled = env.MCP_OAUTH_ENABLED === 'operator-approved' && /^[a-f0-9]{64}$/.test(config.gatewayPublicKey || '')
     && /^[A-Za-z0-9_-]{1,32}$/.test(config.releaseId || '') && typeof validateDelegation === 'function';
   const kv = createOAuthStorage(storage,{trialEnabled}), oauthEnv = {...env, OAUTH_KV: kv};
@@ -156,7 +156,7 @@ export function createRunLaterOAuth({env, storage, protectedHandler, validateDel
   }, async fetch(request, _env, ctx) {
     const url = new URL(request.url);
     if (url.origin !== MCP_RESOURCE || !enabled) return oauthFailure(503);
-    if (request.url.length > 8192) return oauthFailure();
+    if (request.url.length > 8192) return url.pathname === '/authorize' ? authorizationFailure(request) : oauthFailure();
     if (url.pathname === '/.well-known/oauth-protected-resource' && request.method === 'GET' && !url.search) {
       return Response.json({...resourceMetadata, scopes_supported: [...scopes]}, {headers: privateHeaders});
     }
@@ -217,8 +217,8 @@ export function createRunLaterOAuth({env, storage, protectedHandler, validateDel
         } else response = await provider.fetch(boundedRequest, oauthEnv, context);
         await Promise.all(pending);
         return response;
-      } catch {await Promise.allSettled(pending); return oauthFailure(503);}
-    } catch {return oauthFailure(503);}
+      } catch {await Promise.allSettled(pending); return url.pathname === '/authorize' ? authorizationFailure(request, 'unavailable', 503) : oauthFailure(503);}
+    } catch {return url.pathname === '/authorize' ? authorizationFailure(request, 'unavailable', 503) : oauthFailure(503);}
   }};
 }
 
