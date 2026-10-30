@@ -7,17 +7,20 @@
     "build": "next build",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "check": "opennextjs-cloudflare build && wrangler deploy --dry-run --outdir dist",
-    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy"
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "test": "vitest run"
   },
   "dependencies": {
     "next": "16.4.3",
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-dom": "19.3.1",
+    "@runlater/contracts": "*"
   },
   "devDependencies": {
     "@opennextjs/cloudflare": "1.20.14",
     "@runlater/tsconfig": "*",
     "@types/react": "19.3.0",
-    "@types/react-dom": "19.3.0"
+    "@types/react-dom": "19.3.0",
+    "vitest": "3.2.4"
   }
 }

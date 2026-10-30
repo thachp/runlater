@@ -1,7 +1,7 @@
 // Agent Auth host: Better Auth with the agent-auth plugin, identities in D1.
 // Agents are autonomous: discovery, registration and execution need no human account.
 
-import { agentAuth, agentError } from "@better-auth/agent-auth";
+import { agentAuth, agentError, type Capability } from "@better-auth/agent-auth";
 import { betterAuth, type BetterAuthOptions, type BetterAuthPlugin } from "better-auth";
 import { ApiClient, ApiError } from "./api";
 import { ArgumentError, capabilities, capabilityNames, execute } from "./capabilities";
@@ -48,7 +48,7 @@ export function authOptions(input: {
         modes: ["autonomous"],
         allowedKeyAlgorithms: ["Ed25519"],
         allowDynamicHostRegistration: true,
-        capabilities,
+        capabilities: capabilities.map((c): Capability => ({ ...c })),
         defaultHostCapabilities: capabilityNames,
         validateCapabilities: (requested) => requested.every((c) => capabilityNames.includes(c)),
         jwtMaxAge: 60,
