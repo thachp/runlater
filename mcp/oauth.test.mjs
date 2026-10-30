@@ -94,3 +94,38 @@ test('slow hostile authorization does not hold token validation or another clien
   assert.equal(await scheduler.critical('client:owner', () => scheduler.network('token', async () => 'revoked')), 'revoked');
   release(); await blocked;
 });
+
+test('bare browser authorization explains client-started Connect without touching OAuth state', async () => {
+  let calls = 0;
+  const oauth = new Proxy({}, {get() {calls++; throw Error('must_not_start_oauth');}});
+  const response = await authorizeOwner(new Request('https://mcp.runlater.io/authorize', {
+    headers: {Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'},
+  }), oauth, {});
+  assert.equal(response.status, 400);
+  assert.match(response.headers.get('content-type'), /text\/html/);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(response.headers.get('set-cookie'), null);
+  assert.equal(response.headers.get('location'), null);
+  const html = await response.text();
+  assert.match(html, /Start in your agent app/);
+  assert.match(html, /https:\/\/mcp.runlater.io\/mcp/);
+  assert.match(html, /https:\/\/docs.runlater.io\/#connect/);
+  assert.doesNotMatch(html, /<form|<button|client_id=|code_challenge=/);
+  assert.equal(calls, 0);
+});
+
+test('browser guidance never accepts partial OAuth input or changes machine errors', async () => {
+  let parsed = 0;
+  const oauth = {parseAuthRequest: async () => {parsed++; throw Error('invalid_oauth_fixture');}};
+  for (const [suffix, accept] of [['', 'application/json'], ['', '*/*'], ['', 'text/html;q=0'],
+    ['?client_id=incomplete', 'text/html'], ['?redirect_uri=https://attacker.example/callback', 'text/html']]) {
+    const response = await authorizeOwner(new Request('https://mcp.runlater.io/authorize' + suffix,
+      {headers: {Accept: accept}}), oauth, {});
+    assert.equal(response.status, 400);
+    assert.match(response.headers.get('content-type'), /application\/json/);
+    assert.deepEqual(await response.json(), {error: 'invalid_request'});
+    assert.equal(response.headers.get('set-cookie'), null);
+    assert.equal(response.headers.get('location'), null);
+  }
+  assert.equal(parsed, 5);
+});

@@ -55,6 +55,18 @@ test('real OAuth PKCE, owner consent, audience, replay, concurrent exchange and 
   t.after(() => mf.dispose()); await mf.ready;
   // OAuth redirects are inspected only. Never follow them to the synthetic client.
   const call = (path, init = {}) => mf.dispatchFetch('https://mcp.runlater.io' + path, {...init, redirect: 'manual'});
+  const browserHelp = await call('/authorize', {headers: {Accept: 'text/html'}});
+  assert.equal(browserHelp.status, 400);
+  assert.match(browserHelp.headers.get('content-type'), /text\/html/);
+  assert.match(await browserHelp.text(), /Start in your agent app/);
+  assert.equal(browserHelp.headers.get('set-cookie'), null);
+  assert.equal(outbound, 0, 'bare browser visit must not fetch client metadata');
+  const machineError = await call('/authorize');
+  assert.deepEqual(await machineError.json(), {error: 'invalid_request'});
+  const partialBrowser = await call('/authorize?client_id=missing_context', {headers: {Accept: 'text/html'}});
+  assert.equal(partialBrowser.status, 400);
+  assert.match(partialBrowser.headers.get('content-type'), /application\/json/);
+  assert.equal(outbound, 0);
   const unauth = await call('/sse'); assert.equal(unauth.status, 401); assert.match(unauth.headers.get('www-authenticate'), /oauth-protected-resource/);
   assert.equal((await (await call('/.well-known/oauth-protected-resource')).json()).resource, 'https://mcp.runlater.io');
   const verifier = 'v'.repeat(64), challenge = createHash('sha256').update(verifier).digest('base64url');

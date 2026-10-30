@@ -55,3 +55,16 @@ test('general HTTPS guide matches MCP schema and keeps Connect primary with boun
  assert.match(guide,/at least once at task level/);
  assert.match(guide,/does not observe or pin the connected peer IP/);
 });
+
+test('landing Connect click leads to client-started setup, never bare authorization',()=>{
+ const landing=fs.readFileSync('web/landing/index.html','utf8');
+ const docs=fs.readFileSync('web/docs/index.html','utf8');
+ assert.match(landing,/<a class="button" href="https:\/\/docs.runlater.io\/#connect">/);
+ assert.doesNotMatch(landing,/href="https:\/\/mcp.runlater.io\/authorize(?:["?])/);
+ const connect=docs.match(/<section class="doc-section" id="connect">([\s\S]*?)<\/section>/)[1];
+ assert.match(connect,/Start in your agent app/);
+ assert.match(connect,/client starts the OAuth connection/);
+ assert.match(connect,/not a signup link/);
+ assert.match(connect,/Only on that client-started consent page/);
+ assert.doesNotMatch(connect,/href="https:\/\/mcp.runlater.io\/authorize/);
+});

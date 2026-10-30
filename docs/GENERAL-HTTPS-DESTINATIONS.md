@@ -16,9 +16,10 @@ HTTP success does not establish business completion or wake every chatbot sessio
 
 ## Connect and explicitly schedule
 
-Use an OAuth-compatible MCP client with `https://mcp.runlater.io/mcp`
+Start the connection in an OAuth-compatible MCP client’s integration settings with `https://mcp.runlater.io/mcp`
 (Streamable HTTP), or `https://mcp.runlater.io/sse` (legacy SSE). Choose **Start free agent project** and consent to `http_schedule` plus the desired
-read/cancel permissions. Everyday users do not generate an Ed25519 key or create
+read/cancel permissions. The consent button appears only after that client starts
+OAuth; opening `/authorize` directly is not a signup or connection flow. Everyday users do not generate an Ed25519 key or create
 an account. The client holds OAuth credentials; the gateway holds trial authority.
 This is not owner-local-key custody. Existing owner-key grants are not broadened.
 
