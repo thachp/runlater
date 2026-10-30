@@ -1,6 +1,6 @@
 # Published agent discovery contract
 
-Issues13/26 prepare the landing/docs publication from this repository. `npm run build:web` (alias build:discovery) assembles the two static roots without network calls or provider mutations. Hosted URLs are release targets until actual deployment verification; the retained restricted-alpha API is separately deployed. See [host publication and rollback](HOSTS.md).
+Issues13/26 prepare the landing/docs publication from this repository. `npm run build:discovery` assembles the two static roots without network calls or provider mutations. Hosted URLs are release targets until actual deployment verification; the retained restricted-alpha API is separately deployed. See [host publication and rollback](HOSTS.md) and the [Next.js web build and rollout](WEB-NEXTJS.md).
 
 The service descriptor at `/runlater-service.v1.json` is RunLater-owned v1.1 metadata. It explicitly distinguishes operator-only task/enrollment capability, owned synthetic delivery, local fixtures and disabled public signup/payments. It is a published configuration snapshot, not a live entitlement probe or installed executor. Its authority flags remain false. llms.txt follows a community filename proposal and grants no execution or payment authority.
 

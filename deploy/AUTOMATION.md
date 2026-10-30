@@ -20,7 +20,67 @@ The existing alpha has no Workers Builds triggers (read-only API inspection). Na
 
 ## Failure, drift and rollback
 
-For a failed preflight with no uploaded-version receipt, use **Diagnose API release (read only)** from main while both release flags remain false. It uses the same environment credential for exactly four GETs: GitHub main, existing Worker settings/deployments, and one page of Queue metadata. Each read has an eight-second limit, total foreground budget35seconds and response bound64KiB/64chunks; the job has a three-minute limit. Output is restricted to HTTP statuses, numeric API error codes, fixed error labels and baseline/source/binding booleans. It never emits response bodies, credentials or exception messages, refreshes a baseline, or uploads/promotes anything. This diagnostic can identify which preflight failed; it does not certify the token's write permissions or authorize a broader token. Reconcile versions/deployments before any retry of an uncertain upload.
+For a failed preflight with no uploaded-version receipt, **Diagnose API release (read only)** can run from main independently of the release execution gates. It never changes those gates. It uses the same environment credential for at most ten GETs: GitHub main, existing Worker settings/deployments, one page of Queue metadata, and the six fixed dashboard metadata paths below. Each read has an eight-second limit, total foreground budget35seconds and response bound64KiB/64chunks; the job has a three-minute limit. Exhausting the shared budget skips remaining reads. There is no retry, redirect following or pagination. Output is restricted to HTTP statuses, numeric API error codes, fixed error labels and baseline/source/binding booleans. It never emits response bodies, credentials or exception messages, refreshes a baseline, or uploads/promotes anything. This diagnostic can identify which metadata read failed; it does not certify the token's write permissions or authorize a broader token. Reconcile versions/deployments before any retry of an uncertain upload.
+
+The dashboard paths match locked Wrangler's pre-upload comparison. All are GETs
+below `/accounts/<approved-account-id>`; the Worker and production environment
+are fixed in source, with no arbitrary URL or header input.
+
+| Output label | Fixed path |
+| --- | --- |
+| `dashboard_bindings` | `/workers/services/runlater-public-api/environments/production/bindings` |
+| `dashboard_routes` | `/workers/services/runlater-public-api/environments/production/routes?show_zonename=true` |
+| `dashboard_domains` | `/workers/domains/records?page=0&per_page=5&service=runlater-public-api&environment=production` |
+| `dashboard_subdomain` | `/workers/services/runlater-public-api/environments/production/subdomain` |
+| `dashboard_environment` | `/workers/services/runlater-public-api/environments/production` |
+| `dashboard_schedules` | `/workers/scripts/runlater-public-api/schedules` |
+
+The domain request intentionally checks one page, not the complete inventory.
+Bodies are discarded after bounded parsing; secret binding names/values and
+provider-provided links are never reflected or followed. Local fake responses
+and the pinned Wrangler path test prove source behavior, not CI permissions.
+
+If this workflow is disabled by the operator, source changes do not enable it.
+Running a diagnosis requires separate explicit permission to temporarily enable
+**Diagnose API release (read only)** and dispatch it once on reviewed main using
+the existing `runlater-public-api` environment's CI token, then restore its
+disabled state. The proposed run is capped at ten metadata GETs/35 seconds
+(three-minute job ceiling), exposes only the sanitized fields above in Actions
+logs, and creates no credential, resource, trial, task or delivery. It adds no
+token scope and does not enable other workflows. Coordinate any source merge
+with release automation separately; merging to main can start the normal release
+pipeline, which is outside permission for a read-only diagnostic run.
+
+### One-read CI token identification
+
+The diagnostic has two fixed manual modes. `metadata` retains the ten-read
+behavior above. `token_identity` makes exactly one
+`GET https://api.cloudflare.com/client/v4/user/tokens/verify` with the existing
+CI credential, within eight seconds and the same 64KiB/64-chunk body bounds.
+It makes no GitHub/provider inventory reads, follows no link or redirect, and
+does not fall back to metadata mode on failure. Only a validated 32-character
+opaque token ID and recognized status are reported; the credential value,
+arbitrary result fields and provider text are never emitted. The workflow's
+main-only guard, environment and three-minute job ceiling remain unchanged.
+
+This mode requires separate explicit permission; prior permission for a ten-read
+diagnostic does not authorize another run. Dispatch once with
+`mode=token_identity`, then restore the workflow's previous disabled state even
+on failure. Do not rerun the ten-read campaign merely to identify the token.
+Token-policy inspection is a separate metadata read for that identified ID,
+only where existing authority permits it. This mode neither reads policies nor
+edits permissions, creates a credential or enumerates other tokens.
+
+If this source must first merge solely to support the read-only check, serialize
+main changes and temporarily hold repository `RUNLATER_AUTODEPLOY_ENABLED` at
+`false` using its recorded original value. Let any in-flight release reach a
+known terminal state first. Merge only reviewed source with required CI passed;
+do not change production Worker flags, secrets, profiles or the release approval.
+Keep the trigger held until the resulting main CI completes and its normal
+release job is confirmed skipped, then restore the original trigger value after
+fresh source/configuration/readback checks. Never restore it early while that
+main check could still trigger an upload. Coordinate this operational hold with
+the release owner; enabling the diagnostic itself never authorizes an upload.
 
 Fixed release-phase labels, HTTP status numbers and numeric child exit status locate failures without exposing provider bodies, exception text or child stdout/stderr. The uploaded version UUID and source SHA are emitted immediately to the Actions log before post-upload checks, preserving a receipt even on later failure. After promotion, bounded public `/health` verification requires HTTP 200, configured public-beta mode and that exact version. Current main and the sole 100% active provider version are rechecked after a matching health response. This proves ordinary public routing, not a full signup/callback journey or a custom-domain inventory audit. No domain-administration permission is added.
 
@@ -33,6 +93,47 @@ Rollback means explicitly promote a reviewed prior compatible Worker version aft
 ## Local verification
 
 `node --test scripts/api-release.test.mjs` exercises gates and mocked provider flow, including missing Worker/secret, drift and uncertain upload/promotion with no retries. `./scripts/build-production.sh` builds the Rust/Wasm production artifact. Tests never contact Cloudflare. No end-to-end CI credential/deployment success is claimed until activation. Health version metadata is null in local configurations without the optional provider binding; the automated release profile requires the binding and refuses null identity.
+
+### Dashboard-origin releases
+
+A dashboard secret edit also changes Worker provenance to `dash`. Pinned Wrangler
+then downloads routing and binding metadata before its strict configuration check.
+An existing custom domain omitted from the local profile, or an omitted service
+environment, appears to be a deletion even for a version-only upload.
+
+The release guard optionally accepts exactly this existing domain description:
+
+```json
+{"routes":[{"pattern":"api.runlater.io","zone_name":"runlater.io","custom_domain":true,"enabled":true,"previews_enabled":false}]}
+```
+
+The single already allowlisted egress service may also explicitly declare
+`"environment":"production"`. Other domains, routes, environments, extra fields
+and extra services are rejected. Omitting these optional descriptions remains
+supported for existing profiles. Adding them changes the complete config digest
+and requires a separately reviewed approval; nothing refreshes it automatically.
+Dashboard-origin uploads retain `--strict`. The version-only release flow does
+not create or change routes, domains, secrets or resources.
+
+Before reconciling a release profile, compare actual version module bytes and the
+complete settings fingerprint, confirm the intended existing domain/environment,
+recheck current main and absence of conflicting releases, and review the exact
+new config/approval. Preserve secret bindings and the live settings baseline.
+This source change does not update GitHub variables or retry a failed release.
+
+Child failures emit only numeric exit status, a fixed diagnostic class and
+allowlisted authentication error codes. Raw stdout/stderr, arbitrary provider
+messages, URLs and credentials are never printed. Output inspection is bounded;
+unknown or truncated failures may remain unclassified. A class is a hint, not
+proof that an upload had no effect. Retain any version receipt and reconcile live
+versions/deployments before considering a retry. The existing read-only
+diagnostic uses the CI credential when endpoint permission evidence is needed;
+successful local OAuth reads do not prove that CI has the same permissions.
+
+`node --test scripts/api-release-dashboard.test.mjs scripts/api-release-errors.test.mjs`
+checks exact config restrictions, the pinned Wrangler comparison with synthetic
+offline metadata, strict-mode retention and sentinel-secret redaction. These
+tests are not hosted deployment or credential-permission proof.
 
 References: [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/), [configuration](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/), [versions](https://developers.cloudflare.com/workers/versions-and-deployments/), [GitHub deployment environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments).
 

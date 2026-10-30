@@ -19,8 +19,8 @@
     "test:funding": "./scripts/test-funding.sh",
     "test:delivery": "./scripts/test-delivery.sh && ./scripts/test-destinations.sh",
     "test:web": "npm run test:discovery && node --test web/redirect/worker.test.mjs web/landing/worker.test.mjs scripts/web.test.mjs examples/alpha-quickstart.test.mjs examples/invitation-client.v1.test.mjs examples/public-beta-client.v1.test.mjs",
-    "build:web": "npm run build:discovery",
-    "preview:web": "node scripts/preview-web.mjs",
+    "build:web": "node scripts/build-web.mjs",
+    "preview:web": "node scripts/preview-next.mjs",
     "test:web-local": "node scripts/test-web-local.mjs",
     "test:invitations": "./scripts/test-invitations.sh",
     "test:destinations": "./scripts/test-destinations.sh",
@@ -42,14 +42,27 @@
     "test:general-http": "./scripts/test-general-http.sh",
     "test:egress": "node --test egress/*.test.mjs",
     "test:public-fetch-local": "node scripts/public-fetch-integration.mjs",
-    "build:public-fetch": "wrangler deploy --dry-run --config egress/public-fetch/wrangler.example.jsonc"
+    "build:public-fetch": "wrangler deploy --dry-run --config egress/public-fetch/wrangler.example.jsonc",
+    "test:web-next": "node --test scripts/next-web.test.mjs",
+    "test:web-browser": "node scripts/test-web-browser.mjs"
   },
   "devDependencies": {
+    "@opennextjs/cloudflare": "1.20.14",
+    "@playwright/test": "1.64.1",
     "wrangler": "4.154.0"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "1.2.4",
     "@modelcontextprotocol/sdk": "1.32.2",
-    "ajv": "8.20.0"
+    "ajv": "8.20.0",
+    "html-react-parser": "5.2.13",
+    "next": "16.4.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "overrides": {
+    "@node-minify/core": {
+      "glob": "10.5.0"
+    }
   }
 }

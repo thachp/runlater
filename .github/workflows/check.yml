@@ -1,10 +1,15 @@
 name: Local prototype checks
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
 permissions:
   contents: read
 jobs:
   rust-and-hosts:
     runs-on: ubuntu-latest
+    # PRs run the core contract, auth, build, and safety checks.
+    # Main additionally runs the full integration suite before Release public API.
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.92.0
@@ -21,29 +26,49 @@ jobs:
       - run: npm ci
       - run: npm run test:mcp
       - run: npm run build:mcp
-      - run: node --test scripts/api-release.test.mjs scripts/api-release-health.test.mjs
+      - run: node --test scripts/api-release.test.mjs scripts/api-release-health.test.mjs scripts/api-release-dashboard.test.mjs scripts/api-release-errors.test.mjs
       - run: node --test scripts/api-release-diagnostic.test.mjs
       - run: node --test scripts/branch-cleanup-preflight.test.mjs
       - run: npm run test:web
+      - run: npm run test:web-next
+      - run: npm run build:web
       - run: npm run test:web-local
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - run: npx playwright install --with-deps chromium
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - run: npm run test:web-browser
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run test:examples
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run test:callback-wire
       - run: npm run test:trial-receiver
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: cargo install worker-build --version 0.8.7 --locked
       - run: npm run test:contract
       - run: npm run test:runtime-recovery
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run test:metrics-local
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run test:transport-local
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run test:pause-local
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run test:production-identity
       - run: npm run test:signed-requests
       - run: npm run test:funding
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run test:delivery
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run test:invitations
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run test:public-beta
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run test:mcp-delegation
       - run: npm run test:anonymous-trial
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run test:receiver-pairing
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run test:general-http
       - run: npm run test:egress
       - run: npm run test:invitation-production
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}

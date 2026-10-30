@@ -5,17 +5,18 @@
   "workers_dev": false,
   "preview_urls": false,
   "assets": {
-    "directory": "../../build/discovery/landing",
-    "not_found_handling": "404-page",
-    "html_handling": "auto-trailing-slash",
+    "directory": ".open-next/assets",
     "binding": "ASSETS",
-    "run_worker_first": true
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
   },
   "observability": {
     "enabled": false
   },
-  "main": "worker.mjs",
-  "limits": {
-    "cpu_ms": 10
-  }
+  "main": "worker-next.mjs",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "global_fetch_strictly_public"
+  ]
 }
