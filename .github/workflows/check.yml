@@ -25,7 +25,11 @@ jobs:
       - run: node --test scripts/api-release-diagnostic.test.mjs
       - run: node --test scripts/branch-cleanup-preflight.test.mjs
       - run: npm run test:web
+      - run: npm run test:web-next
+      - run: npm run build:web
       - run: npm run test:web-local
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:web-browser
       - run: npm run test:examples
       - run: npm run test:callback-wire
       - run: npm run test:trial-receiver
