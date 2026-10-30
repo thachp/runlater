@@ -1,6 +1,7 @@
 import {DurableObject} from 'cloudflare:workers';
+import {createHash} from 'node:crypto';
 import {betterAuth} from 'better-auth';
-import {decodeJwt,importJWK,jwtVerify} from 'jose';
+import {calculateJwkThumbprint,decodeJwt,importJWK,jwtVerify} from 'jose';
 import {authOptions,ORIGIN,BASE} from './config.mjs';
 const headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'};
 const error=(status,code)=>Response.json({error:code},{status,headers});
@@ -19,13 +20,14 @@ async function bodyText(request) {
   } finally {clearTimeout(timer);await reader.cancel();}
 }
 function publicKey(key) {
-  if(key?.kty!=='OKP'||key.crv!=='Ed25519'||typeof key.x!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(key.x)||Object.keys(key).some(k=>!['kty','crv','x'].includes(k)))throw Error('public_key_required');
+  if(key?.kty!=='OKP'||key.crv!=='Ed25519'||typeof key.x!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(key.x)||Object.keys(key).some(k=>!['kty','crv','x','kid'].includes(k))||(key.kid!==undefined&&(typeof key.kid!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(key.kid))))throw Error('public_key_required');
   return {kty:'OKP',crv:'Ed25519',x:key.x};
 }
-export class AgentAuthReplacement extends DurableObject {
+export function createAgentAuthHub({capabilities,onExecute,onHostRevoked,onAlarm,additionalReady=()=>true}={}) {
+ return class AgentAuthHub extends DurableObject {
   constructor(ctx,env) {
     super(ctx,env);this.env=env;this.tail=Promise.resolve();this.waiting=0;
-    if(!ready(env))return;
+    if(!ready(env)||!additionalReady(env))return;
     ctx.blockConcurrencyWhile(async()=>{
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS secondary (key TEXT PRIMARY KEY,value TEXT NOT NULL,expires INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS admissions (key TEXT PRIMARY KEY,created INTEGER NOT NULL,host_id TEXT,revoked INTEGER NOT NULL DEFAULT 0);`);
@@ -59,16 +61,23 @@ export class AgentAuthReplacement extends DurableObject {
     if(this.auth)return this.auth;
     this.background=[];
     this.auth=betterAuth(authOptions({database:this.env.REPLACEMENT_AUTH_DB,secret:this.env.AGENT_AUTH_SESSION_SECRET,secondaryStorage:this.#secondary(),
-      background:promise=>this.background.push(Promise.resolve(promise).then(()=>true,()=>false)),
+      background:promise=>this.background.push(Promise.resolve(promise).then(()=>true,()=>false)),capabilities,
       resolveAutonomousUser:({hostId})=>({id:`agent-host:${hostId}`,name:'Autonomous RunLater agent',email:`${hostId}@identity.invalid`}),
-      onExecute:async({agentSession})=>({agent_id:agentSession.agent.id,host_id:agentSession.agent.hostId,
-        project_link_required:true,legacy_grant_imported:false,scheduling_enabled:false}),
+      onExecute:async args=>onExecute?onExecute({...args,env:this.env,storage:this.ctx.storage}):({agent_id:args.agentSession.agent.id,host_id:args.agentSession.agent.hostId,project_link_required:true,legacy_grant_imported:false,scheduling_enabled:false}),
     }));
     return this.auth;
+  }
+  async #reconcileRevocations(){
+    if(!onHostRevoked)return;
+    const hosts=await this.env.REPLACEMENT_AUTH_DB.prepare("SELECT id FROM agentHost WHERE status='revoked'").all();
+    const ids=new Set([...hosts.results.map(h=>h.id),...this.#sql('SELECT host_id FROM admissions WHERE revoked=1 AND host_id IS NOT NULL').map(h=>h.host_id)]);
+    for(const hostId of ids)await onHostRevoked({hostId,env:this.env,storage:this.ctx.storage});
+    if(onAlarm)await onAlarm({env:this.env,storage:this.ctx.storage});
   }
   async #handle(request){
     const url=new URL(request.url),path=url.pathname.slice(BASE.length),db=this.env.REPLACEMENT_AUTH_DB;
     const auth=this.#auth();
+    await this.#reconcileRevocations();
     if(url.pathname==='/.well-known/agent-configuration'){
       const config=await auth.api.getAgentConfiguration();
       config.approval_methods=[];
@@ -87,8 +96,9 @@ export class AgentAuthReplacement extends DurableObject {
       let input,key;
       try {
         input=JSON.parse(raw);
-        if(Object.keys(input).some(k=>!['name','mode','capabilities','reason','host_name'].includes(k))||input.mode!=='autonomous'||input.capabilities?.some(c=>c!=='connection_status'))throw Error();
+        if(Object.keys(input).some(k=>!['name','mode','capabilities','reason','host_name'].includes(k))||input.mode!=='autonomous'||input.capabilities?.some(c=>!(capabilities?.map(def=>def.name)??['connection_status']).includes(c)))throw Error();
         key=publicKey(claims?.host_public_key);publicKey(claims?.agent_public_key);
+        for(const jwk of [claims.host_public_key,claims.agent_public_key])if(jwk.kid!==undefined&&jwk.kid!==await calculateJwkThumbprint(publicKey(jwk)))throw Error();
         await jwtVerify(token,await importJWK(key,'EdDSA'),{algorithms:['EdDSA'],typ:'host+jwt',audience:[ORIGIN,ORIGIN+BASE],maxTokenAge:60,clockTolerance:30,requiredClaims:['iat','exp','jti']});
       }catch{return error(400,'registration_rejected');}
       // Bounded identity enrollment only; this does not allocate a trial/project.
@@ -102,6 +112,14 @@ export class AgentAuthReplacement extends DurableObject {
         if(prior.status==='revoked'){this.#sql('UPDATE admissions SET revoked=1 WHERE key=?',fingerprint);await this.ctx.storage.sync();return error(403,'host_revoked');}
       }
       const hostRows=await db.prepare('SELECT id,status FROM agentHost WHERE CASE WHEN json_valid(publicKey) THEN json_extract(publicKey,\'$.x\') END=?').bind(fingerprint).all();
+      // The pinned plugin can look up a host by exact JSON. Reject an alternate
+      // representation instead of permitting a second canonical host identity.
+      if(hostRows.results.length>1)return error(503,'identity_reconciliation_required');
+      if(hostRows.results.length){
+        const existing=await db.prepare('SELECT publicKey FROM agentHost WHERE id=?').bind(hostRows.results[0].id).first();
+        if(existing.publicKey!==JSON.stringify(claims.host_public_key))return error(403,'host_key_representation_changed');
+        if(admission?.host_id&&admission.host_id!==hostRows.results[0].id)return error(503,'identity_reconciliation_required');
+      }
       if(admission&&!admission.host_id&&!hostRows.results.length)return error(503,'identity_reconciliation_required');
       if(hostRows.results.some(h=>h.status==='revoked'))return error(403,'host_revoked');
       const agents=await db.prepare('SELECT count(*) AS count FROM agent WHERE hostId IN (SELECT id FROM agentHost WHERE CASE WHEN json_valid(publicKey) THEN json_extract(publicKey,\'$.x\') END=?)').bind(fingerprint).first();
@@ -112,12 +130,33 @@ export class AgentAuthReplacement extends DurableObject {
     }else if(claims?.sub){
       // Denial-only DB policy; signature and capability verification remain owned
       // by Better Auth. Never authorize from these unverified claims.
-      const row=await db.prepare('SELECT h.status AS hostStatus FROM agent a JOIN agentHost h ON h.id=a.hostId WHERE a.id=?').bind(claims.sub).first();
+      const row=await db.prepare('SELECT h.id AS hostId,h.status AS hostStatus FROM agent a JOIN agentHost h ON h.id=a.hostId WHERE a.id=?').bind(claims.sub).first();
       if(row?.hostStatus==='revoked')return error(403,'host_revoked');
+      if(row?.hostId&&this.#sql('SELECT 1 FROM admissions WHERE host_id=? AND revoked=1',row.hostId).length)return error(403,'host_revoked');
       const expired=await db.prepare('SELECT 1 AS found FROM agentCapabilityGrant WHERE agentId=? AND (status IN (\'revoked\',\'denied\') OR (expiresAt IS NOT NULL AND expiresAt<=?)) LIMIT 1').bind(claims.sub,new Date().toISOString()).first();
       if(expired)return error(403,'grant_inactive');
     }
     if(path==='/capability/execute'&&(!claims?.htm||!claims?.htu||!claims?.ath||claims.aud!==ORIGIN+BASE+'/capability/execute'))return error(400,'request_binding_required');
+    if(path==='/host/revoke'&&onHostRevoked){
+      // Record a deny-only intent before the plugin clears its verification
+      // key. A crash during its D1 cascade must not leave API authority alive.
+      let host;
+      try{
+        const input=raw?JSON.parse(raw):{};
+        if(Object.keys(input).some(k=>k!=='host_id'))throw Error();
+        host=await db.prepare('SELECT id,publicKey FROM agentHost WHERE id=? OR kid=?').bind(claims?.iss??'',claims?.iss??'').first();
+        if(!host||(input.host_id!==undefined&&input.host_id!==host.id))throw Error();
+        const jwk=publicKey(JSON.parse(host.publicKey));
+        const target=ORIGIN+BASE+'/host/revoke';
+        if(claims.aud!==ORIGIN+BASE||claims.htm!=='POST'||claims.htu!==target||claims.ath!==createHash('sha256').update(raw).digest('base64url')||typeof claims.jti!=='string'||claims.jti.length>128||!claims.jti.length||claims.exp-claims.iat>60)throw Error();
+        await jwtVerify(token,await importJWK(jwk,'EdDSA'),{algorithms:['EdDSA'],typ:'host+jwt',audience:ORIGIN+BASE,maxTokenAge:60,clockTolerance:30,requiredClaims:['iat','exp','jti']});
+        const replayKey=`host-revoke:${host.id}:${claims.jti}`,secondary=this.#secondary();
+        if(await secondary.get(replayKey))throw Error();
+        await secondary.set(replayKey,'consumed',Math.max(1,claims.exp-Math.floor(Date.now()/1000)+31));
+      }catch{return error(401,'host_revocation_rejected');}
+      await onHostRevoked({hostId:host.id,env:this.env,storage:this.ctx.storage});
+      this.#sql('UPDATE admissions SET revoked=1 WHERE host_id=?',host.id);
+    }
     const copy=new Request(request.url,{method:request.method,headers:request.headers,...(request.method==='GET'?{}:{body:raw})});
     const response=await auth.handler(copy);
     if(path==='/agent/register'&&claims?.host_public_key){
@@ -133,7 +172,7 @@ export class AgentAuthReplacement extends DurableObject {
     return response;
   }
   fetch(request){
-    if(!ready(this.env))return Promise.resolve(error(503,'replacement_disabled'));
+    if(!ready(this.env)||!additionalReady(this.env)||!this.env.AGENT_AUTH_HUB||this.ctx.id.toString()!==this.env.AGENT_AUTH_HUB.idFromName('agent-auth-replacement-v1').toString())return Promise.resolve(error(503,'replacement_disabled'));
     if(this.waiting>=8)return Promise.resolve(error(429,'authorization_busy'));
     this.waiting++;
     const result=this.tail.then(async()=>{
@@ -153,7 +192,14 @@ export class AgentAuthReplacement extends DurableObject {
     this.tail=result.catch(()=>{});
     return result.finally(()=>{this.waiting--;});
   }
+ alarm(){
+  if(!ready(this.env)||!additionalReady(this.env)||this.ctx.id.toString()!==this.env.AGENT_AUTH_HUB.idFromName('agent-auth-replacement-v1').toString())return Promise.resolve();
+  const result=this.tail.then(async()=>{await this.#reconcileRevocations();await this.ctx.storage.sync();});
+  this.tail=result.catch(()=>{});return result;
+ }
+ };
 }
+export const AgentAuthReplacement=createAgentAuthHub();
 export default {async fetch(request,env){
   const url=new URL(request.url);
   if(url.origin!==ORIGIN)return error(403,'host_rejected');
