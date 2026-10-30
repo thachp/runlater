@@ -1,13 +1,13 @@
 {
   "$schema": "https://docs.runlater.io/agent/service.v1.schema.json",
-  "descriptor_version": "1.3.0",
+  "descriptor_version": "1.4.0",
   "service": "RunLater",
   "format_owner": "RunLater",
   "protocol_status": "custom_metadata_not_an_industry_standard",
   "readiness": {
     "public_task_api": "public_free_beta",
-    "production_authentication": "self_service_ed25519_possession",
-    "public_https_callbacks": "ownership_verified_workers_dev_only",
+    "production_authentication": "oauth_agent_trial_or_owner_ed25519",
+    "public_https_callbacks": "public_https_post_json_and_optional_registered_receiver",
     "status_source": "published_configuration_snapshot_not_live_probe"
   },
   "hosts": {
@@ -32,19 +32,21 @@
     "public_beta_client": "https://docs.runlater.io/agent/public-beta-client.v1.mjs",
     "receiver_example": "https://docs.runlater.io/agent/public-beta-receiver/README.md",
     "release_metadata": "https://docs.runlater.io/agent/public-beta-release.v1.json",
-    "mcp_setup": "https://docs.runlater.io/agent/mcp.md"
+    "mcp_setup": "https://docs.runlater.io/agent/mcp.md",
+    "general_https": "https://docs.runlater.io/agent/GENERAL-HTTPS-DESTINATIONS.md",
+    "connect": "https://docs.runlater.io/#connect"
   },
   "link_availability": "published_asset_locations_verify_http_before_use",
   "capabilities": {
     "task_scheduling": "public_free_beta",
     "task_status": "public_free_beta",
     "task_cancellation": "public_free_beta",
-    "registration": "public_possession_proof",
+    "registration": "oauth_finite_trial_or_public_possession_proof",
     "entitlement_inspection": "proposed_disabled",
     "credit_quotes": "proposed_disabled",
     "credit_purchase": "proposed_disabled",
     "callback_key_rotation": "not_exposed_in_public_beta",
-    "arbitrary_https_delivery": "disabled",
+    "arbitrary_https_delivery": "public_https_post_json_limited_beta",
     "public_self_service": "available_limited_cohort"
   },
   "authority": {

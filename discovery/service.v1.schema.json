@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://docs.runlater.io/agent/service.v1.schema.json",
-  "title": "RunLater-owned discovery v1.3; public free beta",
+  "title": "RunLater-owned discovery v1.4; public HTTPS finite beta",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -9,7 +9,7 @@
       "const": "https://docs.runlater.io/agent/service.v1.schema.json"
     },
     "descriptor_version": {
-      "const": "1.3.0"
+      "const": "1.4.0"
     },
     "service": {
       "const": "RunLater"
@@ -28,10 +28,10 @@
           "const": "public_free_beta"
         },
         "production_authentication": {
-          "const": "self_service_ed25519_possession"
+          "const": "oauth_agent_trial_or_owner_ed25519"
         },
         "public_https_callbacks": {
-          "const": "ownership_verified_workers_dev_only"
+          "const": "public_https_post_json_and_optional_registered_receiver"
         },
         "status_source": {
           "const": "published_configuration_snapshot_not_live_probe"
@@ -119,6 +119,12 @@
         },
         "mcp_setup": {
           "const": "https://docs.runlater.io/agent/mcp.md"
+        },
+        "general_https": {
+          "const": "https://docs.runlater.io/agent/GENERAL-HTTPS-DESTINATIONS.md"
+        },
+        "connect": {
+          "const": "https://docs.runlater.io/#connect"
         }
       },
       "required": [
@@ -137,7 +143,9 @@
         "public_beta_client",
         "receiver_example",
         "release_metadata",
-        "mcp_setup"
+        "mcp_setup",
+        "general_https",
+        "connect"
       ]
     },
     "link_availability": {
@@ -157,7 +165,7 @@
           "const": "public_free_beta"
         },
         "registration": {
-          "const": "public_possession_proof"
+          "const": "oauth_finite_trial_or_public_possession_proof"
         },
         "entitlement_inspection": {
           "const": "proposed_disabled"
@@ -172,7 +180,7 @@
           "const": "not_exposed_in_public_beta"
         },
         "arbitrary_https_delivery": {
-          "const": "disabled"
+          "const": "public_https_post_json_limited_beta"
         },
         "public_self_service": {
           "const": "available_limited_cohort"

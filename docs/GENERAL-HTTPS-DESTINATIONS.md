@@ -1,7 +1,10 @@
-# Public HTTPS scheduling — release staged, activation pending
+# Public HTTPS scheduling — finite public beta
 
-This guide describes the implemented release profile. Production activation must
-be confirmed separately; source availability and flags alone are not live proof.
+API/MCP activation was reported on 2026-10-30. Public read-only checks confirmed
+API version `92b152b6-4715-4615-b299-e545274abcc2`, MCP version
+`a78fe67a-62b4-4f24-bc38-5c4a0ef9d837`, enabled anonymous/general HTTPS flags
+and OAuth discovery advertising `http_schedule`. These checks establish
+configuration visibility, not a delivery or named-chatbot compatibility test.
 The selected release transport is the private Cloudflare Worker public Fetch
 adapter, not a required Container. The older native transport is an alternative,
 not a customer prerequisite. See [rollout coordination](GENERAL-HTTPS-ROLLOUT.md).
@@ -14,8 +17,7 @@ HTTP success does not establish business completion or wake every chatbot sessio
 ## Connect and explicitly schedule
 
 Use an OAuth-compatible MCP client with `https://mcp.runlater.io/mcp`
-(Streamable HTTP), or `https://mcp.runlater.io/sse` (legacy SSE). When activated,
-choose **Start free agent project** and consent to `http_schedule` plus the desired
+(Streamable HTTP), or `https://mcp.runlater.io/sse` (legacy SSE). Choose **Start free agent project** and consent to `http_schedule` plus the desired
 read/cancel permissions. Everyday users do not generate an Ed25519 key or create
 an account. The client holds OAuth credentials; the gateway holds trial authority.
 This is not owner-local-key custody. Existing owner-key grants are not broadened.
@@ -106,4 +108,6 @@ pinning, all-answer DNS inspection or an independent egress firewall. See the
 
 `GENERAL_HTTPS_ENABLED` pauses new admission and future general dispatch when off;
 it cannot undo in-flight effects. Retain task, destination and attempt state during
-rollback. Production readback and bounded hosted evidence are separate rollout gates.
+rollback. Production verification and bounded hosted delivery evidence remain separate from
+these configuration readbacks. API health’s `receiver: workers.dev_only` describes
+the optional registered receiver path, not the general HTTPS destination policy.

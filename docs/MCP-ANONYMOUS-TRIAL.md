@@ -1,10 +1,11 @@
-# Agent-owned free trials — default-off source milestone
+# Agent-owned finite trials — OAuth Connect
 
-No mandatory human account, sign-in or passkey is introduced. This is **source and
-local testing only**, not a newly activated public onboarding flow. Existing owner
+No mandatory human account, sign-in or passkey is introduced. Public MCP health and OAuth discovery on 2026-10-30 report anonymous trials and
+general HTTPS enabled with `http_schedule`. Configuration readback is not proof
+of delivery or support in a particular chatbot UI. Existing owner
 projects and their locally signed approval path are unchanged.
 
-## Intended experience
+## Connect experience
 
 1. Add the hosted MCP endpoint in a compatible standard OAuth client. The existing
    paths remain true legacy SSE at `/sse` and Streamable HTTP at `/mcp`.
@@ -117,7 +118,8 @@ slot exhaustion or impose a hard Cloudflare spending cap.
 
 ## Receiver and recovery gates
 
-A new project has no verified destination. The optional managed-beta receiver path
+General HTTPS does not need a verified managed receiver. A new project has no
+registered receiver destination. The optional managed-beta receiver path
 privately pulls callback material from the fixed API origin after capability-scoped
 binding and receiver-key proof. It needs a separately authorized, privately
 configured runtime; it never creates infrastructure or adds provider permissions.
@@ -127,14 +129,14 @@ gate on API and gateway; old credentials do not acquire `receiver_setup` via ref
 Disabling new pairing does not undo installed receivers or already accepted callbacks.
 Showing “connected” alone must not be marketed as a functioning scheduler.
 
-The product target is delivery to any customer-provided HTTPS endpoint, not a
+The general profile delivers to public customer-provided HTTPS endpoints, not a
 bot-specific or Workers.dev-only architecture. Third-party endpoints need not support
-RunLater's HMAC/proof protocol in the staged general profile. Its separate
+RunLater's HMAC/proof protocol in the general profile. Its separate
 `http_schedule` scope and `schedule_http_request` tool support fixed POST/JSON
 without endpoint auth or custom headers; an unavailable secure adapter causes
 explicit task non-admission; a mid-request readiness loss can still consume one
 counted registry operation. See [general HTTPS safety
-and authorization gates](GENERAL-HTTPS-DESTINATIONS.md); live egress policy is unchanged.
+and authorization contract](GENERAL-HTTPS-DESTINATIONS.md).
 
 Optional human recovery/management is a future extension. **None is configured here.**
 Losing all client credentials can permanently lose access. A client name, browser
@@ -142,7 +144,14 @@ cookie, public project ID or reconnect is not recovery, and must not silently co
 a replacement slot. Connecting an agent to an existing project still requires its
 owner's explicit approval. Payment or broader access needs separate authorization.
 
-## Verification and activation checklist
+## Verification and activation checklist — retained review template
+
+This checklist records source-review and pre-activation requirements, not a claim
+that every hosted experiment below has been run. The enabled configuration was
+independently verified on 2026-10-30; no production canary was performed. Future
+hosted experiments need separate explicit authorization and finite capacity.
+Native connected-peer checks refer to the alternative native transport, not the
+selected Worker public Fetch boundary.
 
 - Local tests must prove zero allocation on consent/connection/discovery/status;
   explicit idempotent provisioning; lost responses and registry/project-install

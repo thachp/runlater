@@ -1,14 +1,18 @@
-# General HTTPS release coordination — activation pending
+# General HTTPS release coordination
 
 The selected release architecture is the private Cloudflare Worker public Fetch
 adapter described in [the current contract](GENERAL-HTTPS-DESTINATIONS.md) and
 [adapter evidence](../egress/public-fetch/README.md). A Container is not required.
-Production activation is being coordinated separately; this document is not a
-claim of live availability or permission to create resources.
+API/MCP activation was reported on 2026-10-30; public health and OAuth discovery
+readback are recorded in [the current contract](GENERAL-HTTPS-DESTINATIONS.md).
+Independent rollout verification and static publication remain coordinated by the
+release owner. This document is not permission to create resources.
 
-Before publishing staged landing/docs copy as available, record the exact API,
-MCP and adapter revisions, successful readiness/flag readback, finite hosted
-proof and independent QA. Preserve existing quota and project state. Do not
+For configuration-availability publication, record exact API, MCP and adapter
+revisions, successful readiness/flag readback and independent QA. No production
+canary was run for this activation; do not imply that this publication establishes
+end-to-end delivery, business completion or compatibility with a named chatbot.
+A later bounded hosted proof requires separate authorization and finite capacity. Preserve existing quota and project state. Do not
 create another hosted trial identity or reset quota for documentation QA.
 Deploy docs and landing separately from API/MCP, preserving empty docs bindings
 and disabled workers.dev/previews. Coordinate merge and publication with the

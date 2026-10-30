@@ -2,33 +2,32 @@
 
 **Required legacy endpoint: `https://mcp.runlater.io/sse`. Streamable HTTP: `https://mcp.runlater.io/mcp`.**
 
-The existing delegated gateway has been deployed, but its genuine-client live
-end-to-end proof is incomplete. Deployment is not a verified, everyday-user launch.
-The no-account agent trial described below is a **new, default-off source milestone**;
-this change does not activate it or create production credentials or projects.
+The hosted gateway exposes OAuth Connect and the finite no-account trial. Public
+read-only checks on 2026-10-30 confirmed anonymous/general HTTPS enablement and
+`http_schedule` in OAuth discovery. This is configuration evidence, not verified
+support in every commercial chatbot UI or proof of business completion.
 
-## Agent-first onboarding — staged, not active
+## Agent-first onboarding
 
-The [anonymous trial design](MCP-ANONYMOUS-TRIAL.md) removes mandatory human accounts,
-sign-in and private-key handling from the new-project flow. A standard OAuth client
-would display **Start free agent project**, receive ordinary scoped OAuth credentials,
-and explicitly invoke `provision_trial` only when requested. Connect, initialization,
-discovery and status never allocate a project. Existing owner-key projects remain a
-separate, locally approved linking option.
+The [anonymous trial guide](MCP-ANONYMOUS-TRIAL.md) removes mandatory human accounts,
+sign-in and private-key handling from the new-project flow. A compatible OAuth
+client displays **Start free agent project**, holds scoped OAuth credentials,
+and explicitly invokes `provision_trial` only when requested. Connect,
+initialization, discovery and status never allocate a project. Existing owner-key
+projects remain a separate, locally approved linking option.
 
-**Connected does not mean ready to schedule.** The optional, default-off
+**Connected does not mean ready to schedule.** The optional, disabled
 [beta receiver pairing path](RECEIVER-PAIRING-WIRE.md) adds an explicit `receiver_setup`
 permission and `pair_receiver` tool for a separately authorized runtime. Its private
 installation material flows directly from the API to that runtime, never through
 chat. Until `trial_status` confirms receiver readiness, the legacy `schedule_task`
 path is refused; this is not a requirement for general HTTPS scheduling.
-No receiver infrastructure is deployed by connecting or calling a tool. Source/local
-proof is not public activation; independent security QA, runtime setup and a bounded
-live proof remain launch gates.
+No receiver infrastructure is deployed by connecting or calling a tool. Receiver pairing remains disabled; do not infer pairing availability from general
+HTTPS enablement.
 No recovery mechanism is configured: losing all OAuth credentials can lose access.
 
-RunLater's target is [customer-chosen HTTPS destinations](GENERAL-HTTPS-DESTINATIONS.md).
-The separate staged `schedule_http_request` tool accepts a customer URL, JSON
+RunLater supports [customer-chosen HTTPS destinations](GENERAL-HTTPS-DESTINATIONS.md).
+The separate `schedule_http_request` tool accepts a customer URL, JSON
 payload, time and stable keys under newly consented `http_schedule` authority.
 It requires an available reviewed private egress adapter; flags/source alone do not
 permit admission. The initial profile is POST/JSON only, with no private endpoint
