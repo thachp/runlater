@@ -3,11 +3,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test prototype.test.mjs"
+    "test": "npm run test:protocol && npm run test:coordinator",
+    "test:protocol": "node --test prototype.test.mjs",
+    "test:coordinator": "node --test coordinator/coordinator.test.mjs"
   },
   "dependencies": {
     "@better-auth/agent-auth": "0.6.2",
     "better-auth": "1.7.14",
     "jose": "6.2.14"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "miniflare": "5.20261023.3-beta"
   }
 }
