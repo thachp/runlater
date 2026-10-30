@@ -1,5 +1,10 @@
 # Agent Auth local proof (default off)
 
+Current direction: replace the bespoke gateway auth through the inactive candidate
+in [replacement/README.md](replacement/README.md). The additive rollout notes
+below record the earlier assessment; the replacement plan supersedes that future
+rollout recommendation. These earlier proofs remain local regression fixtures.
+
 This directory is an isolated executable assessment, not a deployed service. It is
 not imported by MCP, the Rust API, or a deployment config. `createPrototype()`
 returns 503 unless explicitly enabled by a local caller. The only capability is
