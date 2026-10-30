@@ -6,6 +6,7 @@ import {createHash, generateKeyPairSync, sign} from 'node:crypto';
 import {build} from 'esbuild';
 import {Miniflare, convertV4MiniflareOptions} from 'miniflare';
 import {fileURLToPath} from 'node:url';
+import {readFileSync} from 'node:fs';
 import {signDelegation, delegationPublicKey} from './delegation.mjs';
 import {oauthConsentBytes} from './oauth-consent.mjs';
 import {authorizeFixture} from './oauth-test-helpers.mjs';
@@ -33,14 +34,18 @@ test('real OAuth PKCE, owner consent, audience, replay, concurrent exchange and 
     }
     export default {fetch(request,env){return env.HUB.get(env.HUB.idFromName('one')).fetch(request);}};`},
     bundle: true, platform: 'neutral', mainFields: ['module', 'main'], format: 'esm', external: ['cloudflare:*', 'node:*'], write: false})).outputFiles[0].text;
+  // Public MCPJam document fetched 2026-10-30; historical request shape, fresh local state only.
+  const mcpjam = JSON.parse(readFileSync(new URL('./fixtures/mcpjam-client-metadata.json', import.meta.url)));
   let outbound = 0, unexpectedOutbound = 0, slowRequests = 0, releaseSlow, markSlow;
   const slow = new Promise(resolve => {releaseSlow = resolve;});
   const slowSeen = new Promise(resolve => {markSlow = resolve;});
   const mf = new Miniflare(convertV4MiniflareOptions({modules: true, script, compatibilityDate: '2026-10-28',
     compatibilityFlags: ['nodejs_compat', 'global_fetch_strictly_public'], durableObjects: {HUB: {className: 'TestHub', useSQLite: true}},
-    bindings: {MCP_OAUTH_ENABLED: 'operator-approved', MCP_ANONYMOUS_TRIAL_ENABLED: 'operator-approved', MCP_RECEIVER_PAIRING_ENABLED: 'operator-approved', MCP_GATEWAY_PUBLIC_KEY: gatewayKey, MCP_RELEASE_ID: releaseId, FIXTURE_PROJECT: receipt.project_id},
+    bindings: {MCP_OAUTH_ENABLED: 'operator-approved', MCP_ANONYMOUS_TRIAL_ENABLED: 'operator-approved', MCP_RECEIVER_PAIRING_ENABLED: 'operator-approved', GENERAL_HTTPS_ENABLED: 'operator-approved', MCP_GATEWAY_PUBLIC_KEY: gatewayKey, MCP_RELEASE_ID: releaseId, FIXTURE_PROJECT: receipt.project_id},
     outboundService: async request => {
       outbound++;
+      if (request.url === 'https://invalid-metadata.example.com/metadata') return Response.json({client_id:request.url});
+      if (request.url === mcpjam.client_id) return Response.json(mcpjam, {headers: {'Cache-Control': 'no-store'}});
       if (/^https:\/\/slow[0-3]?\.example\.com\/metadata$/.test(request.url)) {
         if (++slowRequests === 5) markSlow();
         await slow;
@@ -65,10 +70,46 @@ test('real OAuth PKCE, owner consent, audience, replay, concurrent exchange and 
   assert.deepEqual(await machineError.json(), {error: 'invalid_request'});
   const partialBrowser = await call('/authorize?client_id=missing_context', {headers: {Accept: 'text/html'}});
   assert.equal(partialBrowser.status, 400);
-  assert.match(partialBrowser.headers.get('content-type'), /application\/json/);
+  assert.match(partialBrowser.headers.get('content-type'), /text\/html/);
+  assert.match(await partialBrowser.text(), /Check your connection request/);
   assert.equal(outbound, 0);
   const unauth = await call('/sse'); assert.equal(unauth.status, 401); assert.match(unauth.headers.get('www-authenticate'), /oauth-protected-resource/);
   assert.equal((await (await call('/.well-known/oauth-protected-resource')).json()).resource, 'https://mcp.runlater.io');
+  for (const scope of ['cancel enqueue read', 'cancel http_schedule read']) {
+    const mcpjamQuery = new URLSearchParams({response_type:'code',client_id:mcpjam.client_id,
+      redirect_uri:'http://127.0.0.1:6274/oauth/callback',scope,state:'fresh-local-mcpjam-state',
+      code_challenge:'b'.repeat(43),code_challenge_method:'S256',resource:'https://mcp.runlater.io'});
+    const consent = await call('/authorize?'+mcpjamQuery, {headers:{Accept:'text/html'}});
+    assert.equal(consent.status,200);const consentHtml=await consent.text();
+    assert.match(consentHtml,/Start free agent project/);
+    assert.equal(consentHtml.includes('A verified beta receiver must be configured'),!scope.includes('http_schedule'));
+    const handle=consentHtml.match(/name="handle" value="([^"]+)"/)[1];
+    // A real browser POST with a missing consent cookie used to display raw JSON.
+    // Missing-cookie requests must never approve the fixture.
+    for (const accept of ['text/html','application/json']) {
+      const rejected=await call('/authorize',{method:'POST',headers:{Accept:accept,Origin:'https://mcp.runlater.io',
+        'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({handle,decision:'trial'})});
+      assert.equal(rejected.status,400);assert.equal(rejected.headers.get('location'),null);
+      assert.equal(rejected.headers.get('set-cookie'),null);
+      if(accept==='text/html')assert.match(await rejected.text(),/approval could not be verified/);
+      else assert.deepEqual(await rejected.json(),{error:'invalid_request'});
+    }
+    // Approval is exercised only inside this disposable local DO. Inspect the
+    // callback without following it; never exchange or print its synthetic code.
+    const approved=await call('/authorize',{method:'POST',headers:{Accept:'text/html',Origin:'https://mcp.runlater.io',
+      'Content-Type':'application/x-www-form-urlencoded',Cookie:consent.headers.get('set-cookie').split(';')[0]},
+      body:new URLSearchParams({handle,decision:'trial'})});
+    assert.equal(approved.status,302);const callback=new URL(approved.headers.get('location'));
+    assert.equal(callback.origin,'http://127.0.0.1:6274');assert.equal(callback.pathname,'/oauth/callback');
+  }
+  const invalidMetadata=new URLSearchParams({response_type:'code',client_id:'https://invalid-metadata.example.com/metadata',
+    redirect_uri:'https://client.example.com/callback',scope:'http_schedule read',state:'fresh-local-error',
+    code_challenge:'c'.repeat(43),code_challenge_method:'S256',resource:'https://mcp.runlater.io'});
+  const metadataError=await call('/authorize?'+invalidMetadata,{headers:{Accept:'text/html'}});
+  assert.equal(metadataError.status,400);assert.equal(metadataError.headers.get('set-cookie'),null);
+  const metadataErrorHtml=await metadataError.text();assert.match(metadataErrorHtml,/public connection metadata/);
+  assert.doesNotMatch(metadataErrorHtml,/invalid-metadata\.example/);
+
   const verifier = 'v'.repeat(64), challenge = createHash('sha256').update(verifier).digest('base64url');
   const query = new URLSearchParams({response_type: 'code', client_id: 'https://client.example.com/metadata',
     redirect_uri: 'https://client.example.com/callback', scope: 'enqueue read', state: 'fixed-owner-state',

@@ -34,6 +34,47 @@ Rollback means explicitly promote a reviewed prior compatible Worker version aft
 
 `node --test scripts/api-release.test.mjs` exercises gates and mocked provider flow, including missing Worker/secret, drift and uncertain upload/promotion with no retries. `./scripts/build-production.sh` builds the Rust/Wasm production artifact. Tests never contact Cloudflare. No end-to-end CI credential/deployment success is claimed until activation. Health version metadata is null in local configurations without the optional provider binding; the automated release profile requires the binding and refuses null identity.
 
+### Dashboard-origin releases
+
+A dashboard secret edit also changes Worker provenance to `dash`. Pinned Wrangler
+then downloads routing and binding metadata before its strict configuration check.
+An existing custom domain omitted from the local profile, or an omitted service
+environment, appears to be a deletion even for a version-only upload.
+
+The release guard optionally accepts exactly this existing domain description:
+
+```json
+{"routes":[{"pattern":"api.runlater.io","zone_name":"runlater.io","custom_domain":true,"enabled":true,"previews_enabled":false}]}
+```
+
+The single already allowlisted egress service may also explicitly declare
+`"environment":"production"`. Other domains, routes, environments, extra fields
+and extra services are rejected. Omitting these optional descriptions remains
+supported for existing profiles. Adding them changes the complete config digest
+and requires a separately reviewed approval; nothing refreshes it automatically.
+Dashboard-origin uploads retain `--strict`. The version-only release flow does
+not create or change routes, domains, secrets or resources.
+
+Before reconciling a release profile, compare actual version module bytes and the
+complete settings fingerprint, confirm the intended existing domain/environment,
+recheck current main and absence of conflicting releases, and review the exact
+new config/approval. Preserve secret bindings and the live settings baseline.
+This source change does not update GitHub variables or retry a failed release.
+
+Child failures emit only numeric exit status, a fixed diagnostic class and
+allowlisted authentication error codes. Raw stdout/stderr, arbitrary provider
+messages, URLs and credentials are never printed. Output inspection is bounded;
+unknown or truncated failures may remain unclassified. A class is a hint, not
+proof that an upload had no effect. Retain any version receipt and reconcile live
+versions/deployments before considering a retry. The existing read-only
+diagnostic uses the CI credential when endpoint permission evidence is needed;
+successful local OAuth reads do not prove that CI has the same permissions.
+
+`node --test scripts/api-release-dashboard.test.mjs scripts/api-release-errors.test.mjs`
+checks exact config restrictions, the pinned Wrangler comparison with synthetic
+offline metadata, strict-mode retention and sentinel-secret redaction. These
+tests are not hosted deployment or credential-permission proof.
+
 References: [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/), [configuration](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/), [versions](https://developers.cloudflare.com/workers/versions-and-deployments/), [GitHub deployment environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments).
 
 Permission evidence: [Workers roles and per-Worker scopes](https://developers.cloudflare.com/workers/authorization/workers/), [version upload API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/create/), [Queue listing permissions](https://developers.cloudflare.com/api/resources/queues/methods/list/). Scope support is documented, not yet exercised with a new token in this account.

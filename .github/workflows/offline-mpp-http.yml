@@ -1,5 +1,8 @@
 name: Offline MPP HTTP draft profile
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
 permissions:
   contents: read
 jobs:

@@ -35,6 +35,34 @@ auth, custom headers or completion callback. Never paste endpoint credentials in
 model-visible URLs or payloads. The managed receiver is an optional beta reference,
 not a requirement that every endpoint run RunLater code or wake a particular bot.
 
+## MCPJam connection settings
+
+MCPJam's public client document and loopback callback were validated against the
+pinned OAuth library in local fixtures on 2026-10-30. This is not a claim that a
+production MCPJam consent, token exchange or task has been exercised.
+
+For a new MCPJam connection, set the server URL to `https://mcp.runlater.io/mcp`
+and use **CIMD (URL-based)** registration in an OAuth profile that supports it.
+RunLater advertises client-metadata support, not a dynamic registration endpoint.
+MCPJam supplies its own public client identity and registered callback; do not
+invent a client ID, create a client secret or generate an owner key.
+
+Under **Advanced settings → Scopes**, explicitly request `cancel http_schedule read`
+for general HTTPS scheduling. `cancel enqueue read` instead selects the legacy
+registered-receiver path; it does not grant general HTTP authority. Review those
+permissions on the client-started RunLater consent screen before choosing
+**Start free agent project**. Only explicitly provision the finite trial after
+connection. Refresh does not broaden an existing trial's scopes; do not create
+another identity to bypass trial limits.
+
+The observed document at
+`https://www.mcpjam.com/.well-known/oauth/client-metadata.json` includes
+`http://127.0.0.1:6274/oauth/callback` and public-client authentication (`none`).
+The document is fetched and validated by the server; users need not paste its JSON.
+A failed connection request, missing consent cookie or unconfirmed completion are
+different failures. Browser recovery pages explain the next safe action without
+showing raw OAuth JSON or treating an uncertain completion as confirmed failure.
+
 The [hosted design](MCP-HOSTING.md) covers the existing owner-delegation path, true
 legacy SSE and separate Streamable HTTP. The remainder of this guide describes the
 **local single-project Node option**, not the hosted multi-tenant implementation.
