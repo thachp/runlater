@@ -1,0 +1,32 @@
+name: Deploy
+# Runs after CI passes on main: staging first, then production behind the
+# production environment's required reviewer. See docs/DEPLOY.md.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+jobs:
+  staging:
+    if: >-
+      vars.DEPLOY_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      environment: staging
+      ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+    secrets: inherit
+
+  production:
+    needs: staging
+    uses: ./.github/workflows/deploy-env.yml
+    with:
+      environment: production
+      ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+    secrets: inherit
