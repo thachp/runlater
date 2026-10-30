@@ -29,6 +29,25 @@ async function boundedForm(request) {
 }
 export async function authorizeOwner(request, oauth, config) {
   if (new URL(request.url).origin !== MCP_RESOURCE || new URL(request.url).pathname !== '/authorize') return oauthFailure();
+  // A browser opened the protocol endpoint without a client-started transaction.
+  // Explain how to connect, without parsing metadata, creating consent or relaxing OAuth.
+  const acceptsHtml = (request.headers.get('accept') || '').split(',').some(part => {
+    const [type, ...parameters] = part.trim().split(';');
+    return type.trim().toLowerCase() === 'text/html'
+      && !parameters.some(value => /^q\s*=\s*0(?:\.0*)?$/i.test(value.trim()));
+  });
+  if (request.method === 'GET' && !new URL(request.url).search && acceptsHtml) {
+    return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Connect RunLater from your agent app</title>
+<h1>Start in your agent app</h1>
+<p>This authorization page needs a connection request from a compatible OAuth MCP client. Opening this address alone cannot connect a project.</p>
+<ol><li>Open your agent app’s MCP integration settings and add <code>https://mcp.runlater.io/mcp</code> (Streamable HTTP), or <code>https://mcp.runlater.io/sse</code> for legacy SSE.</li>
+<li>Start the connection in that app. It supplies its client identity, return address and security checks.</li>
+<li>Only on that client-started consent page, review the client, return destination and permissions before choosing <strong>Start free agent project</strong>.</li></ol>
+<p>No RunLater account or private-key generation is needed for this trial path. Connecting does not allocate a project; provisioning requires a separate explicit request and finite capacity.</p>
+<p><a href="https://docs.runlater.io/#connect">Read the Connect guide</a></p></html>`, {
+      status: 400, headers: {...privateHeaders, 'Content-Type': 'text/html; charset=utf-8', Vary: 'Accept'},
+    });
+  }
   try {
     if (request.method === 'GET') {
       const parsed = normalizedAuthRequest(await oauth.parseAuthRequest(request), config);
