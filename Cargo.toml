@@ -1,33 +1,19 @@
-[package]
-name = "runlater"
-version = "0.1.0"
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/egress", "apps/api"]
+exclude = ["legacy"]
+
+[workspace.package]
 edition = "2021"
+rust-version = "1.92"
 publish = false
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[features]
-staging = []
-runtime-tests = []
-production = []
-funding-tests = []
-destination-tests = []
-invitation-tests = []
-
-[dependencies]
+[workspace.dependencies]
+runlater-core = { path = "crates/core" }
+runlater-egress = { path = "crates/egress" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-hmac = "0.12"
-hex = "0.4"
-url = "2"
-subtle = "2.6"
-ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["alloc", "zeroize"] }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-futures-util = "0.3"
-worker = { version = "=0.8.7", features = ["queue"] }
+worker = "=0.8.7"
 
 [profile.release]
 lto = true
