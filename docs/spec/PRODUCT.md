@@ -89,11 +89,13 @@ services, not a public product in v1.
 
 ## Delivery rules
 
-- **Destinations:** public `https://` only. No IP literals, private/reserved ranges, localhost, or Cloudflare-internal hosts. Checked when the task is accepted and again when it is sent.
-- **Signing:** every outbound request carries `RunLater-Task-Id`, `RunLater-Attempt`, `RunLater-Timestamp` and `RunLater-Signature` (HMAC-SHA256 with the project's signing secret).
-- **Retries:** exponential backoff with jitter, default 5 attempts total, max 5.
-- **Timeout:** 10 s per attempt.
-- **Success:** any 2xx. 4xx except 408/429 → fail without retry. 5xx/408/429/network → retry.
+- **Destinations:** `https://` on the default port to a public DNS name. No IP literals, credentials in the URL, fragments, or non-public names (`localhost`, `*.local`, `*.internal`, `*.test`, …). Checked when the task is accepted and again before every attempt. Resolved addresses are restricted to the public internet by Cloudflare (`global_fetch_strictly_public`).
+- **Methods and headers:** `GET`, `POST` (default), `PUT`, `PATCH`, `DELETE`. Callers may set any header except hop-by-hop/framing headers (`Host`, `Content-Length`, `Transfer-Encoding`, …) and the `RunLater-*`, `CF-*`, `X-Forwarded-*` and `Proxy-*` families. `GET` cannot have a body.
+- **Signing:** every outbound request carries `RunLater-Task-Id`, `RunLater-Attempt`, `RunLater-Timestamp` (unix seconds) and `RunLater-Signature: v1=<hex>`, an HMAC-SHA256 with the project's signing secret over `"{timestamp}.{task_id}.{attempt}."` followed by the raw body. While a secret is being rotated, the header carries one comma-separated `v1=` entry per active secret. Receivers should reject timestamps more than 5 minutes off.
+- **Retries:** default 5 attempts total, max 5. Delay before retry *n* is 10 s × 2ⁿ⁻¹ (capped at 10 min) with equal jitter; a `Retry-After` from the destination is honoured as a minimum, up to the same cap.
+- **Timeout:** 10 s per attempt. Redirects are not followed.
+- **Success:** any 2xx. Retry on 408, 425, 429, 5xx, timeouts and network errors. Anything else (other 4xx, 3xx) fails without retry.
+- **Idempotency:** an optional `idempotency_key` makes `schedule_http` safe to repeat. The same key with the same request returns the original task; with a different request it is a conflict.
 
 ## v1 limits
 
