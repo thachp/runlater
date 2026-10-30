@@ -140,7 +140,9 @@ components:
       description: >
         400 invalid_request, 401 unauthorized, 402 budget_exhausted, 403 forbidden or
         trial_expired, 404 not_found / project_not_found / task_not_found,
-        409 idempotency_conflict / task_finished / task_not_failed, 500 internal_error.
+        409 idempotency_conflict / task_finished / task_not_failed,
+        429 task_limit (1,000 tasks held, finished ones included until purged),
+        500 internal_error.
       content:
         application/json:
           schema:

@@ -8,7 +8,7 @@
 //! queue until a consumer claims it, so a lost queue message is simply republished.
 
 use crate::db::{Db, DbError, Param};
-use runlater_core::limits::{RETENTION_MS, TRIAL_ATTEMPTS, TRIAL_DURATION_MS};
+use runlater_core::limits::{MAX_RETAINED_TASKS, RETENTION_MS, TRIAL_ATTEMPTS, TRIAL_DURATION_MS};
 use runlater_core::{
     Attempt, CancelError, ClaimError, Method, Outcome, RedriveError, ScheduleRequest, Status, Task,
     ValidationError,
@@ -387,9 +387,9 @@ impl<'a, D: Db> Ledger<'a, D> {
         Ok((self.project()?, true))
     }
 
-    /// Admission for new work: the trial must be live, and every waiting task must still be
-    /// able to get at least one attempt.
-    fn admit(&self, project: &ProjectRow, now: i64) -> Result<(), ApiError> {
+    /// Admission for new work: the trial must be live, every waiting task must still be able
+    /// to get at least one attempt, and a new row must fit under the retained-task cap.
+    fn admit(&self, project: &ProjectRow, new_row: bool, now: i64) -> Result<(), ApiError> {
         if now >= project.expires_ms {
             return Err(ApiError::new(
                 403,
@@ -397,11 +397,23 @@ impl<'a, D: Db> Ledger<'a, D> {
                 "this project's trial has ended",
             ));
         }
-        let waiting: Vec<Count> = self.db.query(
-            "SELECT COUNT(*) AS n FROM tasks WHERE status IN ('scheduled', 'retrying', 'delivering')",
+        let counts: Vec<Counts> = self.db.query(
+            "SELECT COUNT(*) AS total, \
+             COALESCE(SUM(status IN ('scheduled', 'retrying', 'delivering')), 0) AS waiting \
+             FROM tasks",
             vec![],
         )?;
-        let waiting = waiting.first().map_or(0, |c| c.n);
+        let (total, waiting) = counts.first().map_or((0, 0), |c| (c.total, c.waiting));
+        if new_row && total >= MAX_RETAINED_TASKS {
+            return Err(ApiError::new(
+                429,
+                "task_limit",
+                format!(
+                    "this project already holds {MAX_RETAINED_TASKS} tasks; \
+                     finished tasks are removed 30 days after they finish"
+                ),
+            ));
+        }
         if waiting + 1 > project.attempt_budget - project.attempts_used {
             return Err(ApiError::new(
                 402,
@@ -441,7 +453,7 @@ impl<'a, D: Db> Ledger<'a, D> {
             }
         }
 
-        self.admit(&project, now)?;
+        self.admit(&project, true, now)?;
         if spec.run_at_ms >= project.expires_ms {
             return Err(ApiError {
                 field: Some("run_at_ms"),
@@ -514,7 +526,7 @@ impl<'a, D: Db> Ledger<'a, D> {
                 ),
             ));
         }
-        self.admit(&project, now)?;
+        self.admit(&project, false, now)?;
         self.save(task_id, &task, now)?;
         self.task(task_id)
     }
@@ -746,10 +758,13 @@ impl<'a, D: Db> Ledger<'a, D> {
     // -- helpers --------------------------------------------------------------------------
 
     fn save(&self, task_id: &str, task: &Task, now: i64) -> Result<(), DbError> {
-        // A new generation is a new schedule: it must be published again.
+        // A new generation is a new schedule: it must be published again. Succeeded and
+        // canceled tasks can never be sent again, so their body is dropped; failed tasks
+        // keep it for redrive.
         self.db.exec(
             "UPDATE tasks SET status = ?, due_ms = ?, max_attempts = ?, run_attempts = ?, \
              total_attempts = ?, lease_until_ms = ?, cancel_requested = ?, terminal_ms = ?, \
+             body = CASE WHEN ? IN ('succeeded', 'canceled') THEN NULL ELSE body END, \
              published_ms = CASE WHEN generation = ? THEN published_ms ELSE NULL END, \
              generation = ?, fence = ?, updated_ms = ? WHERE id = ?",
             vec![
@@ -761,6 +776,7 @@ impl<'a, D: Db> Ledger<'a, D> {
                 task.lease_until_ms.into(),
                 task.cancel_requested.into(),
                 task.terminal_ms.into(),
+                text(&task.status).into(),
                 task.generation.into(),
                 task.generation.into(),
                 task.fence.into(),
@@ -797,8 +813,9 @@ impl<'a, D: Db> Ledger<'a, D> {
 }
 
 #[derive(Deserialize)]
-struct Count {
-    n: i64,
+struct Counts {
+    total: i64,
+    waiting: i64,
 }
 
 #[derive(Deserialize)]
@@ -977,6 +994,62 @@ mod tests {
             l.schedule(r, "t5", T0).unwrap_err().field,
             Some("run_at_ms")
         );
+    }
+
+    #[test]
+    fn caps_retained_tasks_even_when_canceled() {
+        let db = Memory::new();
+        let l = setup(&db);
+        let mut r = req("https://a.example.com/");
+        r.run_at_ms = Some(T0 + 60_000);
+        r.body = Some("x".repeat(1024));
+        for i in 0..MAX_RETAINED_TASKS {
+            let id = format!("t{i}");
+            l.schedule(r.clone(), &id, T0).unwrap();
+            l.cancel(&id, T0).unwrap();
+        }
+        let err = l.schedule(r, "one_more", T0).unwrap_err();
+        assert_eq!((err.status, err.code), (429, "task_limit"));
+
+        // Purge frees the space once finished tasks age out.
+        l.purge(T0 + RETENTION_MS).unwrap();
+        let total: i64 =
+            db.0.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn drops_the_body_once_a_task_cannot_be_sent_again() {
+        let db = Memory::new();
+        let l = setup(&db);
+        let body = |id: &str| -> Option<String> {
+            db.0.query_row("SELECT body FROM tasks WHERE id = ?", [id], |r| r.get(0))
+                .unwrap()
+        };
+        let mut r = req("https://a.example.com/");
+        r.body = Some("payload".into());
+        r.max_attempts = Some(1);
+
+        let mut later = r.clone();
+        later.run_at_ms = Some(T0 + 60_000);
+        l.schedule(later, "canceled", T0).unwrap();
+        l.cancel("canceled", T0).unwrap();
+        assert_eq!(body("canceled"), None);
+
+        l.schedule(r.clone(), "ok", T0).unwrap();
+        l.schedule(r, "bad", T0).unwrap();
+        for d in l.publish_due(P, T0).unwrap() {
+            let status = if d.task_id == "ok" { 200 } else { 500 };
+            let attempt = deliver(&l, &d, T0);
+            l.finish(&d.task_id, attempt.fence, http(status), T0, 0.0)
+                .unwrap();
+        }
+        assert_eq!(body("ok"), None);
+        assert_eq!(body("bad").as_deref(), Some("payload"), "kept for redrive");
+        l.redrive("bad", T0 + 1).unwrap();
+        let d = &l.publish_due(P, T0 + 1).unwrap()[0];
+        assert_eq!(deliver(&l, d, T0 + 1).body.as_deref(), Some("payload"));
     }
 
     #[test]
