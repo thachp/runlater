@@ -21,7 +21,7 @@ jobs:
       - run: npm ci
       - run: npm run test:mcp
       - run: npm run build:mcp
-      - run: node --test scripts/api-release.test.mjs scripts/api-release-health.test.mjs
+      - run: node --test scripts/api-release.test.mjs scripts/api-release-health.test.mjs scripts/api-release-dashboard.test.mjs scripts/api-release-errors.test.mjs
       - run: node --test scripts/api-release-diagnostic.test.mjs
       - run: node --test scripts/branch-cleanup-preflight.test.mjs
       - run: npm run test:web

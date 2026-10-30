@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import {verifyPublicHealth} from './api-release-health.mjs';
+import {classifyWranglerFailure} from './api-release-errors.mjs';
 export function canonical(v) { return JSON.stringify(Array.isArray(v) ? v.map(x=>JSON.parse(canonical(x))) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])) : v); }
 export const digest = v => createHash('sha256').update(canonical(v)).digest('hex');
 function guard(ok) { if (!ok) throw new Error('release guard rejected configuration or provider state'); }
@@ -13,6 +14,7 @@ const EGRESS_TARGETS = [
   {binding:'GENERAL_HTTPS_EGRESS',service:'runlater-general-egress',entrypoint:'EgressBinding'},
   {binding:'GENERAL_HTTPS_EGRESS',service:'runlater-public-fetch-candidate',entrypoint:'PublicFetchBinding'}
 ];
+const EXISTING_API_DOMAIN={pattern:'api.runlater.io',zone_name:'runlater.io',custom_domain:true,enabled:true,previews_enabled:false};
 export function settingsDigest(settings) {
   guard(settings&&typeof settings==='object'&&!Array.isArray(settings));
   const value=structuredClone(settings),annotations=value.annotations??{};
@@ -26,7 +28,10 @@ export function settingsDigest(settings) {
 export function validate(c,a,e) {
   guard(e.RUNLATER_RELEASE_ENABLED === 'true' && e.GITHUB_REPOSITORY === 'thachp/runlater' && /^[a-f0-9]{40}$/.test(e.RELEASE_SHA ?? ''));
   guard(a.worker === 'runlater-public-api' && /^[a-f0-9]{32}$/.test(a.account_id ?? '') && /^[a-f0-9]{32}$/.test(a.worker_tag ?? '') && a.settings_schema==='runtime-v1' && /^[a-f0-9]{64}$/.test(a.settings_sha256 ?? '') && digest(c) === a.config_sha256);
-  guard(Object.keys(c).every(k=>['name','main','compatibility_date','compatibility_flags','workers_dev','preview_urls','limits','observability','durable_objects','queues','ratelimits','vars','version_metadata','services'].includes(k)));
+  guard(Object.keys(c).every(k=>['name','main','compatibility_date','compatibility_flags','workers_dev','preview_urls','limits','observability','durable_objects','queues','ratelimits','vars','version_metadata','services','routes'].includes(k)));
+  // Version-only uploads do not provision routes. This optional description
+  // matches the existing domain during Wrangler's dashboard-origin strict check.
+  guard(c.routes===undefined||canonical(c.routes)===canonical([EXISTING_API_DOMAIN]));
   guard(c.name === a.worker && c.main === 'build/worker/shim.mjs' && c.workers_dev === false && c.preview_urls === false && canonical(c.limits) === '{"cpu_ms":50}' && canonical(c.observability) === '{"enabled":false}');
   guard(canonical(c.compatibility_flags) === '["global_fetch_strictly_public"]' && /^\d{4}-\d{2}-\d{2}$/.test(c.compatibility_date ?? ''));
   guard(canonical(c.durable_objects) === canonical({bindings:[{name:'ADMISSION',class_name:'AdmissionRegistry'},{name:'PROJECTS',class_name:'InvitationProject'}]}));
@@ -44,7 +49,7 @@ export function validate(c,a,e) {
   guard(optionalPairing === undefined || optionalPairing === 'disabled'
     || (optionalPairing === 'operator-approved' && optionalTrial === 'operator-approved'));
   const optionalEgress = c.services;
-  guard(optionalEgress === undefined || EGRESS_TARGETS.some(target=>canonical(optionalEgress) === canonical([target])));
+  guard(optionalEgress === undefined || EGRESS_TARGETS.some(target=>canonical(optionalEgress) === canonical([target])||canonical(optionalEgress)===canonical([{...target,environment:'production'}])));
   const egressRevision = c.vars.GENERAL_HTTPS_EGRESS_REVIEW_REVISION;
   guard(egressRevision === undefined || (optionalEgress !== undefined && typeof egressRevision === 'string' && /^[a-f0-9]{64}$/.test(egressRevision) && egressRevision !== '0'.repeat(64)));
   guard(optionalEgress === undefined || egressRevision !== undefined);
@@ -74,7 +79,7 @@ export function uploadArguments(file,sha,service,a) {
 }
 export function runWrangler(args,e,out,exec=execFileSync,onFailure=()=>{}) {
   try{return exec('node',['node_modules/wrangler/bin/wrangler.js',...args],{timeout:120000,stdio:'pipe',env:{...e,WRANGLER_SEND_METRICS:'false',WRANGLER_OUTPUT_FILE_PATH:out}});}
-  catch(error){onFailure(Number.isInteger(error?.status)&&error.status>=0&&error.status<=255?error.status:'unknown');throw new Error('wrangler_child_failed');}
+  catch(error){const diagnostic=classifyWranglerFailure(error);onFailure(diagnostic.exit_status,diagnostic);throw new Error('wrangler_child_failed');}
 }
 export function checkSecretCollisions(config,settings,secrets) {
   guard(config&&typeof config==='object'&&Array.isArray(settings?.bindings)&&Array.isArray(secrets));
@@ -154,7 +159,7 @@ export async function release(e=process.env) {
   };
   const get=suffix=>providerRead(`/workers/scripts/${a.worker}${suffix}`);
   const dir=await mkdtemp(join(tmpdir(),'runlater-release-')), file=join(process.cwd(),'.runlater-release.generated.json'), out=join(dir,'upload.jsonl');
-  const run=args=>runWrangler(args,{...e,CLOUDFLARE_ACCOUNT_ID:a.account_id},out,execFileSync,status=>console.error(`Wrangler child exit status: ${status}`));
+  const run=args=>runWrangler(args,{...e,CLOUDFLARE_ACCOUNT_ID:a.account_id,WRANGLER_WRITE_LOGS:'false'},out,execFileSync,(status,diagnostic)=>{console.error(`Wrangler child exit status: ${status}`);console.error(`Wrangler diagnostic: ${JSON.stringify(diagnostic)}`);});
   let owned=false;
   try {
     await writeFile(file,JSON.stringify(c),{mode:0o600,flag:'wx'});owned=true;
