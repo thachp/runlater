@@ -18,7 +18,7 @@ projects and their locally signed approval path are unchanged.
 4. Only when explicitly requested, `provision_trial({"accept_finite_trial":true})`
    allocates that connection's one immutable trial. Repeating it after an uncertain
    result uses the same bootstrap identity; it cannot refill or extend the project.
-5. The result says **connected; receiver setup required**, not “ready to schedule.”
+5. With explicitly consented `http_schedule`, use the [general HTTPS path](GENERAL-HTTPS-DESTINATIONS.md) when the reviewed transport is available; no special receiver is required. For the separate legacy `enqueue` path, the result says **connected; receiver setup required**, not “ready to schedule.”
    The separate default-off [receiver pairing path](RECEIVER-PAIRING-WIRE.md) can bind
    one privately configured beta runtime, but only with explicitly consented
    `receiver_setup` authority. `pair_receiver({confirm:true,manifest:...})` never

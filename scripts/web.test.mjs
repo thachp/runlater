@@ -39,3 +39,19 @@ test('published client module tree resolves all transitive dependencies from bui
     assert.ok(fs.existsSync(path.join(output,'docs/agent/operation-dedup.mjs')));
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+
+test('staged general HTTPS guide matches MCP schema and keeps Connect primary without live claims',async()=>{
+ const {HTTP_SCHEDULE_TOOL}=await import('../mcp/http-tools.mjs');
+ const html=fs.readFileSync('web/docs/index.html','utf8');
+ const sample=JSON.parse(html.match(/id="http-code">([\s\S]*?)<\/code>/)[1]);
+ const validate=ajv.compile(HTTP_SCHEDULE_TOOL.inputSchema);
+ assert.ok(validate(sample),ajv.errorsText(validate.errors));
+ assert.deepEqual(Object.keys(sample).sort(),['idempotency_key','operation_key','payload','run_at_ms','url']);
+ assert.match(html,/POST \/v1\/http\/tasks/);
+ assert.match(html,/Release staged; production activation pending/);
+ assert.match(html,/Idempotency-Key/);
+ assert.match(fs.readFileSync('web/landing/index.html','utf8'),/https:\/\/docs.runlater.io\/#connect/);
+ const guide=fs.readFileSync('docs/GENERAL-HTTPS-DESTINATIONS.md','utf8');
+ assert.match(guide,/at least once at task level/);
+ assert.match(guide,/does not observe or pin the connected peer IP/);
+});
