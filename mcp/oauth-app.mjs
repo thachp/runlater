@@ -27,16 +27,41 @@ async function boundedForm(request) {
   if ([...form.keys()].some((key, i, keys) => !['handle', 'decision', 'approval'].includes(key) || keys.indexOf(key) !== i)) throw new Error();
   return form;
 }
+// Representation hints never grant OAuth authority. Explicit JSON always stays JSON.
+function wantsAuthorizationHtml(request) {
+  const accepted = (request.headers.get('accept') || '').split(',').map(part => {
+    const [type, ...params] = part.trim().toLowerCase().split(';');
+    const quality = params.find(value => /^\s*q\s*=/.test(value));
+    return {type: type.trim(), q: quality === undefined ? 1 : Number(quality.split('=')[1])};
+  });
+  if (accepted.some(x => (x.type === 'application/json' || x.type.endsWith('+json')) && x.q > 0)) return false;
+  if (accepted.some(x => x.type === 'text/html' && x.q > 0)) return true;
+  if (accepted.some(x => x.type === 'text/html')) return false;
+  return request.headers.get('sec-fetch-mode') === 'navigate'
+    && request.headers.get('sec-fetch-dest') === 'document'
+    && accepted.some(x => (x.type === '*/*' || x.type === '') && x.q > 0);
+}
+const authorizationPageHeaders = {...privateHeaders, 'Content-Type': 'text/html; charset=utf-8',
+  Vary: 'Accept, Sec-Fetch-Mode, Sec-Fetch-Dest'};
+export function authorizationFailure(request, stage = 'request', status = 400) {
+  if (!wantsAuthorizationHtml(request)) return oauthFailure(status);
+  const messages = {
+    request: ['Check your connection request', 'RunLater could not verify this connection request. Return to your agent app and start the connection there. The app must supply a supported client identity, callback and security parameters; do not edit those values manually.'],
+    metadata: ['Your agent app could not be verified', 'RunLater could not read or validate the app’s public connection metadata. Retry from the app later, or ask the app provider to check its metadata compatibility. No connection was approved by this request.'],
+    approval: ['Start the connection again in your agent app', 'Your approval could not be verified. The consent page may have expired, already been used, or lost its browser session. Return to your app and start a fresh connection; do not resubmit this form.'],
+    completion: ['Check whether your agent connected', 'RunLater could not confirm that the connection finished. Return to the same agent app and check its connection status before trying again. Do not create a replacement trial or repeatedly submit this approval.'],
+    unavailable: ['Check whether your agent connected', 'RunLater could not confirm the connection because the service is temporarily unavailable. Check the same agent app’s connection status before retrying. Do not create a replacement trial.'],
+  };
+  const [title, message] = messages[stage] || messages.request;
+  // Fixed copy only: never reflect URLs, metadata, forms, credentials or exceptions.
+  return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title} — RunLater</title><h1>${title}</h1><p>${message}</p><p><a href="https://docs.runlater.io/#connect">Read the Connect guide</a></p></html>`,
+    {status, headers: authorizationPageHeaders});
+}
 export async function authorizeOwner(request, oauth, config) {
   if (new URL(request.url).origin !== MCP_RESOURCE || new URL(request.url).pathname !== '/authorize') return oauthFailure();
   // A browser opened the protocol endpoint without a client-started transaction.
   // Explain how to connect, without parsing metadata, creating consent or relaxing OAuth.
-  const acceptsHtml = (request.headers.get('accept') || '').split(',').some(part => {
-    const [type, ...parameters] = part.trim().split(';');
-    return type.trim().toLowerCase() === 'text/html'
-      && !parameters.some(value => /^q\s*=\s*0(?:\.0*)?$/i.test(value.trim()));
-  });
-  if (request.method === 'GET' && !new URL(request.url).search && acceptsHtml) {
+  if (request.method === 'GET' && !new URL(request.url).search && wantsAuthorizationHtml(request)) {
     return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Connect RunLater from your agent app</title>
 <h1>Start in your agent app</h1>
 <p>This authorization page needs a connection request from a compatible OAuth MCP client. Opening this address alone cannot connect a project.</p>
@@ -45,9 +70,10 @@ export async function authorizeOwner(request, oauth, config) {
 <li>Only on that client-started consent page, review the client, return destination and permissions before choosing <strong>Start free agent project</strong>.</li></ol>
 <p>No RunLater account or private-key generation is needed for this trial path. Connecting does not allocate a project; provisioning requires a separate explicit request and finite capacity.</p>
 <p><a href="https://docs.runlater.io/#connect">Read the Connect guide</a></p></html>`, {
-      status: 400, headers: {...privateHeaders, 'Content-Type': 'text/html; charset=utf-8', Vary: 'Accept'},
+      status: 400, headers: authorizationPageHeaders,
     });
   }
+  let stage = 'request';
   try {
     if (request.method === 'GET') {
       const parsed = normalizedAuthRequest(await oauth.parseAuthRequest(request), config);
@@ -79,16 +105,18 @@ ${ownerEligible ? `<p>Your private key stays on your device. Copy the public cha
       headers.set('Content-Type', 'text/html; charset=utf-8');
       return new Response(html, {headers});
     }
-    if (request.method !== 'POST' || request.headers.get('origin') !== MCP_RESOURCE) return oauthFailure();
+    stage = 'approval';
+    if (request.method !== 'POST' || request.headers.get('origin') !== MCP_RESOURCE) return authorizationFailure(request, stage);
     const form = await boundedForm(request), handle = form.get('handle');
     if (form.get('decision') === 'deny') {
       const denied = await oauth.denyConsent(request, handle);
       return new Response(null, {status: 302, headers: denied.headers});
     }
     if (form.get('decision') === 'trial') {
-      if (!config.trialEnabled || form.has('approval')) return oauthFailure();
+      if (!config.trialEnabled || form.has('approval')) return authorizationFailure(request, stage);
       const approved = await oauth.approveConsent(request, handle);
       const parsed = normalizedAuthRequest(approved.request, config);
+      stage = 'completion';
       const trial = createTrialAuthority({releaseId:config.releaseId,clientId:parsed.clientId,scopes:parsed.scope});
       const completed = await oauth.completeAuthorization({request:parsed,userId:trial.props.projectId,metadata:{authorityKind:'trial'},
         scope:parsed.scope,props:trial.props,revokeExistingGrants:false,trialRevocationSecret:trial.revocationSecret});
@@ -96,18 +124,21 @@ ${ownerEligible ? `<p>Your private key stays on your device. Copy the public cha
       for (const [key,value] of Object.entries(privateHeaders)) headers.set(key,value);
       headers.set('Location',completed.redirectTo); return new Response(null,{status:302,headers});
     }
-    if (form.get('decision') !== 'approve') return oauthFailure();
+    if (form.get('decision') !== 'approve') return authorizationFailure(request, stage);
     // Library owns cookie binding and one-use transaction. Input cannot reconstruct a redirect.
     const approved = await oauth.approveConsent(request, handle);
     const parsed = normalizedAuthRequest(approved.request);
     const delegation = verifyOwnerApproval(JSON.parse(form.get('approval') || ''), ownerChallenge(parsed, handle, config), config);
-    if (delegation.expires_at_ms - (config.now ?? Date.now()) < 60000) return oauthFailure();
+    if (delegation.expires_at_ms - (config.now ?? Date.now()) < 60000) return authorizationFailure(request, stage);
     await requireActiveDelegation(delegation, config.validateDelegation);
+    stage = 'completion';
     const completed = await oauth.completeAuthorization({request: parsed, userId: delegation.project_id,
       metadata: {}, scope: parsed.scope, props: {delegation}, revokeExistingGrants: true});
     const headers = new Headers(approved.headers);
     for (const [key, value] of Object.entries(privateHeaders)) headers.set(key, value);
     headers.set('Location', completed.redirectTo);
     return new Response(null, {status: 302, headers});
-  } catch {return oauthFailure();} // Never echo client metadata, certificate, signature or library exceptions.
+  } catch (error) {
+    return authorizationFailure(request, stage === 'request' && config.isMetadataError?.(error) ? 'metadata' : stage);
+  } // Never echo client metadata, certificate, signature or library exceptions.
 }
