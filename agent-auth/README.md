@@ -1,5 +1,10 @@
 # Agent Auth local proof (default off)
 
+Current direction: replace the bespoke gateway auth through the inactive candidate
+in [replacement/README.md](replacement/README.md). The additive rollout notes
+below record the earlier assessment; the replacement plan supersedes that future
+rollout recommendation. These earlier proofs remain local regression fixtures.
+
 This directory is an isolated executable assessment, not a deployed service. It is
 not imported by MCP, the Rust API, or a deployment config. `createPrototype()`
 returns 503 unless explicitly enabled by a local caller. The only capability is
@@ -118,3 +123,69 @@ authorization. This PR supplies none of those authorizations.
   session verification, replay caches and options; package exports/declarations.
 - Existing RunLater `mcp/worker.mjs`, `oauth-storage.mjs`, `oauth-trial.mjs`,
   `oauth-consent.mjs`, and `src/anonymous_trial.rs` on main `833ea650`.
+
+## Follow-up: durable coordinator primitive proof
+
+`npm test` now also runs `coordinator/coordinator.test.mjs` against real workerd
+SQLite Durable Objects, not a mock database. Miniflare `5.20261023.3-beta` pins
+workerd `1.20261023.1`; the older stable Miniflare tag introduced known vulnerable
+transitive dependencies. The pinned beta audits cleanly. Its documented exported
+`convertV4MiniflareOptions` is used; a fixture RPC envelope normalizes expected
+errors because this beta's Node bridge misdecodes rejected Promise results.
+
+The coordinator is a **separate storage primitive proof**, not the Better Auth
+plugin running on Workers, not an implementation of its registration/session
+protocol, and not a replacement for the original protocol tests. It verifies
+jose Ed25519 signed, request-bound fixture commands with enrolled host keys, then
+atomically consumes `(host,jti)` and debits a fixture budget in one synchronous
+SQLite transaction. Replays persist through full Miniflare/workerd restarts.
+Cryptography occurs before the transaction; lifecycle and time are checked again
+inside it. Responses await durable storage sync. Invalid signatures cannot
+reserve quota or replay records. Bounded replay capacity fails closed.
+
+Trusted fixture enrollment freezes entitlement -> project, original issue time,
+seven-day expiry and 100-unit budget. Enrollment retries and additional host keys
+reuse that ledger; conflicting project/time/host assignments fail. Ten lifetime
+project slots (matching `src/public_beta.rs::PROJECTS`) include revoked and expired
+records; four fixture host slots per entitlement and 512 live replay records bound
+storage. There is no deletion/refill/reactivation operation. The release-sized
+singleton is intentional for this bounded ten-project admission fixture, not a
+recommendation to serialize an unbounded service globally.
+
+Revocation commits an authoritative ledger tombstone before optional cleanup.
+Pending cleanup is derived from durable rows and remains retryable after restart
+and repeated revocation. Completion never clears the tombstone or frees a slot.
+This models interruption between tombstoning and cleanup, not an actual crash
+inside a storage transaction or real upstream cleanup failure.
+
+The Worker HTTP handler always returns 503. No Wrangler deployment configuration,
+D1/DO infrastructure creation, network egress, scheduler, signing trust migration,
+production import or credential is added. The in-process Miniflare harness alone
+enables fixture RPCs; its persistence directories are temporary and deleted.
+`fixtureClock` is an explicitly trusted monotonic **test clock**, not a deployed
+clock endpoint. Fixture enrollment is not proof of one customer and cannot be
+exposed to untrusted callers. No existing project is imported. Public autonomous
+admission and recovery remain unresolved policy boundaries.
+
+CI integration is pending: GitHub rejected the proposed dedicated read-only
+workflow because the connected OAuth app lacks workflow scope. No access change
+is requested by this proof. The prepared job runs `npm ci` and `npm test` inside
+`agent-auth/` on Node 22, has no environment/secrets/deployment step, and uses a
+separate name from release triggers. It must be added through an authorized
+workflow-writing path; current CI does not run these suites.
+
+Still required before connecting any scheduling route:
+
+- Integrate real Agent Auth verification/storage with the authoritative coordinator
+  rather than calling this fixture's custom command interface. Persist identities
+  and grants using a reviewed D1 adapter/migration and test recovery across both
+  stores. This change does **not** prove the plugin's D1 adapter works.
+- Replace fixture enrollment with authorized durable entitlement/admission policy;
+  account for existing owner/trial occupancy in the shared lifetime cap and keep
+  original API project/descriptor/quota/revocation authority. The fixture debit is
+  not the Rust API's actual attempt ledger and must never become a second budget.
+- Implement authenticated key lifecycle/recovery, bounded retrying upstream cleanup
+  with alarms, production clock semantics, ingress bounds and SDK interoperability.
+- Preserve original absolute expiry/budget and tombstones through linking, key
+  replacement, rollback and repeated client enrollment; require explicit proof of
+  control for any existing-project association.
