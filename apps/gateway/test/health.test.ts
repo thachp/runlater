@@ -40,6 +40,52 @@ describe("gateway", () => {
     expect((await worker.fetch(req, envWithApi(200), ctx)).status).toBe(413);
   });
 
+  it("counts body bytes even without Content-Length", async () => {
+    const chunk = new Uint8Array(64 * 1024);
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (sent++ < 4) c.enqueue(chunk);
+        else c.close();
+      },
+    });
+    const req = new Request("https://gateway.test/api/auth/capability/execute", {
+      method: "POST",
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+    expect(req.headers.get("Content-Length")).toBeNull();
+    expect((await worker.fetch(req, envWithApi(200), ctx)).status).toBe(413);
+  });
+
+  it("claims each token's jti atomically before Better Auth sees it", async () => {
+    const claims: string[] = [];
+    const store = { claim: async (key: string) => (claims.push(key), claims.length === 1) };
+    const env = {
+      ...envWithApi(200),
+      ASSERTION_PRIVATE_KEY: "07".repeat(32),
+      AUTH_STORE: { idFromName: () => "id", get: () => store },
+    } as unknown as Env;
+    const b64 = (o: object) => btoa(JSON.stringify(o)).replace(/=+$/, "");
+    const token = `${b64({ alg: "EdDSA" })}.${b64({ sub: "agent_1", jti: "abc" })}.sig`;
+    const send = () =>
+      worker.fetch(
+        new Request("https://gateway.test/api/auth/capability/execute", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: "{}",
+        }),
+        env,
+        ctx,
+      );
+    // First use passes the gateway (and then fails inside Better Auth, which has no DB here).
+    await send().catch(() => undefined);
+    const second = await send();
+    expect(second.status).toBe(401);
+    expect(await second.json()).toMatchObject({ error: "invalid_jwt" });
+    expect(claims).toEqual(["replay::agent_1:abc", "replay::agent_1:abc"]);
+  });
+
   it("serves only the agent routes", async () => {
     for (const path of ["/nope", "/api/auth/agent/list", "/api/auth/sign-in/email", "/api/auth/host/create"]) {
       expect((await get(path, envWithApi(200))).status, path).toBe(404);

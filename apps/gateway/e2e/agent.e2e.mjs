@@ -106,7 +106,16 @@ after(() => mf?.dispose());
 
 /** Every request the SDK made, so tests can replay one. */
 const sent = [];
+/** When set, the next execute request is sent twice at once; statuses land here. */
+let duplicateNext = null;
 const transport = async (url, init) => {
+  if (duplicateNext && String(url).endsWith("/capability/execute")) {
+    const record = duplicateNext;
+    duplicateNext = null;
+    const [a, b] = await Promise.all([fetch(url, init), fetch(url, init)]);
+    record.statuses = [a.status, b.status].sort();
+    return a.ok ? a : b;
+  }
   const response = await fetch(url, init);
   sent.push({ url: String(url), init, response: response.clone() });
   return response;
@@ -226,6 +235,34 @@ describe("agent journey through the gateway", () => {
     const last = sent.findLast((s) => s.url.endsWith("/capability/execute"));
     const replay = await fetch(last.url, last.init);
     assert.equal(replay.status, 401);
+  });
+
+  // Local workerd runs both copies in one isolate, so this checks the outcome but does not
+  // reproduce the cross-isolate race; test/health.test.ts covers the gateway's atomic claim.
+  test("two copies of one request sent at once execute only once", async () => {
+    const record = {};
+    duplicateNext = record;
+    await client.executeCapability({
+      agentId,
+      capability: "schedule_http",
+      arguments: { url: "https://receiver.example.com/once", run_at_ms: Date.now() + 3_600_000 },
+    });
+    assert.deepEqual(record.statuses, [200, 401]);
+    const tasks = data(await client.executeCapability({ agentId, capability: "list_tasks", arguments: {} }));
+    assert.equal(tasks.tasks.filter((t) => t.url === "https://receiver.example.com/once").length, 1);
+  });
+
+  test("agents of a revoked host are refused even if not yet revoked themselves", async () => {
+    const other = sdk();
+    const conn = await other.connectAgent({ provider: origin, mode: "autonomous", capabilities: CAPABILITIES, name: "doomed" });
+    await other.executeCapability({ agentId: conn.agentId, capability: "create_project", arguments: {} });
+    // Simulate a host revocation that stopped before reaching its agents.
+    const db = await mf.getD1Database("DB", "gateway");
+    await db.prepare('UPDATE "agentHost" SET status = ? WHERE id = ?').bind("revoked", conn.hostId).run();
+    await assert.rejects(other.executeCapability({ agentId: conn.agentId, capability: "get_project", arguments: {} }), {
+      code: "host_revoked",
+      status: 403,
+    });
   });
 
   test("another agent on the same host shares the project", async () => {

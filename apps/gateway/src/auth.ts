@@ -89,6 +89,14 @@ export function createAuth(env: AuthEnv, ctx: ExecutionContext, signingKey: Cryp
   const onExecute: OnExecute = async ({ capability, arguments: args = {}, agentSession }) => {
     const hostId = agentSession.agent.hostId;
     try {
+      // The plugin revokes a host's agents one by one after marking the host revoked; if
+      // that is interrupted, surviving agents must still be refused here.
+      const host = await env.DB.prepare('SELECT status FROM "agentHost" WHERE id = ?')
+        .bind(hostId)
+        .first<{ status: string }>();
+      if (host?.status !== "active") {
+        throw new ApiError(403, { error: { code: "host_revoked", message: "this agent's host is not active" } });
+      }
       const projectId =
         capability === "create_project" ? await ensureProject(env.DB, hostId) : await findProject(env.DB, hostId);
       if (!projectId) {

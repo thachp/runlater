@@ -73,6 +73,16 @@ export class AuthStore extends DurableObject<Record<string, never>> {
     return next;
   }
 
+  /**
+   * Records `key` if absent and reports whether this call did so. Atomic: Durable Object
+   * methods with no `await` run to completion before the next request is processed.
+   */
+  async claim(key: string, ttlSecs: number): Promise<boolean> {
+    if (this.live(key) !== null) return false;
+    this.write(key, "1", ttlSecs);
+    return true;
+  }
+
   async delete(key: string): Promise<void> {
     this.ctx.storage.sql.exec("DELETE FROM kv WHERE key = ?", key);
   }
