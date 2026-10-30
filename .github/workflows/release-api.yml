@@ -31,7 +31,7 @@ jobs:
       - run: npm ci
       - run: rustup toolchain install 1.92.0 --profile minimal --target wasm32-unknown-unknown
       - run: cargo +1.92.0 install worker-build --version 0.8.7 --locked
-      - run: node --test scripts/api-release.test.mjs
+      - run: node --test scripts/api-release.test.mjs scripts/api-release-dashboard.test.mjs scripts/api-release-errors.test.mjs
       - run: ./scripts/build-production.sh
       - name: Upload guarded version and promote existing API
         env:
