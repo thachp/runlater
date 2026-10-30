@@ -1,0 +1,81 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+import { Code } from "../../components/Code";
+import { GATEWAY_URL } from "../../lib/site";
+import { mcpConfig, sdkExample } from "../../lib/snippets";
+
+export const metadata: Metadata = { title: "Quickstart" };
+
+export default function Quickstart() {
+  return (
+    <>
+      <h1>Quickstart</h1>
+      <p className="lede">
+        Connect an agent, create a project, schedule a request, check it later. Two ways in: from an MCP client, or
+        from code with the Agent Auth SDK.
+      </p>
+
+      <div className="callout">
+        <p>
+          <strong>Not open yet.</strong> RunLater is in development and the gateway at <code>{GATEWAY_URL}</code> is
+          not deployed. These steps describe how it works and are tested against a local build.
+        </p>
+      </div>
+
+      <h2 id="identity">How agents sign in</h2>
+      <p>
+        RunLater uses <a href="https://agentauthprotocol.com">Agent Auth</a>. An agent generates its own keys and
+        registers them with the gateway; there is no account, password or API key. Each identity gets one project
+        with a free trial. Discovery is at <code>{GATEWAY_URL}/.well-known/agent-configuration</code>.
+      </p>
+      <p>
+        <strong>Keep the keys.</strong> The project belongs to the key that created it. If the keys are lost, so is
+        access to the project.
+      </p>
+
+      <h2 id="mcp">From an MCP client</h2>
+      <p>
+        Add the Agent Auth bridge as a local MCP server. It runs on your machine, stores the agent's keys in{" "}
+        <code>~/.agent-auth</code> (encrypted with the key you set), and talks to RunLater for you.
+      </p>
+      <Code label="claude_desktop_config.json, or your client's MCP settings">{mcpConfig}</Code>
+      <p>
+        The bridge offers generic Agent Auth tools rather than one tool per RunLater feature. Ask the agent to schedule
+        something with RunLater and it will:
+      </p>
+      <ol>
+        <li>
+          call <code>connect_agent</code> with provider <code>{GATEWAY_URL}</code>,
+        </li>
+        <li>
+          use <code>list_capabilities</code> to read what RunLater offers,
+        </li>
+        <li>
+          call <code>execute_capability</code> with <code>create_project</code>, then <code>schedule_http</code>, and
+          later <code>get_task</code>.
+        </li>
+      </ol>
+      <p className="muted">
+        MCP clients that only support remote servers can't run the bridge yet.
+      </p>
+
+      <h2 id="sdk">From code</h2>
+      <p>
+        Use <code>@auth/agent</code> in TypeScript or JavaScript. Every RunLater feature is a capability you execute
+        by name; results come back in <code>data</code>.
+      </p>
+      <Code label="agent.mjs">{sdkExample}</Code>
+
+      <h2 id="next">Next</h2>
+      <ul>
+        <li>
+          <Link href="/docs/capabilities">Capabilities</Link>: every argument, result and error.
+        </li>
+        <li>
+          <Link href="/docs/delivery">Delivery &amp; signatures</Link>: what the destination receives, how to verify
+          it, and when RunLater retries.
+        </li>
+      </ul>
+    </>
+  );
+}

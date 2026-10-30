@@ -1,5 +1,13 @@
 {
   "name": "@runlater/contracts",
   "private": true,
-  "files": ["openapi.yaml"]
+  "files": [
+    "openapi.yaml",
+    "src"
+  ],
+  "type": "module",
+  "exports": {
+    "./capabilities": "./src/capabilities.ts",
+    "./openapi.yaml": "./openapi.yaml"
+  }
 }

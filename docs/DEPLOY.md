@@ -107,7 +107,7 @@ These hostnames are owned by legacy Workers today:
 | Hostname | Today | Target |
 | --- | --- | --- |
 | `runlater.io`, `www.runlater.io` | `runlater-web-landing` | `runlater-web-production` |
-| `docs.runlater.io` | `runlater-web-docs` | `runlater-web-production` |
+| `docs.runlater.io` | `runlater-web-docs` | Redirect to `runlater.io/docs` (served by `runlater-web-production`) |
 | `api.runlater.io` | `runlater-alpha-api` | `runlater-gateway-production` (or a new hostname) |
 
 Until cutover, give production temporary hostnames. At cutover, move each custom domain with an

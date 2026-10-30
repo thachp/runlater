@@ -54,7 +54,7 @@ flowchart LR
 - Budget is charged per attempt inside the DO, so it cannot be bypassed.
 - Assertion format, scopes and the full route contract: [`packages/contracts/openapi.yaml`](../../packages/contracts/openapi.yaml).
 
-**`apps/web` (Next.js)** — landing + docs at runlater.io / docs.runlater.io. Static-first; no auth in v1.
+**`apps/web` (Next.js)** — landing page and docs at runlater.io (docs under `/docs`). Statically prerendered; no auth in v1.
 
 ### Internal API (gateway → api)
 
@@ -86,13 +86,13 @@ runlater/
 │   │   └── wrangler.jsonc
 │   └── web/                 Next.js + OpenNext
 │       ├── app/
-│       ├── content/docs/    MDX docs
+│       ├── app/docs/        quickstart, capabilities (generated), delivery & signatures
 │       └── wrangler.jsonc
 ├── crates/
 │   ├── core/                Pure Rust domain: task state machine, retry policy, limits, validation. No worker deps; native unit tests.
 │   └── egress/              Pure Rust: destination policy (URL/host/IP checks) + request signing
 ├── packages/
-│   ├── contracts/           openapi.yaml, generated TS types, capability/MCP JSON schemas
+│   ├── contracts/           openapi.yaml and capability definitions (src/capabilities.ts), shared by gateway and web
 │   └── tsconfig/            shared TS config
 ├── docs/
 │   ├── spec/                PRODUCT.md, ARCHITECTURE.md (this)
@@ -153,7 +153,10 @@ Each phase is one PR that leaves `main` green.
    - The MCP bridge is validated end to end: `@auth/agent-cli@0.5.1` (SDK 0.5.1) works against the 0.6.2 server. No hosted `/mcp` endpoint is needed for it.
    - Capability calls are protected by single-use `jti` (replay returns 401) rather than the legacy request-binding check, which the standard SDK and the bridge do not send.
    - A cross-language test vector pins the assertion format: a token signed by the TypeScript gateway is verified by the Rust API's tests.
-5. **Web.** Move Next.js app to `apps/web`, rewrite landing + docs from PRODUCT.md.
+5. **Web.** ✅ Landing page and docs (`/docs`, `/docs/capabilities`, `/docs/delivery`) in `apps/web`, statically prerendered.
+   - The capabilities reference renders the same definitions the gateway serves (`@runlater/contracts/capabilities`).
+   - The signature-verification samples (Node, Python) are executed in tests against the `crates/egress` vector, and the limits the site states are checked against `crates/core`.
+   - `docs.runlater.io` content now lives at `runlater.io/docs`; redirect the old hostname at cutover.
 6. **E2E + deploy.** One e2e script, staging + production envs, deploy workflow.
 7. **Cutover.** Inventory live resources, tear down old Workers (MCP OAuth, public beta API), delete `legacy/`.
 
