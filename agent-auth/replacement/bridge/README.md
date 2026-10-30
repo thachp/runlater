@@ -31,10 +31,13 @@ an explicit future decision and implementation review.
   reference, original issue/expiry, permission ceiling, source epoch and identity
   digest. No secret/capability/bearer credential or quota balance is copied.
   Trial snapshots must retain exactly seven days from original issuance. Owner
-  links retain the existing delegation expiry, not a new seven-day grant.
+  links retain the existing delegation expiry, not a new seven-day grant. A fresh
+  challenge may outlive a short delegation, but both must still be valid when
+  completion is checked. Current delegation validation, the original source
+  expiry and final commit/execute checks continue to bound authority.
 - Every operation needs a fresh authenticated Agent Auth controller assertion
-  bound to the exact operation and actor, active replacement identity, active
-  source family and unchanged snapshot. Permission names are never aliased;
+  bound to the selected link, immutable source-project context, exact operation
+  and actor, active replacement identity, active source family and unchanged snapshot. Permission names are never aliased;
   old `enqueue`/`read`/`cancel` cannot silently become `http_schedule`.
 - Only the source API adapter can execute an operation. It receives the original
   project/namespace and unchanged idempotency/operation keys. This component has
@@ -73,7 +76,13 @@ not accept a trial assertion by default or mint authority to fill that gap.
 
 `AGENT_SESSION_CONTROLLER` must use actual Agent Auth validation, including JWT
 signature, expiry, audience, method/URL/body binding, persistent replay protection
-and capability-grant intersection, and attest the exact actor/operation digest.
+and capability-grant intersection, and attest the exact signed request digest.
+`complete` returns `execution_context`
+containing the link, project, namespace, source family/epoch and actor. Clients
+sign the canonical `executionRequest(context, operation)` envelope; the bridge
+recomputes that context from stored authority and checks `request_sha256` in the
+controller assertion. Operation-only tokens/assertions are rejected, so a link ID
+cannot be substituted to select another project before the first token use.
 A link ID is never an authentication credential. This contract is not wired to the
 candidate's public `connection_status` capability and must not be implemented by
 simply trusting request headers, decoding a JWT or reusing a local replay Map.

@@ -1,5 +1,5 @@
 import {DurableObject} from 'cloudflare:workers';
-import {digest,verifySignature} from './proofs.mjs';
+import {digest,verifySignature,executionContext,executionRequest} from './proofs.mjs';
 import {AgentAuthReplacement} from '../worker.mjs';
 import replacement from '../worker.mjs';
 export {AgentAuthReplacement};
@@ -95,7 +95,7 @@ export class ProjectLinkAuthority extends DurableObject {
    this.#sql('INSERT INTO links VALUES(?,?,?,?,?)',intent,authority.family_id,JSON.stringify(authority),row.challenge,'active');
    this.#sql('UPDATE intents SET state=? WHERE id=?','linked',intent);
   });
-  return {link_id:intent,project_id:authority.project_id,expires_at_ms:authority.expires_at_ms,permissions:challenge.permissions};
+  return {link_id:intent,project_id:authority.project_id,expires_at_ms:authority.expires_at_ms,permissions:challenge.permissions,execution_context:executionContext(intent,authority,challenge)};
  }
  async #execute(linkId,operation,authentication){
   const row=this.#sql('SELECT * FROM links WHERE id=?',linkId)[0];
@@ -108,8 +108,10 @@ export class ProjectLinkAuthority extends DurableObject {
   if(typeof authentication!=='string'||authentication.length>8192)deny('agent_session_required');
   // The real Agent Auth controller must verify signature, request binding,
   // audience, replay and capability intersection. No link-id bearer shortcut.
-  const session=await this.#request(this.env.AGENT_SESSION_CONTROLLER,'verify-session',{host_id:challenge.host_id,agent_id:challenge.agent_id,operation,operation_sha256:digest(operation)},'agent_session_rejected',{authentication});
-  if(session.active!==true||session.host_id!==challenge.host_id||session.agent_id!==challenge.agent_id||session.operation_sha256!==digest(operation)||session.capability!==operation.capability)deny('agent_session_rejected');
+  const request=executionRequest(executionContext(row.id,authority,challenge),operation);
+  const requestDigest=digest(request);
+  const session=await this.#request(this.env.AGENT_SESSION_CONTROLLER,'verify-session',{host_id:challenge.host_id,agent_id:challenge.agent_id,request,request_sha256:requestDigest},'agent_session_rejected',{authentication});
+  if(session.active!==true||session.host_id!==challenge.host_id||session.agent_id!==challenge.agent_id||session.request_sha256!==requestDigest||session.capability!==operation.capability)deny('agent_session_rejected');
   await this.#identity(challenge);
   const state=await this.#old('validate-source',{challenge,authority_ref:authority.authority_ref,family_id:row.family});
   if(state?.active===false){await this.#revokeFamily(row.family,Math.max(authority.revocation_epoch,Number.isSafeInteger(state.revocation_epoch)?state.revocation_epoch:0));deny('source_family_revoked');}

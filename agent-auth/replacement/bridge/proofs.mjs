@@ -15,8 +15,13 @@ export function verifyOwnerLinkControl({delegation,receipt,owner_signature},chal
  if(!receipt)throw Error('enrollment_receipt_required');
  if(challenge.version!==1||challenge.origin!=='https://mcp.runlater.io'||!Number.isSafeInteger(challenge.issued_at_ms)||!Number.isSafeInteger(challenge.expires_at_ms)||challenge.issued_at_ms>now||challenge.expires_at_ms<=now||challenge.expires_at_ms-challenge.issued_at_ms>300000)throw Error('link_challenge_expired');
  const existing=verifyDelegation(delegation,{gatewayPublicKey,releaseId,receipt,now});
- if(challenge.project_id!==existing.project_id||challenge.release_id!==existing.release_id||challenge.source_kind!=='owner'||challenge.permissions.some(p=>!existing.permissions.includes(p))||challenge.expires_at_ms>existing.expires_at_ms)throw Error('owner_link_scope_rejected');
+ if(challenge.project_id!==existing.project_id||challenge.release_id!==existing.release_id||challenge.source_kind!=='owner'||challenge.permissions.some(p=>!existing.permissions.includes(p)))throw Error('owner_link_scope_rejected');
+ // A challenge may outlive the source, but source validity is checked above
+ // at completion and the returned authority retains its original expiry.
  const key=createPublicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),Buffer.from(existing.owner_public_key,'hex')]),format:'der',type:'spki'}).export({format:'jwk'});
  verifySignature(key,owner_signature,challenge);
  return {project_id:existing.project_id,permissions:[...existing.permissions],expires_at_ms:existing.expires_at_ms,delegation_sha256:digest(existing)};
 }
+
+export const executionContext=(linkId,authority,actor)=>canonical({version:1,origin:'https://mcp.runlater.io',link_id:linkId,project_id:authority.project_id,namespace:authority.namespace,family_id:authority.family_id,source_epoch:authority.revocation_epoch,host_id:actor.host_id,agent_id:actor.agent_id});
+export const executionRequest=(context,operation)=>canonical({execution_context:context,operation});
