@@ -34,6 +34,10 @@ jobs:
       - run: npm run build:web
       - run: npm run test:web-local
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - run: npx playwright install --with-deps chromium
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - run: npm run test:web-browser
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run test:examples
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - run: npm run test:callback-wire
