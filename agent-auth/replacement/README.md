@@ -135,3 +135,8 @@ Sources: https://better-auth.com/docs/plugins/agent-auth (unstable),
 https://agentauthprotocol.com/specification/v1.0-draft and
 https://agentauthprotocol.com/docs/client-sdk; installed package sources for D1
 Kysely detection, lifecycle endpoints, secondary storage and background tasks.
+
+The inactive [control-link bridge component](bridge/README.md) implements the
+conservative source-family revocation policy and local proof/continuity tests.
+Its controller interfaces remain unbound; this does not activate scheduling or
+resolve the undefined trial rebinding ceremony.
