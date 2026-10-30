@@ -14,15 +14,16 @@ const DASHBOARD_READS=[
 ];
 
 export async function diagnose(e=process.env, fetchImpl=globalThis.fetch, clock=Date.now) {
-  let config, approval;
+  let config, approval;const mode=e.RUNLATER_DIAGNOSTIC_MODE??'metadata';
   try {
+    if(!['metadata','token_identity'].includes(mode))throw Error();
     config=JSON.parse(e.RUNLATER_RELEASE_CONFIG??'{}');
     approval=JSON.parse(e.RUNLATER_RELEASE_APPROVAL??'{}');
     // Reuse pure target validation while releases stay disabled. This function has no writer.
     validate(config,approval,{...e,RUNLATER_RELEASE_ENABLED:'true',RELEASE_SHA:e.GITHUB_SHA});
-    if(!e.GH_TOKEN || !e.CLOUDFLARE_API_TOKEN) throw Error();
+    if((mode==='metadata'&&!e.GH_TOKEN) || !e.CLOUDFLARE_API_TOKEN) throw Error();
   } catch { return {diagnostic:'configuration_invalid',requests:0}; }
-  const deadline=clock()+35000, report={diagnostic:'read_only',requests:0,checks:[]};
+  const deadline=clock()+(mode==='token_identity'?8000:35000), report={diagnostic:mode==='token_identity'?'token_identity':'read_only',requests:0,checks:[]};
   async function read(check,url,token) {
     const row={check}; report.checks.push(row);
     const remaining=Math.min(8000,deadline-clock());
@@ -49,6 +50,14 @@ export async function diagnose(e=process.env, fetchImpl=globalThis.fetch, clock=
       return data;
     }catch{row.error='request_failed';return null;}
   }
+  if(mode==='token_identity'){
+    const data=await read('ci_token_verify','https://api.cloudflare.com/client/v4/user/tokens/verify',e.CLOUDFLARE_API_TOKEN);
+    const value=data?.result;
+    if(data?.success===true&&typeof value?.id==='string'&&/^[a-f0-9]{32}$/.test(value.id)&&value.id!==e.CLOUDFLARE_API_TOKEN&&['active','disabled','expired'].includes(value.status)){
+      report.token_id=value.id;report.token_status=value.status;
+    }else if(data)report.checks[0].error='token_metadata_invalid';
+    return report;
+  }
   const github=await read('github_main','https://api.github.com/repos/thachp/runlater/git/ref/heads/main',e.GH_TOKEN);
   if(github)report.main_matches_source=github.object?.sha===e.GITHUB_SHA;
   const base=`https://api.cloudflare.com/client/v4/accounts/${approval.account_id}`;
@@ -60,9 +69,14 @@ export async function diagnose(e=process.env, fetchImpl=globalThis.fetch, clock=
   for(const [check,path] of DASHBOARD_READS)await read(check,base+path,e.CLOUDFLARE_API_TOKEN);
   return report;
 }
+export function diagnosticSucceeded(report){
+  if(!Array.isArray(report?.checks)||report.checks.some(x=>x.error||!Number.isInteger(x.http_status)||x.http_status<200||x.http_status>=300||x.api_success===false))return false;
+  if(report.diagnostic==='token_identity')return report.requests===1&&report.checks.length===1&&report.checks[0].check==='ci_token_verify'&&/^[a-f0-9]{32}$/.test(report.token_id??'')&&report.token_status==='active';
+  return report.diagnostic==='read_only'&&report.main_matches_source===true&&report.settings_match_baseline===true&&report.master_binding_present===true&&report.single_active_version===true;
+}
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
   diagnose().then(report=>{
     console.log(JSON.stringify(report));
-    if(report.diagnostic!=='read_only'||report.main_matches_source!==true||report.settings_match_baseline!==true||report.master_binding_present!==true||report.single_active_version!==true||report.checks.some(x=>x.error||x.http_status<200||x.http_status>=300||x.api_success===false))process.exitCode=1;
+    if(!diagnosticSucceeded(report))process.exitCode=1;
   }).catch(()=>{console.error('read_only_diagnostic_failed');process.exitCode=1;});
 }

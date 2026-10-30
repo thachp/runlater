@@ -1,7 +1,7 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';import {spawnSync} from 'node:child_process';
 import vm from 'node:vm';
-import {diagnose} from './api-release-diagnostic.mjs';import {digest} from './api-release.mjs';
+import {diagnose,diagnosticSucceeded} from './api-release-diagnostic.mjs';import {digest} from './api-release.mjs';
 function fixture(){
  const config={name:'runlater-public-api',main:'build/worker/shim.mjs',version_metadata:{binding:'RELEASE_VERSION'},compatibility_date:'2026-10-27',compatibility_flags:['global_fetch_strictly_public'],workers_dev:false,preview_urls:false,limits:{cpu_ms:50},observability:{enabled:false},durable_objects:{bindings:[{name:'ADMISSION',class_name:'AdmissionRegistry'},{name:'PROJECTS',class_name:'InvitationProject'}]},queues:{producers:[{binding:'BETA_READY',queue:'runlater-public-ready'}]},ratelimits:[{name:'BETA_IP_RATE',namespace_id:'1001',simple:{limit:60,period:60}},{name:'BETA_REG_IP_RATE',namespace_id:'1002',simple:{limit:6,period:60}}],vars:{PUBLIC_BETA_ENABLED:'operator-approved',PUBLIC_BETA_PROFILE:JSON.stringify({release_id:'test',opens_at_ms:1000,closes_at_ms:2000,callback_end_sec:1000000}),BETA_REVOKED_PROJECTS:'[]',BETA_READY_QUEUE:'runlater-public-ready'}};
  const settings={bindings:[{name:'BETA_CALLBACK_MASTER',type:'secret_text'}]};
@@ -97,4 +97,28 @@ test('budget exhausted after initial preflight skips every dashboard request',as
 test('secret binding names, private values and provider-selected destinations never enter output or requests',async()=>{
  const {e,settings}=fixture(),calls=[],respond=responder(e,settings,calls);const r=await diagnose(e,async(url,o)=>{if(calls.length<4)return respond(url,o);calls.push({url,options:o});return json({success:true,result:{name:'SECRET-SENTINEL',value:e.CLOUDFLARE_API_TOKEN,url:'https://SECRET-SENTINEL.invalid',next_page:'https://SECRET-SENTINEL.invalid'}});});
  assert.equal(r.requests,10);assert.ok(calls.slice(4).every(x=>x.url.startsWith('https://api.cloudflare.com/client/v4/accounts/'+ 'a'.repeat(32)+'/workers/')));assert.doesNotMatch(JSON.stringify(r),/SECRET-SENTINEL|public-cf-fixture|public-gh-fixture/);
+});
+
+test('identity mode makes exactly one fixed GET and needs no GitHub token',async()=>{
+ const {e}=fixture(),calls=[],id='9'.repeat(32);const report=await diagnose({...e,GH_TOKEN:'',RUNLATER_DIAGNOSTIC_MODE:'token_identity'},async(url,options)=>{calls.push({url,options});return json({success:true,result:{id,status:'active',value:e.CLOUDFLARE_API_TOKEN,policies:[{secret:'SECRET-SENTINEL'}],next:'https://SECRET-SENTINEL.invalid'}});});
+ assert.equal(report.diagnostic,'token_identity');assert.equal(report.requests,1);assert.equal(report.token_id,id);assert.equal(report.token_status,'active');assert.equal(report.checks.length,1);assert.equal(report.checks[0].check,'ci_token_verify');assert.equal(calls.length,1);assert.equal(calls[0].url,'https://api.cloudflare.com/client/v4/user/tokens/verify');assert.equal(calls[0].options.method,'GET');assert.equal(calls[0].options.redirect,'error');assert.equal(calls[0].options.body,undefined);assert.equal(calls[0].options.headers.Authorization,'Bearer '+e.CLOUDFLARE_API_TOKEN);assert.equal(diagnosticSucceeded(report),true);assert.doesNotMatch(JSON.stringify(report),/SECRET-SENTINEL|public-cf-fixture|public-gh-fixture|policies|expires_on/);
+});
+for(const [name,result]of Object.entries({missing:{},bad_id:{id:'SECRET-SENTINEL',status:'active'},upper:{id:'A'.repeat(32),status:'active'},long:{id:'a'.repeat(33),status:'active'},bad_status:{id:'a'.repeat(32),status:'SECRET-SENTINEL'},null:null}))test(`identity rejects ${name} without reflecting metadata`,async()=>{
+ const {e}=fixture();let calls=0;const r=await diagnose({...e,RUNLATER_DIAGNOSTIC_MODE:'token_identity'},async()=>{calls++;return json({success:true,result});});assert.equal(calls,1);assert.equal(r.requests,1);assert.equal(r.token_id,undefined);assert.equal(r.token_status,undefined);assert.equal(r.checks[0].error,'token_metadata_invalid');assert.equal(diagnosticSucceeded(r),false);assert.doesNotMatch(JSON.stringify(r),/SECRET-SENTINEL/);
+});
+test('identity never echoes a credential even if it resembles an opaque token ID',async()=>{
+ const {e}=fixture(),secret='a'.repeat(32);const r=await diagnose({...e,CLOUDFLARE_API_TOKEN:secret,RUNLATER_DIAGNOSTIC_MODE:'token_identity'},async()=>json({success:true,result:{id:secret,status:'active'}}));assert.equal(r.token_id,undefined);assert.equal(diagnosticSucceeded(r),false);assert.doesNotMatch(JSON.stringify(r),new RegExp(secret));
+});
+test('identity reports inactive token metadata truthfully without succeeding',async()=>{
+ const {e}=fixture();for(const status of ['disabled','expired']){const r=await diagnose({...e,RUNLATER_DIAGNOSTIC_MODE:'token_identity'},async()=>json({success:true,result:{id:'9'.repeat(32),status}}));assert.equal(r.token_status,status);assert.equal(diagnosticSucceeded(r),false);}
+});
+test('identity errors never retry, fall back to metadata, or follow provider URLs',async()=>{
+ const {e}=fixture();for(const fn of [async()=>json({success:false,errors:[{code:10000,message:'SECRET-SENTINEL'}]},403),async()=>new Response('SECRET-SENTINEL'),async()=>new Response('SECRET-SENTINEL'.repeat(10000)),async()=>{throw Error('SECRET-SENTINEL');}]){let calls=0;const r=await diagnose({...e,RUNLATER_DIAGNOSTIC_MODE:'token_identity'},async(...args)=>{calls++;return fn(...args);});assert.equal(calls,1);assert.equal(r.requests,1);assert.equal(r.checks.length,1);assert.equal(r.token_id,undefined);assert.equal(diagnosticSucceeded(r),false);assert.doesNotMatch(JSON.stringify(r),/SECRET-SENTINEL|public-cf-fixture/);}
+});
+test('unknown mode fails before network; default metadata mode stays unchanged',async()=>{
+ const {e,settings}=fixture();for(const mode of ['SECRET-SENTINEL','https://example.invalid','',null]){let calls=0;const r=await diagnose({...e,RUNLATER_DIAGNOSTIC_MODE:mode},async()=>{calls++;throw Error();});if(mode===null){assert.equal(calls,10);}else{assert.equal(calls,0);assert.deepEqual(r,{diagnostic:'configuration_invalid',requests:0});}}
+ const r=await diagnose({...e,RUNLATER_DIAGNOSTIC_MODE:'metadata'},responder(e,settings));assert.equal(r.requests,10);assert.equal(diagnosticSucceeded(r),true);
+});
+test('workflow exposes only the two fixed modes and retains main-only credentials/job bounds',()=>{
+ const w=readFileSync('.github/workflows/diagnose-api-release.yml','utf8');assert.match(w,/type: choice\n        options:\n          - metadata\n          - token_identity\n        default: metadata/);assert.match(w,/RUNLATER_DIAGNOSTIC_MODE: \$\{\{ inputs.mode \|\| 'metadata' \}\}/);assert.match(w,/timeout-minutes: 3/);assert.match(w,/github.ref == 'refs\/heads\/main'/);assert.doesNotMatch(w,/workflow_run|wrangler|permission_groups|tokens\/\$|api-release\.mjs/);
 });
