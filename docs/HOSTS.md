@@ -1,4 +1,11 @@
-# RunLater host ownership and static publication
+# RunLater host ownership and web publication
+
+The current source migration uses **Next.js + OpenNext** for the existing landing
+and docs Workers. It has not been deployed. Follow [WEB-NEXTJS.md](WEB-NEXTJS.md)
+for current build, local QA, deployment and rollback instructions. The static
+publication/consolidation notes below are historical release evidence and are not
+the procedure for deploying the Next.js bundles. No routes or resources should be
+created or changed for this migration.
 
 | Host | Role | Worker / source | State |
 | --- | --- | --- | --- |
@@ -10,7 +17,7 @@
 
 ## Build and review
 
-`npm run build:web` deterministically assembles `build/discovery/landing` and `build/discovery/docs`. Use these roots, not the raw web folders: they include versioned descriptors, schemas, shared styling, llms.txt, Markdown quickstart, downloadable client, local OpenAPI, defensive `_headers` and404 pages. The output ownership marker prevents deleting an unrelated directory; rebuilt owned subtrees remove stale assets. No build command deploys or contacts a host.
+`npm run build:discovery` deterministically assembles `build/discovery/landing` and `build/discovery/docs`. Use these roots, not the raw web folders: they include versioned descriptors, schemas, shared styling, llms.txt, Markdown quickstart, downloadable client, local OpenAPI, defensive `_headers` and404 pages. The output ownership marker prevents deleting an unrelated directory; rebuilt owned subtrees remove stale assets. No build command deploys or contacts a host.
 
 `npm run test:web` checks schema/link consistency, custom authority states, exact signed client wires/proofs, unsafe resource inputs, private file handling, response bounds and308 preservation. `npm run test:web-local` runs actual local Wrangler static-asset servers and checks MIME, headers and missing-path404 behavior; remote bindings are disabled and disposable local state is separate from saved development data. `npm run preview:web -- landing` and `npm run preview:web -- docs` provide loopback-only visual previews. Desktop1440px, mobile390px and narrow320px were inspected with the real browser; copy feedback and keyboard skip navigation were verified. Browser screenshots are review evidence, not runtime guarantees.
 
