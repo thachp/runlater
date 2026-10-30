@@ -1,68 +1,15 @@
 {
-  "name": "runlater-local",
+  "name": "runlater",
   "private": true,
+  "workspaces": ["apps/gateway", "apps/web", "packages/*"],
   "scripts": {
-    "dev": "wrangler dev --local",
-    "test:local": "node scripts/integration.mjs",
-    "test:examples": "node --test examples/local-examples.test.mjs",
-    "test:contract": "./scripts/build.sh && node scripts/contract.mjs",
-    "example:local": "node examples/quickstart.mjs",
-    "test:runtime-recovery": "./scripts/test-runtime-recovery.sh",
-    "test:callback-wire": "node --test examples/callback-rotation.test.mjs examples/public-beta-receiver/worker.test.mjs",
-    "test:metrics-local": "./scripts/build.sh && node scripts/metrics-integration.mjs",
-    "test:transport-local": "./scripts/test-transport.sh",
-    "test:pause-local": "./scripts/test-pause.sh",
-    "build:discovery": "node scripts/discovery.mjs",
-    "test:discovery": "node --test scripts/discovery.test.mjs",
-    "test:production-identity": "./scripts/test-production-identity.sh",
-    "test:signed-requests": "./scripts/test-signed-requests.sh",
-    "test:funding": "./scripts/test-funding.sh",
-    "test:delivery": "./scripts/test-delivery.sh && ./scripts/test-destinations.sh",
-    "test:web": "npm run test:discovery && node --test web/redirect/worker.test.mjs web/landing/worker.test.mjs scripts/web.test.mjs examples/alpha-quickstart.test.mjs examples/invitation-client.v1.test.mjs examples/public-beta-client.v1.test.mjs",
-    "build:web": "node scripts/build-web.mjs",
-    "preview:web": "node scripts/preview-next.mjs",
-    "test:web-local": "node scripts/test-web-local.mjs",
-    "test:invitations": "./scripts/test-invitations.sh",
-    "test:destinations": "./scripts/test-destinations.sh",
-    "test:destination-security": "./scripts/test-destination-security.sh",
-    "test:invitation-production": "./scripts/test-invitation-production.sh && npm run test:public-beta-client-local",
-    "test:invitation-delivery": "./scripts/test-invitation-delivery.sh",
-    "test:invitation-client-v1": "node --test examples/invitation-client.v1.test.mjs",
-    "test:public-beta": "./scripts/test-public-beta.sh",
-    "test:public-beta-receiver": "npm run test:callback-wire",
-    "test:public-beta-client-v1": "node --test examples/public-beta-client.v1.test.mjs",
-    "test:public-beta-client-local": "./scripts/test-public-beta-client.sh",
-    "mcp": "node mcp/server.mjs",
-    "test:mcp": "node scripts/mcp-validators.mjs --check && node --test mcp/*.test.mjs",
-    "test:mcp-delegation": "./scripts/test-mcp-delegation.sh",
-    "build:mcp": "node scripts/mcp-validators.mjs --check && node scripts/build-mcp.mjs && wrangler deploy --dry-run --config mcp/wrangler.example.jsonc",
-    "test:anonymous-trial": "./scripts/test-anonymous-trial.sh",
-    "test:trial-receiver": "node --test examples/trial-receiver/*.test.mjs",
-    "test:receiver-pairing": "./scripts/test-receiver-pairing.sh",
-    "test:general-http": "./scripts/test-general-http.sh",
-    "test:egress": "node --test egress/*.test.mjs",
-    "test:public-fetch-local": "node scripts/public-fetch-integration.mjs",
-    "build:public-fetch": "wrangler deploy --dry-run --config egress/public-fetch/wrangler.example.jsonc",
-    "test:web-next": "node --test scripts/next-web.test.mjs",
-    "test:web-browser": "node scripts/test-web-browser.mjs"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "check": "npm run check --workspaces --if-present"
   },
   "devDependencies": {
-    "@opennextjs/cloudflare": "1.20.14",
-    "@playwright/test": "1.64.1",
+    "typescript": "5.9.3",
     "wrangler": "4.154.0"
-  },
-  "dependencies": {
-    "@cloudflare/workers-oauth-provider": "1.2.4",
-    "@modelcontextprotocol/sdk": "1.32.2",
-    "ajv": "8.20.0",
-    "html-react-parser": "5.2.13",
-    "next": "16.4.3",
-    "react": "19.3.1",
-    "react-dom": "19.3.1"
-  },
-  "overrides": {
-    "@node-minify/core": {
-      "glob": "10.5.0"
-    }
   }
 }

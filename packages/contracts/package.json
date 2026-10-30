@@ -1,0 +1,5 @@
+{
+  "name": "@runlater/contracts",
+  "private": true,
+  "files": ["openapi.yaml"]
+}

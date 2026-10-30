@@ -1,0 +1,9 @@
+{
+  "name": "@runlater/api",
+  "private": true,
+  "scripts": {
+    "build": "worker-build --release",
+    "dev": "wrangler dev",
+    "check": "wrangler deploy --dry-run --outdir dist"
+  }
+}
