@@ -6,11 +6,19 @@
     "dev": "wrangler dev",
     "typecheck": "tsc -p .",
     "test": "vitest run",
-    "check": "wrangler deploy --dry-run --outdir dist"
+    "check": "wrangler deploy --dry-run --outdir dist",
+    "test:e2e": "node --test --test-timeout=180000 e2e/agent.e2e.mjs"
   },
   "devDependencies": {
+    "@auth/agent": "0.6.2",
+    "@auth/agent-cli": "0.5.1",
     "@cloudflare/workers-types": "5.20261001.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@runlater/tsconfig": "*",
     "vitest": "3.2.4"
+  },
+  "dependencies": {
+    "@better-auth/agent-auth": "0.6.2",
+    "better-auth": "1.7.14"
   }
 }

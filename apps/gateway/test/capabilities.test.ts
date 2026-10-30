@@ -1,0 +1,58 @@
+import { describe, expect, it } from "vitest";
+import { ArgumentError, capabilities, capabilityNames, route } from "../src/capabilities";
+
+const ID = "task_0123456789abcdef0123";
+
+describe("capabilities", () => {
+  it("match the product spec", () => {
+    expect(capabilityNames).toEqual([
+      "create_project",
+      "get_project",
+      "schedule_http",
+      "get_task",
+      "list_tasks",
+      "cancel_task",
+      "redrive_task",
+    ]);
+    for (const c of capabilities) {
+      expect(c.description.length).toBeGreaterThan(20);
+      expect(c.input).toMatchObject({ type: "object", additionalProperties: false });
+    }
+  });
+
+  it("map to API routes with the narrowest scope", () => {
+    expect(route("create_project", {})).toEqual({ method: "POST", path: "/v1/projects", scope: "project" });
+    expect(route("get_project", {})).toMatchObject({ path: "/v1/projects/self", scope: "read" });
+    expect(route("schedule_http", { url: "https://a.example.com/" })).toEqual({
+      method: "POST",
+      path: "/v1/tasks",
+      scope: "schedule",
+      body: { url: "https://a.example.com/" },
+    });
+    expect(route("get_task", { task_id: ID })).toMatchObject({ method: "GET", path: `/v1/tasks/${ID}`, scope: "read" });
+    expect(route("cancel_task", { task_id: ID })).toMatchObject({ path: `/v1/tasks/${ID}/cancel`, scope: "cancel" });
+    expect(route("redrive_task", { task_id: ID })).toMatchObject({ path: `/v1/tasks/${ID}/redrive`, scope: "schedule" });
+  });
+
+  it("build list queries", () => {
+    expect(route("list_tasks", {}).path).toBe("/v1/tasks");
+    expect(route("list_tasks", { status: "failed", cursor: "42", limit: 5 }).path).toBe(
+      "/v1/tasks?status=failed&cursor=42&limit=5",
+    );
+  });
+
+  it("refuse task ids that could escape the path", () => {
+    for (const task_id of ["../projects/self", "task_x", ID + "/cancel", 7]) {
+      expect(() => route("get_task", { task_id })).toThrow(ArgumentError);
+    }
+  });
+
+  it("refuse unknown or invalid arguments", () => {
+    expect(() => route("get_project", { project_id: "other" })).toThrow(/unknown argument/);
+    expect(() => route("get_task", { task_id: ID, extra: 1 })).toThrow(ArgumentError);
+    expect(() => route("list_tasks", { status: "done" })).toThrow(ArgumentError);
+    expect(() => route("list_tasks", { cursor: "1&status=x" })).toThrow(ArgumentError);
+    expect(() => route("list_tasks", { limit: 500 })).toThrow(ArgumentError);
+    expect(() => route("nope", {})).toThrow(ArgumentError);
+  });
+});

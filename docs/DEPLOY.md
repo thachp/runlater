@@ -80,9 +80,20 @@ and `env.production`, with that environment's resource name.
   ```bash
   npx wrangler secret put BETTER_AUTH_SECRET --env staging
   ```
-- Rate limiting bindings (`ratelimits`).
-- A staging hostname so e2e can reach it (`workers_dev` is off), e.g.
-  `"routes": [{ "pattern": "gateway-staging.runlater.io", "custom_domain": true }]`.
+  `ASSERTION_PRIVATE_KEY` is a hex 32-byte Ed25519 seed (`openssl rand -hex 32`); `BETTER_AUTH_SECRET` is
+  any 32+ random bytes. The API needs the matching public key as `GATEWAY_PUBLIC_KEY` (a `vars` entry or a
+  secret; it isn't sensitive). Derive it from the seed:
+
+  ```bash
+  node -e 'const c=require("crypto");const k=c.createPrivateKey({key:Buffer.concat([Buffer.from("302e020100300506032b657004220420","hex"),Buffer.from(process.argv[1],"hex")]),format:"der",type:"pkcs8"});console.log(c.createPublicKey(k).export({format:"der",type:"spki"}).subarray(-32).toString("hex"))' "$SEED"
+  ```
+- Done in source: D1 migrations (`apps/gateway/migrations`, applied by `deploy-env.yml`), `ratelimits`,
+  the `AuthStore` Durable Object, and `PUBLIC_URL` per environment (`https://gateway-staging.runlater.io`,
+  `https://gateway.runlater.io`). Agent Auth checks JWT audiences against `PUBLIC_URL`, so it must be the
+  hostname agents actually use.
+- Still to do before the first deploy: replace the placeholder `database_id`s, set the secrets above, and
+  route the hostnames to the gateway (`"routes": [{ "pattern": "gateway-staging.runlater.io", "custom_domain": true }]`
+  per environment; needs the Workers Routes permission on the token). Then set `GATEWAY_URL` for the smoke check.
 
 ### Phase 6 — E2E
 
