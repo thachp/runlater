@@ -1,0 +1,13 @@
+{
+  "name": "runlater-agent-auth-local-proof",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test prototype.test.mjs"
+  },
+  "dependencies": {
+    "@better-auth/agent-auth": "0.6.2",
+    "better-auth": "1.7.14",
+    "jose": "6.2.14"
+  }
+}
