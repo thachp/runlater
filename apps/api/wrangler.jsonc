@@ -3,12 +3,35 @@
   "name": "runlater-api",
   "main": "build/worker/shim.mjs",
   "compatibility_date": "2026-10-27",
+  // Deliveries may only reach the public internet, enforced after DNS resolution.
+  "compatibility_flags": ["global_fetch_strictly_public"],
   // Internal only: the gateway reaches this Worker through a service binding.
   "workers_dev": false,
   "preview_urls": false,
   "build": { "command": "worker-build --release" },
+  // GATEWAY_PUBLIC_KEY (hex Ed25519 public key) is set with `wrangler secret put`.
+  "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "TaskLedger" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TaskLedger"] }],
+  "queues": {
+    "producers": [{ "binding": "READY", "queue": "runlater-ready" }],
+    "consumers": [{ "queue": "runlater-ready", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 5 }]
+  },
   "env": {
-    "staging": { "name": "runlater-api-staging" },
-    "production": { "name": "runlater-api-production" }
+    "staging": {
+      "name": "runlater-api-staging",
+      "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "TaskLedger" }] },
+      "queues": {
+        "producers": [{ "binding": "READY", "queue": "runlater-ready-staging" }],
+        "consumers": [{ "queue": "runlater-ready-staging", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 5 }]
+      }
+    },
+    "production": {
+      "name": "runlater-api-production",
+      "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "TaskLedger" }] },
+      "queues": {
+        "producers": [{ "binding": "READY", "queue": "runlater-ready-production" }],
+        "consumers": [{ "queue": "runlater-ready-production", "max_batch_size": 10, "max_batch_timeout": 1, "max_retries": 5 }]
+      }
+    }
   }
 }
