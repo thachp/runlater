@@ -34,6 +34,27 @@ describe("Node verification sample", async () => {
     expect(verifyRunLater(headers(`v1=${"0".repeat(64)}, v1=${SIG}`), "{}", "secret", Infinity)).toBe(true);
   });
 
+  it("returns false, never throws, on malformed headers", () => {
+    const good = headers(`v1=${SIG}`);
+    const { "runlater-task-id": _t, ...noTask } = good;
+    const { "runlater-attempt": _a, ...noAttempt } = good;
+    const { "runlater-signature": _s, ...noSig } = good;
+    for (const h of [
+      noTask,
+      noAttempt,
+      noSig,
+      headers(`v1=${SIG}`, "abc"),
+      headers(`v1=${SIG}`, "²"),
+      headers(`v1=${SIG}`, "-1"),
+      headers("v1=é" + "0".repeat(63)),
+      headers("v1"),
+      headers(""),
+      {},
+    ]) {
+      expect(verifyRunLater(h as Record<string, string>, "{}", "secret", Infinity)).toBe(false);
+    }
+  });
+
   it("rejects tampering, wrong secrets, other schemes and stale timestamps", () => {
     expect(verifyRunLater(headers(`v1=${SIG}`), "{ }", "secret", Infinity)).toBe(false);
     expect(verifyRunLater(headers(`v1=${SIG}`), "{}", "other", Infinity)).toBe(false);
@@ -56,6 +77,21 @@ assert not verify_runlater(h, b"{}", "other", inf)
 assert not verify_runlater(h, b"{}", "secret")
 h["runlater-signature"] = "v1=" + "0" * 64 + ", v1=${SIG}"
 assert verify_runlater(h, b"{}", "secret", inf)
+good = dict(h, **{"runlater-signature": "v1=${SIG}"})
+malformed = [
+    {k: v for k, v in good.items() if k != "runlater-task-id"},
+    {k: v for k, v in good.items() if k != "runlater-attempt"},
+    {k: v for k, v in good.items() if k != "runlater-signature"},
+    dict(good, **{"runlater-timestamp": "abc"}),
+    dict(good, **{"runlater-timestamp": "\u00b2"}),
+    dict(good, **{"runlater-timestamp": "-1"}),
+    dict(good, **{"runlater-signature": "v1=\u00e9" + "0" * 63}),
+    dict(good, **{"runlater-signature": "v1"}),
+    dict(good, **{"runlater-signature": ""}),
+    {},
+]
+for m in malformed:
+    assert verify_runlater(m, b"{}", "secret", inf) is False, m
 print("ok")
 `;
     expect(execFileSync("python3", ["-I", "-c", script], { encoding: "utf8" }).trim()).toBe("ok");

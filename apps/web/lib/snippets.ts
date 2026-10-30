@@ -78,11 +78,15 @@ RunLater-Signature: v1=5d0e…c41a
 export const verifyNode = `import { createHmac, timingSafeEqual } from "node:crypto";
 
 // headers: lowercase names. rawBody: the body exactly as received (string or Buffer).
+// Returns false for anything malformed; never throws on request input.
 export function verifyRunLater(headers, rawBody, secret, toleranceSecs = 300) {
-  const ts = Number(headers["runlater-timestamp"]);
-  if (!Number.isInteger(ts) || Math.abs(Date.now() / 1000 - ts) > toleranceSecs) return false;
+  const taskId = headers["runlater-task-id"];
+  const attempt = headers["runlater-attempt"];
+  const timestamp = headers["runlater-timestamp"];
+  if (!taskId || !attempt || !/^[0-9]+$/.test(timestamp ?? "")) return false;
+  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > toleranceSecs) return false;
   const expected = createHmac("sha256", secret)
-    .update(\`\${ts}.\${headers["runlater-task-id"]}.\${headers["runlater-attempt"]}.\`)
+    .update(\`\${timestamp}.\${taskId}.\${attempt}.\`)
     .update(rawBody)
     .digest();
   // During secret rotation the header holds several comma-separated v1= entries.
@@ -95,21 +99,28 @@ export function verifyRunLater(headers, rawBody, secret, toleranceSecs = 300) {
 
 export const verifyPython = `import hashlib
 import hmac
+import re
 import time
+
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+_DIGITS = re.compile(r"[0-9]+")
 
 
 def verify_runlater(headers, raw_body: bytes, secret: str, tolerance_secs: float = 300) -> bool:
-    """headers: lowercase names. raw_body: the body exactly as received."""
-    try:
-        ts = int(headers["runlater-timestamp"])
-    except (KeyError, ValueError):
+    """headers: lowercase names. raw_body: the body exactly as received.
+    Returns False for anything malformed; never raises on request input."""
+    task_id = headers.get("runlater-task-id")
+    attempt = headers.get("runlater-attempt")
+    timestamp = headers.get("runlater-timestamp") or ""
+    if not task_id or not attempt or not _DIGITS.fullmatch(timestamp):
         return False
-    if abs(time.time() - ts) > tolerance_secs:
+    if abs(time.time() - int(timestamp)) > tolerance_secs:
         return False
-    prefix = f'{ts}.{headers["runlater-task-id"]}.{headers["runlater-attempt"]}.'.encode()
+    prefix = f"{timestamp}.{task_id}.{attempt}.".encode()
     expected = hmac.new(secret.encode(), prefix + raw_body, hashlib.sha256).hexdigest()
     # During secret rotation the header holds several comma-separated v1= entries.
-    return any(
-        entry.strip().startswith("v1=") and hmac.compare_digest(entry.strip()[3:], expected)
-        for entry in headers.get("runlater-signature", "").split(",")
-    )`;
+    for entry in (headers.get("runlater-signature") or "").split(","):
+        scheme, _, sig = entry.strip().partition("=")
+        if scheme == "v1" and _HEX64.fullmatch(sig) and hmac.compare_digest(sig, expected):
+            return True
+    return False`;
