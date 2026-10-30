@@ -312,7 +312,7 @@ test('Worker egress rejects aliases, crossed entrypoints, extra authority and fa
   [{...workerEgress,service:'runlater-general-egress'}],[{...workerEgress,entrypoint:'EgressBinding'}],
   [{...nativeEgress,entrypoint:'PublicFetchBinding'}],[{...workerEgress,entrypoint:'default'}],
   [{...workerEgress,service:'other-worker'}],[{...workerEgress,binding:'OTHER'}],
-  [{...workerEgress,environment:'production'}],[{...workerEgress,namespace:'other'}],
+  [{...workerEgress,environment:'staging'}],[{...workerEgress,namespace:'other'}],
   [{...workerEgress,service:'runlater-fetch-proof-20261029a'}]]){
   const changed={...c,services};assert.throws(()=>validate(changed,{...a,config_sha256:digest(changed)},e));
  }
