@@ -1,17 +1,17 @@
-# Hosted MCP delegated authorization — source milestone
+# Hosted MCP authorization
 
-**The existing delegated gateway is deployed; genuine-client live end-to-end verification remains incomplete.** This document describes its source and rollout gates, not proof of a task-capable launch. `https://mcp.runlater.io/sse` remains the required publication
+**The hosted gateway is deployed with OAuth Connect and general HTTPS enabled. Public configuration readback is not a verified delivery test in any named commercial client.** This reference distinguishes configured production authority from unmeasured client delivery. `https://mcp.runlater.io/sse` remains the required publication
 endpoint. Do not activate discovery alone and call it a task-capable launch.
 
 ## Separate no-account trial milestone
 
-[Anonymous agent trials](MCP-ANONYMOUS-TRIAL.md) are newly staged and disabled by
-default. They do not require human accounts or owner-key generation, but they use a
+[Anonymous agent trials](MCP-ANONYMOUS-TRIAL.md) are enabled in the finite public
+beta; configuration defaults remain fail-closed. They do not require human accounts or owner-key generation, but they use a
 **distinct capability principal**, not the owner-local key boundary below. Trial
 provisioning is explicit, bounded and immutable. A separate default-off
 [optional beta receiver pairing source](RECEIVER-PAIRING-WIRE.md) now provides private
 runtime-to-runtime installation; it does not deploy a receiver or configure recovery.
-The [product target](GENERAL-HTTPS-DESTINATIONS.md) remains customer-chosen HTTPS
+The [general profile](GENERAL-HTTPS-DESTINATIONS.md) supports customer-chosen HTTPS
 destinations without a mandatory RunLater receiver. Enabling new authority requires separate security review,
 activation approval and live verification. The owner-delegation path remains intact.
 

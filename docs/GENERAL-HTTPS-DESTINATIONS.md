@@ -1,176 +1,113 @@
-# Customer-chosen HTTPS destinations — target architecture, not activated
+# Public HTTPS scheduling — finite public beta
 
-RunLater's product is scheduled HTTP delivery to a **customer-provided endpoint**.
-It is not a bot-specific receiver service. A customer may want to call their own
-application, an agent runtime with a documented webhook, or a third-party webhook.
-An HTTP success does not establish that a chat session wakes or a business action
-completed.
+API/MCP activation was reported on 2026-10-30. Public read-only checks confirmed
+API version `92b152b6-4715-4615-b299-e545274abcc2`, MCP version
+`a78fe67a-62b4-4f24-bc38-5c4a0ef9d837`, enabled anonymous/general HTTPS flags
+and OAuth discovery advertising `http_schedule`. These checks establish
+configuration visibility, not a delivery or named-chatbot compatibility test.
+The selected release transport is the private Cloudflare Worker public Fetch
+adapter, not a required Container. The older native transport is an alternative,
+not a customer prerequisite. See [rollout coordination](GENERAL-HTTPS-ROLLOUT.md).
 
-The desired simple interface is `schedule(url, payload, time)`: the scheduled HTTP
-request goes to that URL. A separate completion notification URL is a future,
-optional feature, not the delivery destination and not required for the core call.
-The reference receiver must not be inserted as an extra mandatory hop.
+RunLater schedules requests to customer-chosen public HTTPS endpoints. Your
+application performs the business action. No custom RunLater receiver, ownership
+probe, callback signing key or separate completion notification is required.
+HTTP success does not establish business completion or wake every chatbot session.
 
-The current Workers.dev-only beta and its ownership-verified HMAC receiver are
-temporary safety restrictions. [Receiver pairing](RECEIVER-PAIRING-WIRE.md) is an
-optional reference path for that beta, not a universal requirement for the target
-architecture. An ordinary third-party endpoint may be unable to install RunLater
-keys, answer its ownership proof, or run its inbox code. General delivery must not
-pretend those endpoints can do so.
+## Connect and explicitly schedule
 
-## Separate destination authority from task authority
+Use an OAuth-compatible MCP client with `https://mcp.runlater.io/mcp`
+(Streamable HTTP), or `https://mcp.runlater.io/sse` (legacy SSE). Choose **Start free agent project** and consent to `http_schedule` plus the desired
+read/cancel permissions. Everyday users do not generate an Ed25519 key or create
+an account. The client holds OAuth credentials; the gateway holds trial authority.
+This is not owner-local-key custody. Existing owner-key grants are not broadened.
 
-The future general-HTTPS profile should register an explicitly authorized,
-project-scoped destination version: exact HTTPS URL, permitted method, content
-type and a private authentication reference. The task refers to that immutable
-destination version; it cannot override URL, headers or credentials per attempt.
-This can be enforced internally when accepting an inline URL in a single explicit
-scheduling request; it need not require a separate user-facing registration step.
-Changes require a new reviewed version and explicit authority, not an automatic
-redirect, reconnect, trial reset or a broadened `enqueue` scope.
+Connecting, initialization, discovery and status do not allocate a project.
+Explicitly request `provision_trial({"accept_finite_trial":true})`, then inspect
+`trial_status`. Do not create a replacement identity to evade capacity or quota.
+See [trial credentials and limits](MCP-ANONYMOUS-TRIAL.md).
 
-Authorization to send requests is not proof that the customer owns the server.
-For a third-party webhook, the relevant approval is use of that precise endpoint
-and the intended effect under the customer's account. RunLater must not require
-an incompatible proprietary ownership protocol, nor treat a public URL as proof
-of permission to spam it. Anonymous abuse controls and consequential-action
-approval remain separate from destination syntax validation.
-
-Webhook paths/query strings and header values can themselves be bearer secrets.
-Provide a private credential-ingestion path, encrypt/manage those values under an
-explicit custody model, and return only a destination identifier plus redacted
-metadata to MCP. No provider/API/OAuth token pass-through, arbitrary model-selected
-headers, response-body reflection, or secret-bearing URLs in logs, errors or
-discovery. RunLater signatures can be an optional receiver feature, not a universal
-third-party compatibility requirement.
-
-## Safe egress is a launch blocker, not a hostname regex
-
-The first general profile should remain HTTPS on port 443, with canonical URL
-parsing, no userinfo, fragments or IP literals, and **no followed redirects**.
-Bound URL/header/body sizes, request and response time, redirects, concurrency,
-attempts and total lifetime budget. A response must be classified without returning
-its arbitrary body or sensitive headers to the caller.
-
-DNS validation must cover every A/AAAA/CNAME result, including IPv4-mapped IPv6,
-private, loopback, link-local, metadata and other special-use ranges. Crucially,
-the **actual connected address** must remain permitted and TLS must verify the
-original hostname/SNI. A separate DNS preflight followed by an unbound Fetch does
-not prevent rebinding. Do not claim that `global_fetch_strictly_public`, a public
-hostname suffix, or local mocks alone prove this property.
-
-Before expanding beyond the current managed-host profile, establish either a
-documented, independently tested provider egress guarantee or a separately reviewed
-egress component that enforces connected-address and TLS policy. A proxy/runtime,
-new credential, namespace or access grant is **not provisioned or selected by this
-document**. If the existing runtime cannot demonstrate the necessary boundary,
-general arbitrary-host delivery must remain disabled rather than silently falling
-back to ordinary Fetch.
-
-## Required evidence and rollout
-
-- Contract tests for immutable destination version/auth references, project
-  isolation, scope separation, redaction and task replay without extra effects.
-- Adversarial DNS/TLS/connected-address tests: CNAME chains, rebinding, split
-  answers, IPv6 forms, special-use targets, certificate mismatch and redirects.
-- Slow/large/chunked responses, connection resets and uncertain outcomes; preserve
-  finite retries, idempotency/operation keys and existing cancellation semantics.
-- Per-destination and global admission/rate/concurrency limits, noisy-neighbor and
-  distributed abuse assessment. Finite budgets are not a hard provider spending cap.
-- Independent security QA plus provider-level evidence before a separately
-  approved staged rollout and compatible rollback. Preserve the old beta profile
-  until the new one is explicitly activated.
-
-No live host policy, destination permission, billing or deployment changes are
-made here. The optional managed receiver is useful for protocol testing, but its
-local counter/inbox is not the customer's eventual application integration.
-
-References: [OWASP SSRF prevention](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html),
-[Cloudflare Fetch](https://developers.cloudflare.com/workers/runtime-apis/fetch/).
-
-## Staged source contract (not deployed)
-
-The first narrow source profile is implemented behind separate,
-**default-off** `GENERAL_HTTPS_ENABLED` gates. A newly consented anonymous trial
-must hold `http_schedule`; neither the old `enqueue` scope nor an existing
-owner-signed grant silently gains this authority. Existing `read` and `cancel`
-permissions cover the resulting task IDs. The initial request is deliberately
-not an arbitrary HTTP client:
+The hosted MCP tool is `schedule_http_request`:
 
 ```json
 {
-  "url": "https://customer.example/events",
-  "payload": {"message": "Run the customer-authorized action"},
+  "url": "https://app.example.com/events",
+  "payload": {"action": "follow_up"},
   "run_at_ms": 1800000000000,
-  "operation_key": "customer-stable-effect-key"
+  "operation_key": "follow_up_01",
+  "idempotency_key": "task_follow_up_01"
 }
 ```
 
-`POST /v1/http/tasks` also requires a stable `Idempotency-Key`. The hosted MCP tool
-is `schedule_http_request`, whose input adds `idempotency_key` to those four
-fields. The API verifies the original signed route and body before creating its
-internal immutable destination; it does not turn the request into an unsigned or
-re-signed legacy receiver request. The task shares the trial's existing task,
-operation, publication and attempt budgets. No extra project or quota pool is
-created for HTTP delivery.
+The timestamp is illustrative: replace it with a selected future UTC millisecond
+time within trial expiry. Both keys use 1–128 ASCII letters, digits, `_` or `-`.
+The API route is `POST /v1/http/tasks`: the body has `url`, `payload`, `run_at_ms`
+and `operation_key`; `Idempotency-Key` is a required header. The hosted gateway
+supplies authenticated trial authority. This is not an anonymous curl endpoint.
 
-Only **POST, application/json, HTTPS port 443, a canonical public DNS name and at
-most 1,024 UTF-8 bytes of serialized JSON** are accepted. No custom headers,
-private endpoint authentication, RunLater HMAC or ownership probe, automatic
-receiver deployment, response-body return, or separate completion callback is
-part of this first profile. A chosen endpoint must already be willing to accept
-the intended JSON request. A URL pasted into MCP is model-visible: do **not** put
-API keys or webhook bearer secrets in its path/query or payload. Private
-credential ingestion requires a later explicitly reviewed custody mechanism.
+## Exact first-release boundary
 
-The API currently refuses general admission unless a reviewed authenticated
-transport can be supplied. A flag alone is insufficient. Its explicit
-unavailable response is HTTP 503:
+- Fixed `POST`, `application/json`, HTTPS on default port 443 and a canonical
+  public DNS hostname. No IP literals, userinfo, fragments or followed redirects.
+- At most 1,024 UTF-8 bytes of serialized JSON payload and a 4,096-byte API body.
+  The URL is at most 2,048 bytes under the API's ASCII URL rules.
+- No custom headers, private endpoint authentication, response-body reflection,
+  automatic receiver deployment or separate completion callback.
+- The endpoint must already accept the intended unauthenticated JSON POST, and
+  you must be authorized to cause its effect. A public URL is not permission.
+- URLs and payloads are model-visible. Never paste API keys or bearer webhook
+  secrets into paths, query strings or payloads. Private credential ingestion is
+  outside this release.
+
+Task acceptance snapshots the immutable destination. It uses the same finite
+project/task/operation/publication/attempt budgets, not another quota pool.
+Seven days starts at OAuth consent; the trial has 100 attempt credits and 16
+lifetime tasks. A fresh task reserves five attempt credits; there are at most five
+logical attempts and a 24-hour retry-age budget. Capacity is bounded by the beta's
+10 lifetime project slots. Check status rather than assuming a slot is available.
+Payments, automatic top-up and trial resets are disabled.
+
+## Duplicates, uncertain outcomes and cancellation
+
+Delivery is **at least once at task level**. The downstream `Idempotency-Key` is
+`operation_key`, stable across attempts. Your application must durably deduplicate
+that key before repeating an effect. API admission's `idempotency_key` separately
+protects task creation: preserve the identical URL, payload, time and both keys
+when resolving an uncertain result. Do not automatically choose new keys or a new
+identity. Inspect the same project's task status before a deliberate retry.
+
+The transport retains same-attempt receipts, but the ledger can schedule a later
+bounded attempt. Cloudflare may also perform internal network activity within a
+Fetch invocation. Neither receipt suppression nor one Fetch invocation promises
+exactly-once downstream effects. Cancellation prevents future claims; it cannot
+recall an in-flight effect. There is no exact-time, ordering or SLA guarantee.
+
+If transport admission is unavailable, the bounded API response is HTTP 503:
 
 ```json
 {"error":{"code":"general_https_unavailable"},"task_accepted":false}
 ```
 
-The initial availability guard runs before registry/project admission, nonce
-consumption, task/credit writes or egress. Availability is checked again inside the
-project: if it changes after registry authorization, one counted client operation
-may already have been consumed, but no task/nonce/attempt-credit is created there.
-Edge ingress limiting also applies. MCP treats only that exact bounded
-response as confirmed non-admission; a lost/malformed response is uncertain and
-must not trigger automatic retries, changed keys or a replacement identity.
+Only this exact confirmed response establishes non-admission. A lost or malformed
+response remains uncertain. A special RunLater receiver is not the remedy for an
+unavailable general HTTPS adapter.
 
-### Native transport and hosting candidate
+## Transport trust boundary
 
-The source-only `egress/` component uses native Node sockets rather than the
-Workers Fetch-backed `node:https` implementation. It bounds the entire DNS
-CNAME/A/AAAA graph, rejects any mixed public/special result, chooses one validated
-address, and verifies the connected peer plus CA chain and the **original** TLS
-hostname before handing an HTTP request to the socket. It follows no redirect,
-does not try another address, limits concurrency, and aborts sockets on timeout.
-Responses are reduced to bounded status/outcome metadata; body content and
-headers are never returned to the agent. Local TLS tests are synthetic tests,
-not evidence that a hosted provider preserves this boundary.
+The selected Cloudflare Worker public Fetch adapter uses the provider's public
+network boundary and mandatory `global_fetch_strictly_public`. Redirect mode is
+`manual`; all 3xx responses are rejected without following `Location`. A fresh
+outbound request carries only the application's fixed headers; incoming credentials
+are not forwarded. Response bodies and sensitive headers are not returned to MCP.
 
-The candidate host is one same-account Cloudflare Container with native Node,
-behind a private Worker/DO and one explicit API service binding. Public routes,
-workers.dev and preview URLs must remain off. Fixed instance/port/image and a
-narrow dispatch envelope are mandatory; caller-selected infrastructure is not.
-The absolute API lease deadline must include cold start, DNS, TLS and delivery.
-Durable attempt receipts must suppress replay of the same uncertain attempt,
-including after a crash. No background delivery or timeout-resetting retry is
-acceptable. HTTPS interception must remain off so the native socket sees the real
-peer/TLS session. This is trusted application enforcement, **not** an independent
-public-IP network firewall.
+The Worker does not observe or pin the connected peer IP, inspect every DNS answer
+or CNAME, or independently prove native socket TLS identity. Provider DNS, routing,
+TLS and zone configuration remain trusted. Do not describe this as native peer-IP
+pinning, all-answer DNS inspection or an independent egress firewall. See the
+[adapter boundary and evidence](../egress/public-fetch/README.md).
 
-This hosting candidate, its API binding and any billable resources are not
-provisioned by this source. Separate independent QA, provider-level negative
-proof, exact configuration review and action-time approval are required before
-activation. Anonymous Connect also remains separately gated; source availability
-is not a statement that the public endpoint accepts no-account trials today.
-
-See the [pending activation and finite-proof checklist](GENERAL-HTTPS-ROLLOUT.md)
-for resources, access consequences, cost exposure and explicit approval boundaries.
-
-The reviewed-source kill switch pauses both new admission and future general
-dispatch. It does not erase task/target/attempt records or recall in-flight HTTP
-effects. A rollback must retain readers for those new persisted records.
+`GENERAL_HTTPS_ENABLED` pauses new admission and future general dispatch when off;
+it cannot undo in-flight effects. Retain task, destination and attempt state during
+rollback. Production verification and bounded hosted delivery evidence remain separate from
+these configuration readbacks. API health’s `receiver: workers.dev_only` describes
+the optional registered receiver path, not the general HTTPS destination policy.
