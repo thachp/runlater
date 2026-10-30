@@ -10,11 +10,7 @@ import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
 import {PublicBetaClientV1,PUBLIC_BETA_TERMS} from '../examples/public-beta-client.v1.mjs';
 import {signDelegation,delegationBytes,encodeDelegation,delegationPublicKey} from '../mcp/delegation.mjs';
 import {DelegatedPublicBetaClientV1} from '../mcp/delegation-client.mjs';
-import {bundleMcp} from './build-mcp.mjs';
-import {authorizeFixture} from '../mcp/oauth-test-helpers.mjs';
-import {Client} from '@modelcontextprotocol/sdk/client/index.js';
-import {SSEClientTransport} from '@modelcontextprotocol/sdk/client/sse.js';
-import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {assertPublicMcpRetired} from '../mcp/retirement-runtime-test-helpers.mjs';
 const origin='https://api.runlater.io', receiverURL='https://receiver.account.workers.dev/callback';
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'runlater-mcp-delegation-'));
 const owner=generateKeyPairSync('ed25519'), gateway=generateKeyPairSync('ed25519'), wrong=generateKeyPairSync('ed25519');
@@ -73,44 +69,6 @@ function raw(route,{method='POST',body={},delegation,key=gateway.privateKey,proj
  return transport(origin+route,{method,headers,body:method==='GET'?undefined:text});
 }
 async function expect(response,status){const r=await response;const b=await r.json();assert.equal(r.status,status,`unexpected local API response ${JSON.stringify(b)}`);return b;}
-// Compose the real hosted OAuth/SDK Worker with the actual Rust API, never a fake API.
-async function hostedRoundTrip(delegation) {
- const mcpOrigin='https://mcp.runlater.io';let bridgeCalls=0;
- const hosted=new Miniflare(convertV4MiniflareOptions({modules:true,script:await bundleMcp(),compatibilityDate:'2026-10-29',
-  compatibilityFlags:['global_fetch_strictly_public'],durableObjects:{MCP_HUB:{className:'McpHub',useSQLite:true}},
-  ratelimits:{MCP_IP_RATE:{namespace_id:'2101',simple:{limit:60,period:60}},MCP_AUTH_RATE:{namespace_id:'2102',simple:{limit:6,period:60}}},
-  bindings:{MCP_ENABLED:'operator-approved',MCP_OAUTH_ENABLED:'operator-approved',MCP_GATEWAY_PUBLIC_KEY:gatewayPublicKey,
-   MCP_GATEWAY_PRIVATE_KEY:gateway.privateKey.export({format:'pem',type:'pkcs8'}),MCP_RELEASE_ID:releaseId},
-  outboundService:async req=>{
-   if(req.url==='https://client.example.com/metadata')return Response.json({client_id:req.url,client_name:'Local composition fixture',
-    redirect_uris:['https://client.example.com/callback'],token_endpoint_auth_method:'none'},{headers:{'Cache-Control':'no-store'}});
-   const url=new URL(req.url);
-   if(url.origin!==origin || !(url.pathname==='/v1/mcp/delegations/validate'||/^\/v1\/tasks(?:\/[^/]+(?:\/cancel)?)?$/.test(url.pathname)) || url.search){
-    unexpected.push({url:req.url,method:req.method});return new Response(null,{status:403});
-   }
-   assert.equal(req.headers.has('authorization'),false,'OAuth bearer must never reach API');bridgeCalls++;
-   return transport(req.url,{method:req.method,headers:req.headers,body:req.method==='GET'?undefined:await req.text()});
-  }}));
- try {
-  await hosted.ready;
-  const call=(route,init={})=>hosted.dispatchFetch(mcpOrigin+route,{...init,redirect:'manual',headers:{...Object.fromEntries(new Headers(init.headers)),'CF-Connecting-IP':'198.51.100.1'}});
-  for(const kind of ['sse','mcp']){
-   const token=await authorizeFixture(call,{privateKey:owner.privateKey,delegation});
-   const sdk=new Client({name:'compiled-api-composition',version:'1'});
-   const localFetch=(url,init={})=>{const u=new URL(url);assert.equal(u.origin,mcpOrigin);return call(u.pathname+u.search,{...init,headers:{...Object.fromEntries(new Headers(init.headers)),Authorization:`Bearer ${token.access_token}`}});};
-   const wire=kind==='sse'?new SSEClientTransport(new URL(mcpOrigin+'/sse'),{fetch:localFetch}):new StreamableHTTPClientTransport(new URL(mcpOrigin+'/mcp'),{fetch:localFetch});
-   try {
-    await sdk.connect(wire);assert.equal((await sdk.listTools()).tools.length,4);
-    const created=await sdk.callTool({name:'schedule_task',arguments:{...request,run_at_ms:Date.now()+300000,operation_key:'hosted_'+kind,idempotency_key:'hosted_'+kind}});
-    assert.notEqual(created.isError,true,JSON.stringify(created));const task=created.structuredContent.task_id;assert.ok(task);
-    assert.equal((await sdk.callTool({name:'task_status',arguments:{task_id:task}})).structuredContent.status,'scheduled');
-    assert.equal((await sdk.callTool({name:'cancel_task',arguments:{task_id:task}})).structuredContent.status,'cancelled');
-    assert.equal((await own.task(task)).result.status,'cancelled','independent owner confirms real API state');
-   }finally{await sdk.close();}
-  }
-  assert.equal(bridgeCalls,10,'four real validation requests and six real task requests');
- }finally{await hosted.dispose();}
-}
 const request={endpoint_id:'owned',body:'{"synthetic":true}',operation_key:'mcp_future',run_at_ms:0};
 try {
  await start();const challenge=await own.challenge();receipt=await own.complete(challenge,PUBLIC_BETA_TERMS);
@@ -166,7 +124,8 @@ try {
  await assert.rejects(client(full).validateDelegation(),e=>e.status===403);
  assert.equal(operationCount(),beforeReplayCount,'revoked proof must never consume owner lifetime budget');
  const fresh=cert();assert.ok(fresh.issued_at_ms>revoke.revoked_before_ms);assert.equal((await client(fresh).task(id)).result.id,id);
- await hostedRoundTrip(fresh);
+ // Retired public ingress must never bridge to this Rust API fixture.
+ await assertPublicMcpRetired();
  // Admission survives delegation expiry: authorization is required when scheduling, not at callback time.
  const short=cert(['enqueue'],2000);const due=short.expires_at_ms+1000;
  const future=await client(short).enqueue({...request,operation_key:'after_delegation_expiry',run_at_ms:due},'expiry-future');
@@ -177,5 +136,5 @@ try {
  await start(); // Removing trust disables delegates immediately, owner signing remains operational.
  await assert.rejects(client(fresh).task(id),e=>e.status===403);assert.equal((await own.task(id)).result.id,id);
  assert.deepEqual(unexpected,[]);
- console.log(JSON.stringify({status:'passed',http_calls:calls,delegated_create_read_cancel:true,full_oauth_sse_rust:true,full_oauth_streamable_rust:true,default_disabled:true,wrong_trust_rejected:true,project_isolation:true,write_scope_redacted:true,owner_revoke_persisted:true,revoked_proofs_zero_budget:true,introspection_read_only:true,fake_enrollment_denied:true,incomplete_project_enrollment_denied:true,revoke_replay_original_cutoff:true,old_snapshot_reload:true,callback_after_delegation_expiry:true,callbacks:callbackCount,external_calls:0,live_resources:0}));
+ console.log(JSON.stringify({status:'passed',http_calls:calls,delegated_create_read_cancel:true,public_mcp_retired:true,public_mcp_egress:0,default_disabled:true,wrong_trust_rejected:true,project_isolation:true,write_scope_redacted:true,owner_revoke_persisted:true,revoked_proofs_zero_budget:true,introspection_read_only:true,fake_enrollment_denied:true,incomplete_project_enrollment_denied:true,revoke_replay_original_cutoff:true,old_snapshot_reload:true,callback_after_delegation_expiry:true,callbacks:callbackCount,external_calls:0,live_resources:0}));
 } finally {await mf?.dispose();fs.rmSync(root,{recursive:true,force:true});}
