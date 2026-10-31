@@ -20,13 +20,12 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AuthStore"] }],
   "ratelimits": [{ "name": "REGISTER_RATE", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } }],
   "env": {
-    // database_id: replace with the id printed by `wrangler d1 create` (docs/DEPLOY.md, phase 4).
     "staging": {
       "name": "runlater-gateway-staging",
       "vars": { "PUBLIC_URL": "https://gateway-staging.runlater.io" },
       "services": [{ "binding": "API", "service": "runlater-api-staging" }],
       "d1_databases": [
-        { "binding": "DB", "database_name": "runlater-gateway-staging", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }
+        { "binding": "DB", "database_name": "runlater-gateway-staging", "database_id": "ff3501c9-62a7-44e2-b17a-3b24b7183d1d", "migrations_dir": "migrations" }
       ],
       "durable_objects": { "bindings": [{ "name": "AUTH_STORE", "class_name": "AuthStore" }] },
       "ratelimits": [{ "name": "REGISTER_RATE", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } }]
@@ -36,7 +35,7 @@
       "vars": { "PUBLIC_URL": "https://gateway.runlater.io" },
       "services": [{ "binding": "API", "service": "runlater-api-production" }],
       "d1_databases": [
-        { "binding": "DB", "database_name": "runlater-gateway-production", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }
+        { "binding": "DB", "database_name": "runlater-gateway-production", "database_id": "73ca0a7b-8022-4d88-aba5-b57bed67ba5a", "migrations_dir": "migrations" }
       ],
       "durable_objects": { "bindings": [{ "name": "AUTH_STORE", "class_name": "AuthStore" }] },
       "ratelimits": [{ "name": "REGISTER_RATE", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } }]
