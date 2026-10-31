@@ -22,8 +22,10 @@ const REPO = "thachp/runlater";
 const ENVS = ["staging", "production"];
 const args = process.argv.slice(2);
 const rotate = args.includes("--rotate");
-const accountId = args[args.indexOf("--account-id") + 1];
-if (args.includes("--account-id") && !/^[0-9a-f]{32}$/.test(accountId ?? "")) {
+const accountFlag = args.indexOf("--account-id");
+// Only when the flag is given; otherwise the configured account id is left alone.
+const accountId = accountFlag === -1 ? undefined : args[accountFlag + 1];
+if (accountFlag !== -1 && !/^[0-9a-f]{32}$/.test(accountId ?? "")) {
   console.error("--account-id must be a 32-character hex Cloudflare account id");
   process.exit(2);
 }
