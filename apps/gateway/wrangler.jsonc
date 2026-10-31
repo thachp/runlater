@@ -23,6 +23,8 @@
     "staging": {
       "name": "runlater-gateway-staging",
       "vars": { "PUBLIC_URL": "https://gateway-staging.runlater.io" },
+      // Must match PUBLIC_URL: Agent Auth checks token audiences against it.
+      "routes": [{ "pattern": "gateway-staging.runlater.io", "custom_domain": true }],
       "services": [{ "binding": "API", "service": "runlater-api-staging" }],
       "d1_databases": [
         { "binding": "DB", "database_name": "runlater-gateway-staging", "database_id": "ff3501c9-62a7-44e2-b17a-3b24b7183d1d", "migrations_dir": "migrations" }

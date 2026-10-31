@@ -73,8 +73,9 @@ and `env.production`, with that environment's resource name.
   the `AuthStore` Durable Object, and `PUBLIC_URL` per environment (`https://gateway-staging.runlater.io`,
   `https://gateway.runlater.io`). Agent Auth checks JWT audiences against `PUBLIC_URL`, so it must be the
   hostname agents actually use.
-- Still to do before the first deploy: set the secrets above, and route the hostnames to the gateway (`"routes": [{ "pattern": "gateway-staging.runlater.io", "custom_domain": true }]`
-  per environment; needs the Workers Routes permission on the token). Then set `GATEWAY_URL` for the smoke check.
+- Staging is routed to `gateway-staging.runlater.io` (a custom domain in `apps/gateway/wrangler.jsonc`).
+  Production's `gateway.runlater.io` is added once the staging journey passes. After each hostname
+  serves, set that environment's `GATEWAY_URL`.
 
 ### Phase 6 — Staging journey
 
