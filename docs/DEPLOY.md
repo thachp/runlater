@@ -95,18 +95,29 @@ Each run creates a new agent identity and project in staging; they are not clean
 
 ## Domains and cutover (phase 7)
 
-These hostnames are owned by legacy Workers today:
+Hostnames owned by legacy Workers today (checked 2026-10-31, all in the OM.Network account):
 
-| Hostname | Today | Target |
+| Hostname | Today | Decision |
 | --- | --- | --- |
-| `runlater.io`, `www.runlater.io` | `runlater-web-landing` | `runlater-web-production` |
-| `docs.runlater.io` | `runlater-web-docs` | Redirect to `runlater.io/docs` (served by `runlater-web-production`) |
-| `api.runlater.io` | `runlater-alpha-api` | `runlater-gateway-production` (or a new hostname) |
+| `runlater.io`, `www.runlater.io` | `runlater-web-landing` | Move to `runlater-web-production` |
+| `docs.runlater.io` | `runlater-web-docs` (old static docs) | **Retire.** Docs live at `runlater.io/docs`; no redirect |
+| `api.runlater.io` | `runlater-public-api` (`public_free_beta`, live version matched by id) | **Retire.** Agents use the gateway |
 
-Until cutover, give production temporary hostnames. At cutover, move each custom domain with an
-upsert to the new Worker. Don't delete the old domain or its DNS record first. Verify the new
-hostname serves before deleting the legacy Worker, and check for live tasks or grants on the old
-API before moving `api.runlater.io`.
+Notes from the 2026-10-31 inventory:
+
+- `api.runlater.io` is still live (`/health` reports `public_free_beta`). Its tasks sit in per-tenant
+  Durable Objects that can't be listed without operator keys, so check for live tasks or grants before
+  removing it. `runlater-public-ready` is its queue (producer and consumer: `runlater-public-api`).
+- `mcp.runlater.io` returns 404 at `/`; the legacy MCP Worker is `runlater-mcp`.
+- Other legacy Workers to retire with them: `runlater-alpha-api`, `runlater-alpha-receiver`,
+  `runlater-mcp`, `runlater-mcp-proof-*`, `runlater-finite-proof-*`, `runlater-fetch-proof-*`,
+  `runlater-public-fetch-candidate`, `runlater-general-egress`, `runlater-local-prototype`, and the legacy
+  queues (`runlater-alpha-ready`, `runlater-finite-proof-ready`, `runlater-local-ready`,
+  `runlater-public-ready`). `harimu-*` Workers in the same account are unrelated; leave them.
+
+Order: move `runlater.io` first (upsert the custom domain to the new Worker; don't delete the old domain
+or DNS record first, and verify it serves). Then retire `docs.runlater.io` and `api.runlater.io`, and
+delete legacy Workers and queues only once nothing points at them.
 
 ## Rollback
 
