@@ -35,8 +35,14 @@ jobs:
       - run: cargo install worker-build --version 0.8.7 --locked
       - run: npm ci
 
+      # Secrets come from the GitHub environment (scripts/setup-deploy-secrets.mjs) and reach
+      # Cloudflare only at deploy time, through a temp file removed straight after.
       - name: Deploy api
-        run: npx wrangler deploy --env "$DEPLOY_ENV"
+        env:
+          GATEWAY_PUBLIC_KEY: ${{ vars.GATEWAY_PUBLIC_KEY }}
+        run: |
+          test -n "$GATEWAY_PUBLIC_KEY" || { echo "::error::GATEWAY_PUBLIC_KEY is not set; run scripts/setup-deploy-secrets.mjs"; exit 1; }
+          npx wrangler deploy --env "$DEPLOY_ENV" --var "GATEWAY_PUBLIC_KEY:$GATEWAY_PUBLIC_KEY"
         working-directory: apps/api
 
       # Forward-only; must apply before the gateway that reads the new schema deploys.
@@ -45,7 +51,15 @@ jobs:
         working-directory: apps/gateway
 
       - name: Deploy gateway
-        run: npx wrangler deploy --env "$DEPLOY_ENV"
+        env:
+          ASSERTION_PRIVATE_KEY: ${{ secrets.ASSERTION_PRIVATE_KEY }}
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+        run: |
+          test -n "$ASSERTION_PRIVATE_KEY" && test -n "$BETTER_AUTH_SECRET" || { echo "::error::gateway secrets are not set; run scripts/setup-deploy-secrets.mjs"; exit 1; }
+          secrets="$(mktemp "$RUNNER_TEMP/secrets.XXXXXX")"
+          trap 'rm -f "$secrets"' EXIT
+          node -e 'const e=process.env;process.stdout.write(JSON.stringify({ASSERTION_PRIVATE_KEY:e.ASSERTION_PRIVATE_KEY,BETTER_AUTH_SECRET:e.BETTER_AUTH_SECRET}))' > "$secrets"
+          npx wrangler deploy --env "$DEPLOY_ENV" --secrets-file "$secrets"
         working-directory: apps/gateway
 
       - name: Deploy web
@@ -54,7 +68,14 @@ jobs:
       # Test fixture the staging journey delivers to. Never deployed to production.
       - name: Deploy staging receiver
         if: inputs.environment == 'staging'
-        run: npx wrangler deploy --env staging
+        env:
+          RECEIVER_TOKEN: ${{ secrets.RECEIVER_TOKEN }}
+        run: |
+          test -n "$RECEIVER_TOKEN" || { echo "::error::RECEIVER_TOKEN is not set; run scripts/setup-deploy-secrets.mjs"; exit 1; }
+          secrets="$(mktemp "$RUNNER_TEMP/secrets.XXXXXX")"
+          trap 'rm -f "$secrets"' EXIT
+          node -e 'process.stdout.write(JSON.stringify({RECEIVER_TOKEN:process.env.RECEIVER_TOKEN}))' > "$secrets"
+          npx wrangler deploy --env staging --secrets-file "$secrets"
         working-directory: apps/receiver
 
       # The gateway health check also reaches the API through its binding.

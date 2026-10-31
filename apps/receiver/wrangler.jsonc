@@ -8,7 +8,7 @@
   // A public *.workers.dev URL is enough for a fixture; no custom domain needed.
   "workers_dev": true,
   "preview_urls": false,
-  // RECEIVER_TOKEN (secret): bearer token for reading recorded deliveries.
+  // RECEIVER_TOKEN (secret, passed at deploy): bearer token for reading recorded deliveries.
   "durable_objects": { "bindings": [{ "name": "INBOX", "class_name": "Inbox" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Inbox"] }],
   "env": {
