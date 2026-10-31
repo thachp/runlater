@@ -1,7 +1,12 @@
 {
   "name": "runlater",
   "private": true,
-  "workspaces": ["apps/gateway", "apps/web", "packages/*"],
+  "workspaces": [
+    "apps/gateway",
+    "apps/receiver",
+    "apps/web",
+    "packages/*"
+  ],
   "scripts": {
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",

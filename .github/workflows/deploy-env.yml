@@ -51,9 +51,27 @@ jobs:
       - name: Deploy web
         run: npm run deploy -w @runlater/web -- --env "$DEPLOY_ENV"
 
+      # Test fixture the staging journey delivers to. Never deployed to production.
+      - name: Deploy staging receiver
+        if: inputs.environment == 'staging'
+        run: npx wrangler deploy --env staging
+        working-directory: apps/receiver
+
       # The gateway health check also reaches the API through its binding.
       - name: Smoke check
         if: vars.GATEWAY_URL != ''
         env:
           GATEWAY_URL: ${{ vars.GATEWAY_URL }}
         run: curl --fail --silent --show-error --max-time 10 --retry 3 --retry-all-errors "$GATEWAY_URL/health"
+
+      # A real agent journey: register, create a project, schedule deliveries to the receiver,
+      # verify signatures, retries, cancel. Once GATEWAY_URL is set this is required: missing
+      # RECEIVER_URL or RECEIVER_TOKEN fails it, and a failure stops production.
+      - name: Staging journey
+        if: inputs.environment == 'staging' && vars.GATEWAY_URL != ''
+        timeout-minutes: 10
+        env:
+          GATEWAY_URL: ${{ vars.GATEWAY_URL }}
+          RECEIVER_URL: ${{ vars.RECEIVER_URL }}
+          RECEIVER_TOKEN: ${{ secrets.RECEIVER_TOKEN }}
+        run: node apps/gateway/e2e/staging.mjs

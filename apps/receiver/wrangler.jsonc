@@ -1,0 +1,20 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  // Staging-only test fixture: the destination the staging journey schedules deliveries to.
+  // Not part of the product; never deployed to production.
+  "name": "runlater-receiver",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-27",
+  // A public *.workers.dev URL is enough for a fixture; no custom domain needed.
+  "workers_dev": true,
+  "preview_urls": false,
+  // RECEIVER_TOKEN (secret): bearer token for reading recorded deliveries.
+  "durable_objects": { "bindings": [{ "name": "INBOX", "class_name": "Inbox" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Inbox"] }],
+  "env": {
+    "staging": {
+      "name": "runlater-receiver-staging",
+      "durable_objects": { "bindings": [{ "name": "INBOX", "class_name": "Inbox" }] }
+    }
+  }
+}

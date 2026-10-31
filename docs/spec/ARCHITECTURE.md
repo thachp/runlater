@@ -157,7 +157,7 @@ Each phase is one PR that leaves `main` green.
    - The capabilities reference renders the same definitions the gateway serves (`@runlater/contracts/capabilities`).
    - The signature-verification samples (Node, Python) are executed in tests against the `crates/egress` vector, and the limits the site states are checked against `crates/core`.
    - `docs.runlater.io` content now lives at `runlater.io/docs`; redirect the old hostname at cutover.
-6. **E2E + deploy.** One e2e script, staging + production envs, deploy workflow.
+6. **E2E + deploy.** ✅ One journey script ([`apps/gateway/e2e/journey.mjs`](../../apps/gateway/e2e/journey.mjs)) runs locally in CI and against staging after every staging deploy, delivering to a staging-only receiver Worker (`apps/receiver`). Staging failing blocks production. First live run still needs the setup in [DEPLOY.md](../DEPLOY.md).
 7. **Cutover.** Inventory live resources, tear down old Workers (MCP OAuth, public beta API), delete `legacy/`.
 
 ## Risks

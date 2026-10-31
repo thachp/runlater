@@ -16,9 +16,13 @@ import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { AgentAuthClient, MemoryStorage } from "@auth/agent";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { runJourney } from "./journey.mjs";
 
 const gatewayDir = fileURLToPath(new URL("..", import.meta.url));
 const apiDir = fileURLToPath(new URL("../../api/", import.meta.url));
+const receiverDir = fileURLToPath(new URL("../../receiver/", import.meta.url));
+const RECEIVER_HOST = "receiver.example.com";
+const receiverToken = randomBytes(16).toString("hex");
 const CAPABILITIES = ["create_project", "get_project", "schedule_http", "get_task", "list_tasks", "cancel_task", "redrive_task"];
 
 // Gateway → API assertion keys, fresh per run.
@@ -44,7 +48,25 @@ const replies = new Map();
 
 let mf;
 let origin;
+/** The staging receiver fixture, on its own port; the API reaches it as RECEIVER_HOST. */
+let receiver;
+let receiverOrigin;
 before(async () => {
+  const receiverPort = await freePort();
+  receiverOrigin = `http://127.0.0.1:${receiverPort}`;
+  receiver = new Miniflare(
+    convertV4MiniflareOptions({
+      host: "127.0.0.1",
+      port: receiverPort,
+      modulesRoot: join(receiverDir, "dist"),
+      modules: [{ type: "ESModule", path: join(receiverDir, "dist/index.js") }],
+      compatibilityDate: "2026-10-27",
+      durableObjects: { INBOX: { className: "Inbox", useSQLite: true } },
+      bindings: { RECEIVER_TOKEN: receiverToken },
+    }),
+  );
+  await receiver.ready;
+
   const port = await freePort();
   origin = `http://127.0.0.1:${port}`;
   mf = new Miniflare(
@@ -85,6 +107,11 @@ before(async () => {
           queueConsumers: { "runlater-ready": { maxBatchTimeout: 1 } },
           bindings: { GATEWAY_PUBLIC_KEY: publicHex },
           outboundService: async (req) => {
+            if (new URL(req.url).hostname === RECEIVER_HOST) {
+              const body = ["GET", "HEAD"].includes(req.method) ? undefined : await req.arrayBuffer();
+              const res = await receiver.dispatchFetch(req.url, { method: req.method, headers: req.headers, body });
+              return new Response(await res.arrayBuffer(), { status: res.status, headers: res.headers });
+            }
             received.push({ url: req.url, headers: Object.fromEntries(req.headers), body: await req.text() });
             const script = replies.get(new URL(req.url).pathname) ?? [];
             const status = script.length ? script.shift() : 200;
@@ -102,7 +129,10 @@ before(async () => {
     await db.batch(statements.map((s) => db.prepare(s)));
   }
 });
-after(() => mf?.dispose());
+after(async () => {
+  await mf?.dispose();
+  await receiver?.dispose();
+});
 
 /** Every request the SDK made, so tests can replay one. */
 const sent = [];
@@ -196,7 +226,7 @@ describe("agent journey through the gateway", () => {
       await client.executeCapability({
         agentId,
         capability: "schedule_http",
-        arguments: { url: "https://receiver.example.com/hook", body, headers: { "Content-Type": "application/json" } },
+        arguments: { url: "https://dest.example.com/hook", body, headers: { "Content-Type": "application/json" } },
       }),
     );
     assert.equal(task.status, "scheduled");
@@ -245,11 +275,11 @@ describe("agent journey through the gateway", () => {
     await client.executeCapability({
       agentId,
       capability: "schedule_http",
-      arguments: { url: "https://receiver.example.com/once", run_at_ms: Date.now() + 3_600_000 },
+      arguments: { url: "https://dest.example.com/once", run_at_ms: Date.now() + 3_600_000 },
     });
     assert.deepEqual(record.statuses, [200, 401]);
     const tasks = data(await client.executeCapability({ agentId, capability: "list_tasks", arguments: {} }));
-    assert.equal(tasks.tasks.filter((t) => t.url === "https://receiver.example.com/once").length, 1);
+    assert.equal(tasks.tasks.filter((t) => t.url === "https://dest.example.com/once").length, 1);
   });
 
   test("agents of a revoked host are refused even if not yet revoked themselves", async () => {
@@ -343,11 +373,25 @@ describe("MCP bridge (@auth/agent-cli mcp)", () => {
     const exec = (capability, args) => call("execute_capability", { agent_id: agentId, capability, arguments: args });
     const created = data(await exec("create_project", {}));
     assert.match(created.id, /^prj_/);
-    const task = data(await exec("schedule_http", { url: "https://receiver.example.com/from-mcp" }));
+    const task = data(await exec("schedule_http", { url: "https://dest.example.com/from-mcp" }));
     const done = await until(async () => {
       const t = data(await exec("get_task", { task_id: task.id }));
       return t.status === "succeeded" && t;
     });
     assert.equal(done.attempt_count, 1);
+  });
+});
+
+describe("staging journey, run against the local stack", () => {
+  test("passes end to end through the receiver fixture", async () => {
+    const result = await runJourney({
+      gatewayUrl: origin,
+      receiverUrl: `https://${RECEIVER_HOST}`,
+      receiverReadUrl: receiverOrigin,
+      receiverToken,
+      timeoutMs: 60_000,
+    });
+    // ok + flaky (2) + gone = 4 attempts; canceled tasks use none.
+    assert.equal(result.attemptsUsed, 4);
   });
 });
