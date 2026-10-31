@@ -95,10 +95,33 @@ and `env.production`, with that environment's resource name.
   route the hostnames to the gateway (`"routes": [{ "pattern": "gateway-staging.runlater.io", "custom_domain": true }]`
   per environment; needs the Workers Routes permission on the token). Then set `GATEWAY_URL` for the smoke check.
 
-### Phase 6 — E2E
+### Phase 6 — Staging journey
 
-Add the e2e script as a step in `deploy-env.yml` after the smoke check, run only when
-`inputs.environment == 'staging'`, so a failure blocks production.
+After the smoke check, staging runs [`apps/gateway/e2e/staging.mjs`](../apps/gateway/e2e/staging.mjs): a fresh
+agent registers, creates a project, and schedules deliveries to a test receiver
+([`apps/receiver`](../apps/receiver), staging only). It checks a signed delivery verifies, a 503 is retried
+then succeeds, a 404 fails without a retry, a canceled task is never sent, and idempotent scheduling and
+validation work. The same journey runs locally in CI (`npm run test:e2e` in `apps/gateway`).
+
+Once `GATEWAY_URL` is set the journey is required: a failure, or a missing `RECEIVER_URL`/`RECEIVER_TOKEN`,
+stops production from deploying. One-time setup, after the first staging deploy has created the receiver:
+
+1. Pick a token and store it in both places:
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+   ```bash
+   npx wrangler secret put RECEIVER_TOKEN --env staging
+   ```
+
+   Run that in `apps/receiver`, then add the same value as the `RECEIVER_TOKEN` secret of the `staging`
+   GitHub environment.
+2. Set the `staging` environment variable `RECEIVER_URL` to the receiver's `*.workers.dev` URL, printed by
+   the deploy (`https://runlater-receiver-staging.<account>.workers.dev`).
+
+Each run creates a new agent identity and project in staging; they are not cleaned up.
 
 ## Domains and cutover (phase 7)
 
