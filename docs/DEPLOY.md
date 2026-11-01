@@ -120,6 +120,20 @@ held by another Worker in place, without deleting it first.
 Before deleting, request analytics showed the beta API's only real use was two registrations and six tasks
 on 2026-10-28/29; everything after was scanners. The `harimu-*` Workers in the same account are unrelated.
 
+## Monitoring
+
+[`monitor.yml`](../.github/workflows/monitor.yml) probes production:
+
+- Every 15 minutes: `gateway.runlater.io/health` (which also checks the API) and the site's main pages.
+- Daily, and on manual dispatch: the full agent journey against production, delivering to the staging
+  receiver. Each run leaves one agent and one trial project in production.
+
+A failed run is the alert: GitHub emails whoever last changed the workflow. GitHub pauses scheduled
+workflows after 60 days without repository activity; re-enable it under Actions if that happens.
+
+The API, gateway and web Workers have Workers Logs on (`observability` in each `wrangler.jsonc`), so
+request logs and exceptions are searchable in the Cloudflare dashboard.
+
 ## Rollback
 
 ```bash

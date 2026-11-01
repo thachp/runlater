@@ -1,0 +1,56 @@
+name: Monitor
+# Probes production. A failed run emails whoever last changed this workflow, which is the alert.
+# Scheduled workflows are paused after 60 days without repository activity; re-enable in Actions.
+on:
+  schedule:
+    - cron: '*/15 * * * *' # health
+    - cron: '17 9 * * *'   # daily journey
+  workflow_dispatch:
+    inputs:
+      journey:
+        description: Also run the agent journey
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+env:
+  SITE_URL: https://runlater.io
+  GATEWAY_URL: https://gateway.runlater.io
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The gateway health check also reaches the API through its binding.
+      - name: Gateway and API
+        run: curl --fail --silent --show-error --max-time 10 --retry 3 --retry-all-errors "$GATEWAY_URL/health"
+      - name: Site
+        run: |
+          for path in / /docs /docs/capabilities /docs/delivery; do
+            curl --fail --silent --show-error --output /dev/null --max-time 10 --retry 3 --retry-all-errors "$SITE_URL$path"
+          done
+
+  # A real agent registers with production, creates a project and schedules deliveries. The
+  # receiver is the staging fixture (a public workers.dev URL); its token lives in the staging
+  # environment, so this job runs there. Each run leaves one agent and one trial project behind.
+  journey:
+    needs: health
+    if: github.event.schedule == '17 9 * * *' || (github.event_name == 'workflow_dispatch' && inputs.journey)
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Production journey
+        env:
+          RECEIVER_URL: ${{ vars.RECEIVER_URL }}
+          RECEIVER_TOKEN: ${{ secrets.RECEIVER_TOKEN }}
+        run: node apps/gateway/e2e/staging.mjs

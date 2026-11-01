@@ -7,6 +7,8 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
   "preview_urls": false,
+  // Workers Logs: request logs and exceptions, searchable in the dashboard. Inherited by each env.
+  "observability": { "enabled": true },
   // Secrets, passed with `--secrets-file` at deploy from the GitHub environment (docs/DEPLOY.md):
   //   ASSERTION_PRIVATE_KEY  hex 32-byte Ed25519 seed; the API's GATEWAY_PUBLIC_KEY is its public key
   //   BETTER_AUTH_SECRET     32+ random bytes
