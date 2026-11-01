@@ -19,6 +19,16 @@ pub const MAX_CRONS: i64 = 10;
 /// days, so an hourly cron already uses it up in about four days.
 pub const MIN_CRON_INTERVAL_MS: i64 = HOUR_MS;
 
+/// Shortest and longest gap between two polls of a watch. Every poll costs an attempt.
+pub const MIN_WATCH_INTERVAL_MS: i64 = 5 * MINUTE_MS;
+pub const MAX_WATCH_INTERVAL_MS: i64 = DAY_MS;
+/// Polls in a row that may fail (5xx, timeout, network) before a watch gives up.
+pub const MAX_POLL_ERRORS: u32 = 3;
+/// How much of a polled response is read to match against.
+pub const MAX_WATCH_RESPONSE_BYTES: usize = 64 * 1024;
+/// How much of the last polled response is kept and reported.
+pub const WATCH_EXCERPT_BYTES: usize = 16 * 1024;
+
 pub const DEFAULT_MAX_ATTEMPTS: u32 = 5;
 pub const MAX_ATTEMPTS: u32 = 5;
 pub const ATTEMPT_TIMEOUT_MS: i64 = 10 * SECOND_MS;
