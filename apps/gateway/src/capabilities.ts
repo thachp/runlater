@@ -1,7 +1,7 @@
 // Maps each capability (defined in @runlater/contracts) to exactly one call on the private
 // API (packages/contracts/openapi.yaml), validating arguments that end up in a path.
 
-import { LANE_PATTERN, STATUSES } from "@runlater/contracts/capabilities";
+import { CRON_NAME_PATTERN, LANE_PATTERN, STATUSES } from "@runlater/contracts/capabilities";
 import type { ApiClient, Scope } from "./api";
 
 export { capabilities, capabilityNames } from "@runlater/contracts/capabilities";
@@ -32,6 +32,14 @@ function taskId(args: Args): string {
   // Validated here because it becomes part of an API path.
   if (typeof id !== "string" || !TASK_ID_RE.test(id)) throw new ArgumentError("task_id is not a valid task id", "task_id");
   return id;
+}
+
+function cronName(args: Args): string {
+  only(args, ["name"]);
+  const name = args.name;
+  // Validated here because it becomes part of an API path.
+  if (typeof name !== "string" || !new RegExp(CRON_NAME_PATTERN).test(name)) throw new ArgumentError("name is not a valid cron name", "name");
+  return name;
 }
 
 function listQuery(args: Args): string {
@@ -79,6 +87,16 @@ export function route(capability: string, args: Args): { method: "GET" | "POST";
       return { method: "POST", path: `/v1/tasks/${taskId(args)}/cancel`, scope: "cancel" };
     case "redrive_task":
       return { method: "POST", path: `/v1/tasks/${taskId(args)}/redrive`, scope: "schedule" };
+    case "create_cron":
+      // The API validates the cron fully and names the failing field.
+      return { method: "POST", path: "/v1/crons", scope: "schedule", body: args };
+    case "get_cron":
+      return { method: "GET", path: `/v1/crons/${cronName(args)}`, scope: "read" };
+    case "list_crons":
+      only(args, []);
+      return { method: "GET", path: "/v1/crons", scope: "read" };
+    case "delete_cron":
+      return { method: "POST", path: `/v1/crons/${cronName(args)}/delete`, scope: "cancel" };
     default:
       throw new ArgumentError(`unknown capability ${capability}`);
   }

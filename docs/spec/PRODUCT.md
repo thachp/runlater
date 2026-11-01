@@ -93,6 +93,10 @@ The bridge keeps the agent's keys in `~/.agent-auth`. Losing them loses access t
 | `list_tasks` | `status?`, `lane?`, `cursor?` | page of tasks |
 | `cancel_task` | `task_id` | task |
 | `redrive_task` | `task_id` | task |
+| `create_cron` | `name`, `schedule`, `url`, `method?`, `headers?`, `body?`, `max_attempts?`, `alert_url?` | cron |
+| `get_cron` | `name` | cron, with health |
+| `list_crons` | — | crons |
+| `delete_cron` | `name` | cron as it was |
 
 The REST routes underneath (`/v1/tasks`, …) are an internal contract between
 services, not a public product in v1.
@@ -110,6 +114,17 @@ services, not a public product in v1.
 - **Delay:** `delay` is a relative alternative to `run_at_ms`: a whole number followed by `s`, `m`, `h` or `d` (`"90s"`, `"24h"`, `"7d"`), at most 7 days. Giving both is an error.
 - **Callbacks:** with `callback_url`, every time the task finishes (succeeded, failed or canceled) RunLater queues a *callback task*: a signed `POST` of `{"event": "task.finished", "task": {…}}` (the task as `get_task` returns it) to that URL. It follows the same destination rules, retries and signing, and is visible with `get_task` (`callback_task_id` on the task, `callback_for` on the callback). Each callback try costs one delivery attempt, so scheduling a task with a callback reserves two attempts and two task slots. Callbacks do not themselves call back. A callback always gets at least one try, even after the trial's attempts run out or it expires (but no retries then, and `max_attempts` shows 1); so `attempts_used` can go over the budget by one attempt per such callback. The report includes the task's full `url`, query string included, so don't put secrets there if the callback goes to another party. Callback tasks appear in `list_tasks` like any other.
 
+## Crons
+
+A cron runs the same HTTP request on a schedule: five fields (`minute hour day-of-month month day-of-week`, with `*`, numbers, `a-b`, `*/n`, `a-b/n` and lists), evaluated in **UTC**, at most 128 characters. When both day fields are restricted, a day matches if either does; if either starts with `*` (e.g. `*/2`), both must match, as in Vixie cron.
+
+- **Runs are tasks.** At each slot the ledger starts a task (`cron` names its cron) with the cron's request and `max_attempts`; `get_task` shows it. Runs are admitted like any task, so each costs delivery attempts. A run that cannot start (no attempts left, task cap reached) is a failure, not a silent skip.
+- **Missed slots are not made up.** If the scheduler wakes late, the cron runs once and moves to the next slot after now.
+- **At most once an hour.** The minute field must be a single value; anything that could run twice in an hour is refused. The trial's 100 attempts last about four days at hourly, about three months at daily.
+- **Dead man's switch.** `health` is `pending` until a run finishes, `healthy` after a success, `failing` after a failed run or a run that could not start (`health_reason`: `run_failed`, `budget_exhausted`, `task_limit`, `trial_expired`). Becoming failing sends one signed alert to `alert_url` (`{"event": "cron.failing", "reason", "task_id", "cron"}`); the next success sends `cron.recovered`. Alerts are tasks like callbacks (`alert_for` names the cron) and get one try even past the trial; they are not admitted, so they can exceed the task cap by one per health change. The alert includes the cron's full `url`, query string included. A run that started but could not be attempted (attempts ran out between start and send) reports `run_failed`. Only runs of the current cron count, and a run older than the one that last set the health is ignored.
+- **The trial ending stops crons:** `next_run_ms` becomes null and they alert with `trial_expired`.
+- Re-creating a cron by name replaces its schedule and request and keeps its health. Deleting one stops it; a run already started finishes but no longer affects health.
+
 ## v1 limits
 
 | Limit | Value |
@@ -121,12 +136,12 @@ services, not a public product in v1.
 | Retention | Task + attempts kept 30 days after terminal state |
 | Tasks held per project | 1,000, finished ones included until purged. A task's body is dropped once it succeeds or is canceled; failed tasks keep it for redrive. |
 | Projects | 1 per agent host |
+| Crons | 10 per project, at most one run an hour each |
 
 ## Explicitly not in v1
 
 | Out of scope | Why it's later |
 | --- | --- |
-| Recurring / cron schedules | Repeats a task on a timer ("every day at 9"). Useful, but one-shot must be solid first. |
 | Web dashboard | A page where a human signs in to see tasks. v1 has no humans signing in. |
 | Billing / paid plans | Charging for more than the free trial. Needed once trials run out — v2. |
 | SDKs | A packaged npm client. Agents use capabilities/MCP directly. |

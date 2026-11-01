@@ -13,6 +13,10 @@ describe("capabilities", () => {
       "list_tasks",
       "cancel_task",
       "redrive_task",
+      "create_cron",
+      "get_cron",
+      "list_crons",
+      "delete_cron",
     ]);
     for (const c of capabilities) {
       expect(c.description.length).toBeGreaterThan(20);
@@ -32,6 +36,10 @@ describe("capabilities", () => {
     expect(route("get_task", { task_id: ID })).toMatchObject({ method: "GET", path: `/v1/tasks/${ID}`, scope: "read" });
     expect(route("cancel_task", { task_id: ID })).toMatchObject({ path: `/v1/tasks/${ID}/cancel`, scope: "cancel" });
     expect(route("redrive_task", { task_id: ID })).toMatchObject({ path: `/v1/tasks/${ID}/redrive`, scope: "schedule" });
+    expect(route("create_cron", { name: "b" })).toMatchObject({ method: "POST", path: "/v1/crons", scope: "schedule" });
+    expect(route("get_cron", { name: "daily-backup" })).toMatchObject({ method: "GET", path: "/v1/crons/daily-backup", scope: "read" });
+    expect(route("list_crons", {})).toMatchObject({ method: "GET", path: "/v1/crons", scope: "read" });
+    expect(route("delete_cron", { name: "a:b.c" })).toMatchObject({ path: "/v1/crons/a:b.c/delete", scope: "cancel" });
   });
 
   it("build list queries", () => {
@@ -44,6 +52,10 @@ describe("capabilities", () => {
   it("refuse task ids that could escape the path", () => {
     for (const task_id of ["../projects/self", "task_x", ID + "/cancel", 7]) {
       expect(() => route("get_task", { task_id })).toThrow(ArgumentError);
+    }
+    for (const name of ["..", ".", "a/b", "a?x", "", "x".repeat(65), 7]) {
+      expect(() => route("get_cron", { name })).toThrow(ArgumentError);
+      expect(() => route("delete_cron", { name })).toThrow(ArgumentError);
     }
   });
 

@@ -11,9 +11,12 @@ export interface CapabilityDefinition {
 
 const TASK_ID = { type: "string", pattern: "^task_[0-9a-f]{20}$", description: "The task id returned by schedule_http." };
 export const LANE_PATTERN = "^[A-Za-z0-9_.:-]{1,64}$";
+export const CRON_NAME_PATTERN = "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$";
 export const STATUSES = ["scheduled", "delivering", "retrying", "succeeded", "failed", "canceled"];
 
 const noArgs = { type: "object", additionalProperties: false, properties: {} };
+const CRON_NAME = { type: "string", pattern: CRON_NAME_PATTERN, description: "The cron's name, e.g. \"daily-backup\"." };
+const cronArgs = { type: "object", additionalProperties: false, required: ["name"], properties: { name: CRON_NAME } };
 const taskArgs = { type: "object", additionalProperties: false, required: ["task_id"], properties: { task_id: TASK_ID } };
 
 export const capabilities: CapabilityDefinition[] = [
@@ -109,6 +112,55 @@ export const capabilities: CapabilityDefinition[] = [
     name: "redrive_task",
     description: "Retry a failed task from now, with a fresh set of attempts. Its attempt history is kept.",
     input: taskArgs,
+  },
+  {
+    name: "create_cron",
+    description:
+      "Run an HTTP request on a recurring schedule: a 5-field cron expression in UTC with a single minute value (at most once an hour) " +
+      "(e.g. \"0 6 * * *\" is daily at 06:00 UTC). Each run is an ordinary task (see get_task) and costs delivery attempts. " +
+      "Dead man's switch: if a run fails, or cannot start because the trial's attempts ran out or it ended, " +
+      "RunLater POSTs a signed alert to alert_url, and again when a run next succeeds. " +
+      "Calling again with the same name replaces that cron's schedule and request. At most 10 crons.",
+    input: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name", "schedule", "url"],
+      properties: {
+        name: CRON_NAME,
+        schedule: { type: "string", maxLength: 128, description: "minute hour day-of-month month day-of-week, in UTC." },
+        url: { type: "string", maxLength: 2048, description: "https:// URL on a public domain name." },
+        method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], default: "POST" },
+        headers: {
+          type: "object",
+          maxProperties: 32,
+          additionalProperties: { type: "string" },
+          description: "Headers to send on every run. Same rules as schedule_http.",
+        },
+        body: { type: "string", maxLength: 65536, description: "Request body for every run. Not allowed with GET." },
+        max_attempts: { type: "integer", minimum: 1, maximum: 5, default: 5, description: "Attempts per run." },
+        alert_url: {
+          type: "string",
+          maxLength: 2048,
+          description: "https:// URL that gets a signed POST when the cron starts failing (cron.failing) and when it recovers (cron.recovered).",
+        },
+      },
+    },
+  },
+  {
+    name: "get_cron",
+    description:
+      "Show a cron: its schedule, next run, health (pending, healthy or failing, with the reason), last run task and last success.",
+    input: cronArgs,
+  },
+  {
+    name: "list_crons",
+    description: "List this project's crons with their health and next run.",
+    input: noArgs,
+  },
+  {
+    name: "delete_cron",
+    description: "Stop and remove a cron. A run already started still finishes.",
+    input: cronArgs,
   },
 ];
 

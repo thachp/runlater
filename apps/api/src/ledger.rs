@@ -9,11 +9,12 @@
 
 use crate::db::{Db, DbError, Param};
 use runlater_core::limits::{
-    DEFAULT_MAX_ATTEMPTS, MAX_RETAINED_TASKS, RETENTION_MS, TRIAL_ATTEMPTS, TRIAL_DURATION_MS,
+    DEFAULT_MAX_ATTEMPTS, MAX_CRONS, MAX_RETAINED_TASKS, RETENTION_MS, TRIAL_ATTEMPTS,
+    TRIAL_DURATION_MS,
 };
 use runlater_core::{
-    valid_lane, Attempt, CancelError, ClaimError, Method, Outcome, RedriveError, ScheduleRequest,
-    Status, Task, ValidationError,
+    valid_lane, Attempt, CancelError, ClaimError, CronRequest, CronRequestError, Method, Outcome,
+    RedriveError, Schedule, ScheduleRequest, Status, Task, ValidationError,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -88,6 +89,31 @@ const MIGRATIONS: &[&[&str]] = &[
         // Covers LANE_CLEAR's lookup, so finding a lane's head stays a seek.
         "CREATE INDEX IF NOT EXISTS tasks_by_lane ON tasks (lane, status, due_ms, seq)",
     ],
+    // 3: crons.
+    &[
+        "CREATE TABLE IF NOT EXISTS crons (
+            name TEXT PRIMARY KEY,
+            schedule TEXT NOT NULL,
+            method TEXT NOT NULL,
+            url TEXT NOT NULL,
+            headers TEXT NOT NULL,
+            body TEXT,
+            max_attempts INTEGER NOT NULL,
+            alert_url TEXT,
+            next_run_ms INTEGER,
+            health TEXT NOT NULL,
+            health_reason TEXT,
+            last_run_task_id TEXT,
+            last_run_ms INTEGER,
+            last_success_ms INTEGER,
+            failing_since_ms INTEGER,
+            health_run_at_ms INTEGER,
+            created_ms INTEGER NOT NULL,
+            updated_ms INTEGER NOT NULL
+        )",
+        "ALTER TABLE tasks ADD COLUMN cron TEXT",
+        "ALTER TABLE tasks ADD COLUMN alert_for TEXT",
+    ],
 ];
 
 /// SQL condition, over `tasks t`: the task may run now as far as its lane is concerned.
@@ -118,6 +144,13 @@ impl ApiError {
             code,
             message: message.into(),
             field: None,
+        }
+    }
+
+    pub fn invalid_cron(e: CronRequestError) -> Self {
+        Self {
+            field: Some(e.field()),
+            ..Self::new(400, "invalid_request", e.to_string())
         }
     }
 
@@ -206,6 +239,10 @@ pub struct TaskView {
     pub callback_for: Option<String>,
     /// Tasks in the same lane run one at a time.
     pub lane: Option<String>,
+    /// Set on a cron's runs: the cron's name.
+    pub cron: Option<String>,
+    /// Set on a cron alert: the cron it is about.
+    pub alert_for: Option<String>,
     pub created_ms: i64,
     pub updated_ms: i64,
     pub finished_ms: Option<i64>,
@@ -302,6 +339,8 @@ struct TaskRow {
     callback_task_id: Option<String>,
     callback_for: Option<String>,
     lane: Option<String>,
+    cron: Option<String>,
+    alert_for: Option<String>,
     created_ms: i64,
     updated_ms: i64,
 }
@@ -366,6 +405,8 @@ impl TaskRow {
             callback_task_id: self.callback_task_id.clone(),
             callback_for: self.callback_for.clone(),
             lane: self.lane.clone(),
+            cron: self.cron.clone(),
+            alert_for: self.alert_for.clone(),
             created_ms: self.created_ms,
             updated_ms: self.updated_ms,
             finished_ms: task.terminal_ms,
@@ -377,7 +418,7 @@ impl TaskRow {
 const TASK_COLUMNS: &str = "seq, id, status, due_ms, max_attempts, run_attempts, \
     total_attempts, generation, fence, lease_until_ms, cancel_requested, terminal_ms, \
     method, url, headers, body, run_at_ms, idempotency_key, callback_url, callback_task_id, \
-    callback_for, lane, created_ms, updated_ms";
+    callback_for, lane, cron, alert_for, created_ms, updated_ms";
 
 /// A row to insert into `tasks`.
 struct NewTask<'s> {
@@ -393,14 +434,123 @@ struct NewTask<'s> {
     callback_url: Option<&'s str>,
     callback_for: Option<&'s str>,
     lane: Option<&'s str>,
+    cron: Option<&'s str>,
+    alert_for: Option<&'s str>,
 }
 
 /// Callback task ids are derived, so queueing the same callback twice is harmless. A task's
 /// generation differs every time it finishes (only a redrive can follow a finish, and it
 /// moves the generation on), so each finish gets its own callback.
 fn callback_id(task_id: &str, generation: u64) -> String {
-    let digest = Sha256::digest(format!("callback/{task_id}/{generation}"));
+    derived_id(&format!("callback/{task_id}/{generation}"))
+}
+
+fn derived_id(seed: &str) -> String {
+    let digest = Sha256::digest(seed);
     format!("task_{}", hex::encode(&digest[..10]))
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Health {
+    /// No run has finished yet.
+    Pending,
+    /// The last run that finished succeeded.
+    Healthy,
+    /// A run failed, or one could not be started; see `health_reason`.
+    Failing,
+}
+
+/// Header values and the body are never echoed back, as for tasks.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct CronView {
+    pub name: String,
+    pub schedule: String,
+    pub method: Method,
+    pub url: String,
+    pub header_names: Vec<String>,
+    pub body_bytes: usize,
+    pub max_attempts: u32,
+    pub alert_url: Option<String>,
+    /// None once the cron has stopped (the trial ended).
+    pub next_run_ms: Option<i64>,
+    pub health: Health,
+    /// Why it is failing: run_failed, budget_exhausted, task_limit or trial_expired.
+    pub health_reason: Option<String>,
+    pub last_run_task_id: Option<String>,
+    pub last_run_ms: Option<i64>,
+    pub last_success_ms: Option<i64>,
+    pub failing_since_ms: Option<i64>,
+    pub created_ms: i64,
+    pub updated_ms: i64,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct CronList {
+    pub crons: Vec<CronView>,
+}
+
+#[derive(Deserialize)]
+struct CronRow {
+    name: String,
+    schedule: String,
+    method: String,
+    url: String,
+    headers: String,
+    body: Option<String>,
+    max_attempts: u32,
+    alert_url: Option<String>,
+    next_run_ms: Option<i64>,
+    health: String,
+    health_reason: Option<String>,
+    last_run_task_id: Option<String>,
+    last_run_ms: Option<i64>,
+    last_success_ms: Option<i64>,
+    failing_since_ms: Option<i64>,
+    /// Slot of the run (or missed run) that last set `health`; older news is ignored.
+    health_run_at_ms: Option<i64>,
+    created_ms: i64,
+    updated_ms: i64,
+}
+
+const CRON_COLUMNS: &str = "name, schedule, method, url, headers, body, max_attempts, \
+    alert_url, next_run_ms, health, health_reason, last_run_task_id, last_run_ms, \
+    last_success_ms, failing_since_ms, health_run_at_ms, created_ms, updated_ms";
+
+impl CronRow {
+    fn headers(&self) -> Result<Vec<(String, String)>, DbError> {
+        serde_json::from_str(&self.headers).map_err(|e| DbError(e.to_string()))
+    }
+
+    fn view(&self) -> Result<CronView, DbError> {
+        Ok(CronView {
+            name: self.name.clone(),
+            schedule: self.schedule.clone(),
+            method: parse(&self.method)?,
+            url: self.url.clone(),
+            header_names: self.headers()?.into_iter().map(|(k, _)| k).collect(),
+            body_bytes: self.body.as_ref().map_or(0, String::len),
+            max_attempts: self.max_attempts,
+            alert_url: self.alert_url.clone(),
+            next_run_ms: self.next_run_ms,
+            health: match self.health.as_str() {
+                "healthy" => Health::Healthy,
+                "failing" => Health::Failing,
+                _ => Health::Pending,
+            },
+            health_reason: self.health_reason.clone(),
+            last_run_task_id: self.last_run_task_id.clone(),
+            last_run_ms: self.last_run_ms,
+            last_success_ms: self.last_success_ms,
+            failing_since_ms: self.failing_since_ms,
+            created_ms: self.created_ms,
+            updated_ms: self.updated_ms,
+        })
+    }
+}
+
+fn no_cron() -> ApiError {
+    ApiError::not_found("cron_not_found", "no cron with that name in this project")
 }
 
 // ---------------------------------------------------------------------------------------
@@ -580,6 +730,8 @@ impl<'a, D: Db> Ledger<'a, D> {
                 callback_url: spec.callback.as_ref().map(|c| c.as_str()),
                 callback_for: None,
                 lane: spec.lane.as_deref(),
+                cron: None,
+                alert_for: None,
             },
             now,
         )?;
@@ -753,7 +905,8 @@ impl<'a, D: Db> Ledger<'a, D> {
 
         // A callback reports on work already done, so it gets one try even when the trial
         // has run out, but no retries.
-        let last_try = row.callback_for.is_some() && task.run_attempts == 0;
+        let last_try =
+            (row.callback_for.is_some() || row.alert_for.is_some()) && task.run_attempts == 0;
         if !project.can_attempt(now) && last_try {
             task.max_attempts = 1;
         } else if !project.can_attempt(now) {
@@ -874,11 +1027,298 @@ impl<'a, D: Db> Ledger<'a, D> {
                         THEN published_ms + {REPUBLISH_MS} ELSE due_ms END AS t \
                    FROM tasks t WHERE status IN ('scheduled', 'retrying') AND {LANE_CLEAR} \
                  UNION ALL SELECT lease_until_ms FROM tasks WHERE status = 'delivering' \
-                 UNION ALL SELECT terminal_ms + {RETENTION_MS} FROM tasks WHERE terminal_ms IS NOT NULL)"
+                 UNION ALL SELECT terminal_ms + {RETENTION_MS} FROM tasks WHERE terminal_ms IS NOT NULL \
+                 UNION ALL SELECT MIN(next_run_ms, COALESCE((SELECT expires_ms FROM project), next_run_ms)) \
+                   FROM crons WHERE next_run_ms IS NOT NULL)"
             ),
             vec![],
         )?;
         Ok(rows.first().and_then(|w| w.t))
+    }
+
+    // -- crons ----------------------------------------------------------------------------
+
+    fn cron_row(&self, name: &str) -> Result<Option<CronRow>, DbError> {
+        Ok(self
+            .db
+            .query(
+                &format!("SELECT {CRON_COLUMNS} FROM crons WHERE name = ?"),
+                vec![name.into()],
+            )?
+            .pop())
+    }
+
+    /// Creates the cron, or replaces the definition of the one with this name (its health
+    /// and history are kept). Returns whether it was created.
+    pub fn put_cron(&self, request: CronRequest, now: i64) -> Result<(CronView, bool), ApiError> {
+        let project = self.project_row()?.ok_or_else(no_project)?;
+        if now >= project.expires_ms {
+            return Err(ApiError::new(
+                403,
+                "trial_expired",
+                "this project's trial has ended",
+            ));
+        }
+        let spec = request.validate(now).map_err(ApiError::invalid_cron)?;
+        let existing = self.cron_row(&spec.name)?;
+        if existing.is_none() {
+            let count: Vec<Counts> = self
+                .db
+                .query("SELECT COUNT(*) AS total, 0 AS waiting FROM crons", vec![])?;
+            if count.first().map_or(0, |c| c.total) >= MAX_CRONS {
+                return Err(ApiError::new(
+                    429,
+                    "cron_limit",
+                    format!("this project already has {MAX_CRONS} crons; delete one first"),
+                ));
+            }
+        }
+        let request = &spec.request;
+        let headers =
+            serde_json::to_string(&request.headers).map_err(|e| DbError(e.to_string()))?;
+        self.db.exec(
+            "INSERT INTO crons (name, schedule, method, url, headers, body, max_attempts, \
+             alert_url, next_run_ms, health, created_ms, updated_ms) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?) \
+             ON CONFLICT (name) DO UPDATE SET schedule = excluded.schedule, \
+             method = excluded.method, url = excluded.url, headers = excluded.headers, \
+             body = excluded.body, max_attempts = excluded.max_attempts, \
+             alert_url = excluded.alert_url, next_run_ms = excluded.next_run_ms, \
+             updated_ms = excluded.updated_ms",
+            vec![
+                spec.name.as_str().into(),
+                spec.schedule_text.as_str().into(),
+                request.method.as_str().into(),
+                request.destination.as_str().into(),
+                headers.into(),
+                request.body.clone().into(),
+                request.max_attempts.into(),
+                spec.alert.as_ref().map(|a| a.as_str()).into(),
+                spec.schedule.next_after(now).into(),
+                now.into(),
+                now.into(),
+            ],
+        )?;
+        Ok((self.cron(&spec.name)?, existing.is_none()))
+    }
+
+    pub fn cron(&self, name: &str) -> Result<CronView, ApiError> {
+        Ok(self.cron_row(name)?.ok_or_else(no_cron)?.view()?)
+    }
+
+    pub fn crons(&self) -> Result<CronList, ApiError> {
+        self.project_row()?.ok_or_else(no_project)?;
+        let rows: Vec<CronRow> = self.db.query(
+            &format!("SELECT {CRON_COLUMNS} FROM crons ORDER BY name"),
+            vec![],
+        )?;
+        let crons = rows.iter().map(CronRow::view).collect::<Result<_, _>>()?;
+        Ok(CronList { crons })
+    }
+
+    /// Stops the cron. Runs already started finish normally.
+    pub fn delete_cron(&self, name: &str) -> Result<CronView, ApiError> {
+        let view = self.cron(name)?;
+        self.db
+            .exec("DELETE FROM crons WHERE name = ?", vec![name.into()])?;
+        Ok(view)
+    }
+
+    /// Starts a run for every cron that is due. A run that cannot be admitted, or a trial
+    /// that has ended, marks the cron failing (and alerts) instead. Missed slots are not
+    /// made up: a cron runs at most once per call. Returns how many runs started.
+    pub fn fire_crons(&self, now: i64) -> Result<usize, DbError> {
+        let Some(project) = self.project_row()? else {
+            return Ok(0);
+        };
+        // Once the trial has ended, every cron that is still scheduled stops now.
+        let until = if now >= project.expires_ms {
+            MAX_SAFE_INTEGER
+        } else {
+            now
+        };
+        let due: Vec<CronRow> = self.db.query(
+            &format!(
+                "SELECT {CRON_COLUMNS} FROM crons WHERE next_run_ms IS NOT NULL AND next_run_ms <= ?"
+            ),
+            vec![until.into()],
+        )?;
+        let mut started = 0;
+        for cron in &due {
+            if now >= project.expires_ms {
+                self.db.exec(
+                    "UPDATE crons SET next_run_ms = NULL, updated_ms = ? WHERE name = ?",
+                    vec![now.into(), cron.name.as_str().into()],
+                )?;
+                self.cron_failing(&cron.name, "trial_expired", None, now, now)?;
+                continue;
+            }
+            let schedule = Schedule::parse(&cron.schedule).map_err(|e| DbError(e.to_string()))?;
+            let slot = cron.next_run_ms.unwrap_or(now);
+            self.db.exec(
+                "UPDATE crons SET next_run_ms = ?, updated_ms = ? WHERE name = ?",
+                vec![
+                    schedule.next_after(now).into(),
+                    now.into(),
+                    cron.name.as_str().into(),
+                ],
+            )?;
+            if let Err(e) = self.admit(&project, 1, 1, now) {
+                if e.status >= 500 {
+                    return Err(DbError(e.message));
+                }
+                self.cron_failing(&cron.name, e.code, None, slot, now)?;
+                continue;
+            }
+            let id = derived_id(&format!("cron/{}/{slot}", cron.name));
+            self.insert(
+                NewTask {
+                    id: &id,
+                    task: Task::new(now, cron.max_attempts),
+                    method: parse(&cron.method)?,
+                    url: &cron.url,
+                    headers: &cron.headers()?,
+                    body: cron.body.clone(),
+                    run_at_ms: slot,
+                    idempotency_key: None,
+                    fingerprint: "cron",
+                    callback_url: None,
+                    callback_for: None,
+                    lane: None,
+                    cron: Some(&cron.name),
+                    alert_for: None,
+                },
+                now,
+            )?;
+            self.db.exec(
+                "UPDATE crons SET last_run_task_id = ?, last_run_ms = ? WHERE name = ?",
+                vec![id.as_str().into(), now.into(), cron.name.as_str().into()],
+            )?;
+            started += 1;
+        }
+        Ok(started)
+    }
+
+    /// A run reached a final state: update its cron's health. Canceled runs say nothing,
+    /// nor do runs of a cron that has since been deleted (even if re-created by name), nor
+    /// runs older than the one that last set the cron's health.
+    fn run_finished(
+        &self,
+        name: &str,
+        run: &TaskRow,
+        status: Status,
+        now: i64,
+    ) -> Result<(), DbError> {
+        let Some(cron) = self.cron_row(name)? else {
+            return Ok(());
+        };
+        if run.created_ms <= cron.created_ms {
+            return Ok(());
+        }
+        match status {
+            Status::Succeeded => {
+                if cron.health_run_at_ms.is_some_and(|t| t > run.run_at_ms) {
+                    return Ok(());
+                }
+                self.db.exec(
+                    "UPDATE crons SET health = 'healthy', health_reason = NULL, \
+                     failing_since_ms = NULL, last_success_ms = ?, health_run_at_ms = ?, \
+                     updated_ms = ? WHERE name = ?",
+                    vec![now.into(), run.run_at_ms.into(), now.into(), name.into()],
+                )?;
+                if cron.health == "failing" {
+                    self.queue_alert(name, "cron.recovered", None, Some(&run.id), now)?;
+                }
+                Ok(())
+            }
+            Status::Failed => {
+                self.cron_failing(name, "run_failed", Some(&run.id), run.run_at_ms, now)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Marks the cron failing because of the run (or missed run) for slot `at`; alerts only
+    /// when it was not failing already.
+    fn cron_failing(
+        &self,
+        name: &str,
+        reason: &str,
+        task_id: Option<&str>,
+        at: i64,
+        now: i64,
+    ) -> Result<(), DbError> {
+        let Some(cron) = self.cron_row(name)? else {
+            return Ok(());
+        };
+        if cron.health_run_at_ms.is_some_and(|t| t > at) {
+            return Ok(());
+        }
+        if cron.health == "failing" {
+            self.db.exec(
+                "UPDATE crons SET health_reason = ?, health_run_at_ms = ?, updated_ms = ? \
+                 WHERE name = ?",
+                vec![reason.into(), at.into(), now.into(), name.into()],
+            )?;
+            return Ok(());
+        }
+        self.db.exec(
+            "UPDATE crons SET health = 'failing', health_reason = ?, failing_since_ms = ?, \
+             health_run_at_ms = ?, updated_ms = ? WHERE name = ?",
+            vec![
+                reason.into(),
+                now.into(),
+                at.into(),
+                now.into(),
+                name.into(),
+            ],
+        )?;
+        self.queue_alert(name, "cron.failing", Some(reason), task_id, now)
+    }
+
+    /// Alerts are ordinary tasks, like callbacks: signed, retried, one try past the trial.
+    fn queue_alert(
+        &self,
+        name: &str,
+        event: &str,
+        reason: Option<&str>,
+        task_id: Option<&str>,
+        now: i64,
+    ) -> Result<(), DbError> {
+        let Some(cron) = self.cron_row(name)? else {
+            return Ok(());
+        };
+        let Some(url) = &cron.alert_url else {
+            return Ok(());
+        };
+        let report = serde_json::json!({
+            "event": event,
+            "reason": reason,
+            "task_id": task_id,
+            "cron": cron.view()?,
+        });
+        self.insert(
+            NewTask {
+                id: &derived_id(&format!(
+                    "alert/{name}/{event}/{now}/{}",
+                    task_id.unwrap_or("-")
+                )),
+                task: Task::new(now, DEFAULT_MAX_ATTEMPTS),
+                method: Method::Post,
+                url,
+                headers: &[("Content-Type".into(), "application/json".into())],
+                body: Some(report.to_string()),
+                run_at_ms: now,
+                idempotency_key: None,
+                fingerprint: "alert",
+                callback_url: None,
+                callback_for: None,
+                lane: None,
+                cron: None,
+                alert_for: Some(name),
+            },
+            now,
+        )
     }
 
     // -- helpers --------------------------------------------------------------------------
@@ -894,8 +1334,9 @@ impl<'a, D: Db> Ledger<'a, D> {
     fn insert(&self, new: NewTask<'_>, now: i64) -> Result<(), DbError> {
         let NewTask { id, task, .. } = &new;
         let headers = serde_json::to_string(new.headers).map_err(|e| DbError(e.to_string()))?;
-        // Callback ids are derived, so queueing the same callback again is a no-op.
-        let verb = if new.callback_for.is_some() {
+        // Callback, run and alert ids are derived, so queueing the same one again is a no-op.
+        let derived = new.callback_for.is_some() || new.cron.is_some() || new.alert_for.is_some();
+        let verb = if derived {
             "INSERT OR IGNORE"
         } else {
             "INSERT"
@@ -905,8 +1346,8 @@ impl<'a, D: Db> Ledger<'a, D> {
                 "{verb} INTO tasks (id, status, due_ms, max_attempts, run_attempts, \
              total_attempts, generation, fence, lease_until_ms, cancel_requested, terminal_ms, \
              published_ms, method, url, headers, body, run_at_ms, idempotency_key, fingerprint, \
-             callback_url, callback_for, lane, created_ms, updated_ms) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+             callback_url, callback_for, lane, cron, alert_for, created_ms, updated_ms) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             ),
             vec![
                 (*id).into(),
@@ -930,6 +1371,8 @@ impl<'a, D: Db> Ledger<'a, D> {
                 new.callback_url.into(),
                 new.callback_for.into(),
                 new.lane.into(),
+                new.cron.into(),
+                new.alert_for.into(),
                 now.into(),
                 now.into(),
             ],
@@ -941,11 +1384,15 @@ impl<'a, D: Db> Ledger<'a, D> {
     fn save_row(&self, row: &TaskRow, task: &Task, now: i64) -> Result<(), DbError> {
         self.save(&row.id, task, now)?;
         let was_finished = parse::<Status>(&row.status)?.is_terminal();
+        if !task.status.is_terminal() || was_finished {
+            return Ok(());
+        }
+        if let Some(name) = &row.cron {
+            self.run_finished(name, row, task.status, now)?;
+        }
         match &row.callback_url {
-            Some(url) if task.status.is_terminal() && !was_finished => {
-                self.queue_callback(&row.id, url, task.generation, now)
-            }
-            _ => Ok(()),
+            Some(url) => self.queue_callback(&row.id, url, task.generation, now),
+            None => Ok(()),
         }
     }
 
@@ -981,6 +1428,8 @@ impl<'a, D: Db> Ledger<'a, D> {
                 callback_url: None,
                 callback_for: Some(task_id),
                 lane: None,
+                cron: None,
+                alert_for: None,
             },
             now,
         )
@@ -1912,5 +2361,305 @@ mod tests {
             l.list(None, Some("a b"), None, None).unwrap_err().status,
             400
         );
+    }
+
+    fn daily(name: &str) -> CronRequest {
+        CronRequest {
+            name: name.into(),
+            schedule: "0 6 * * *".into(),
+            url: "https://a.example.com/backup".into(),
+            max_attempts: Some(1),
+            alert_url: Some("https://alerts.example.com/hook".into()),
+            ..Default::default()
+        }
+    }
+
+    const SIX: i64 = T0 + 6 * 3_600_000;
+    const DAY: i64 = 86_400_000;
+
+    fn alerts(db: &Memory, name: &str) -> Vec<serde_json::Value> {
+        let mut stmt =
+            db.0.prepare("SELECT body FROM tasks WHERE alert_for = ? ORDER BY seq")
+                .unwrap();
+        stmt.query_map([name], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|b| serde_json::from_str(&b.unwrap()).unwrap())
+            .collect()
+    }
+
+    fn run_cron_task(l: &Ledger<'_, Memory>, name: &str, status: u16, now: i64) -> String {
+        let id = l.cron(name).unwrap().last_run_task_id.unwrap();
+        let d = l
+            .publish_due(P, now)
+            .unwrap()
+            .into_iter()
+            .find(|d| d.task_id == id)
+            .unwrap();
+        let a = deliver(l, &d, now);
+        l.finish(&id, a.fence, http(status), now, 0.0).unwrap();
+        id
+    }
+
+    #[test]
+    fn a_cron_runs_on_schedule_as_ordinary_tasks() {
+        let db = Memory::new();
+        let l = setup(&db);
+        let (c, created) = l.put_cron(daily("backup"), T0).unwrap();
+        assert!(created);
+        assert_eq!((c.next_run_ms, c.health), (Some(SIX), Health::Pending));
+        assert_eq!(l.next_wake().unwrap(), Some(SIX));
+
+        assert_eq!(l.fire_crons(SIX - 1).unwrap(), 0);
+        assert_eq!(l.fire_crons(SIX).unwrap(), 1);
+        assert_eq!(l.fire_crons(SIX).unwrap(), 0, "once per slot");
+        let c = l.cron("backup").unwrap();
+        assert_eq!(c.next_run_ms, Some(SIX + DAY));
+        let run = l.task(c.last_run_task_id.as_deref().unwrap()).unwrap();
+        assert_eq!(run.cron.as_deref(), Some("backup"));
+        assert_eq!(
+            (run.url.as_str(), run.run_at_ms),
+            ("https://a.example.com/backup", SIX)
+        );
+
+        run_cron_task(&l, "backup", 200, SIX + 5);
+        let c = l.cron("backup").unwrap();
+        assert_eq!(
+            (c.health, c.last_success_ms),
+            (Health::Healthy, Some(SIX + 5))
+        );
+        assert!(alerts(&db, "backup").is_empty(), "no news is good news");
+    }
+
+    #[test]
+    fn alerts_when_a_cron_starts_failing_and_when_it_recovers() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.put_cron(daily("backup"), T0).unwrap();
+        l.fire_crons(SIX).unwrap();
+        let failed_run = run_cron_task(&l, "backup", 500, SIX);
+        let c = l.cron("backup").unwrap();
+        assert_eq!(c.health, Health::Failing);
+        assert_eq!(c.health_reason.as_deref(), Some("run_failed"));
+        assert_eq!(c.failing_since_ms, Some(SIX));
+
+        // Failing again does not alert again.
+        l.fire_crons(SIX + DAY).unwrap();
+        run_cron_task(&l, "backup", 500, SIX + DAY);
+        l.fire_crons(SIX + 2 * DAY).unwrap();
+        run_cron_task(&l, "backup", 200, SIX + 2 * DAY);
+
+        let sent = alerts(&db, "backup");
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0]["event"], "cron.failing");
+        assert_eq!(sent[0]["reason"], "run_failed");
+        assert_eq!(sent[0]["task_id"], failed_run.as_str());
+        assert_eq!(sent[0]["cron"]["health"], "failing");
+        assert_eq!(sent[1]["event"], "cron.recovered");
+        assert_eq!(sent[1]["cron"]["health"], "healthy");
+
+        let alert_id: String =
+            db.0.query_row(
+                "SELECT id FROM tasks WHERE alert_for = 'backup' ORDER BY seq LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let alert = l.task(&alert_id).unwrap();
+        assert_eq!(alert.url, "https://alerts.example.com/hook");
+        assert_eq!(alert.alert_for.as_deref(), Some("backup"));
+    }
+
+    #[test]
+    fn missed_slots_are_not_made_up() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.put_cron(daily("backup"), T0).unwrap();
+        assert_eq!(l.fire_crons(SIX + 3 * DAY + 1).unwrap(), 1);
+        assert_eq!(l.cron("backup").unwrap().next_run_ms, Some(SIX + 4 * DAY));
+    }
+
+    #[test]
+    fn a_run_that_cannot_start_is_a_failure() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.put_cron(daily("backup"), T0).unwrap();
+        db.0.execute("UPDATE project SET attempts_used = attempt_budget", [])
+            .unwrap();
+        assert_eq!(l.fire_crons(SIX).unwrap(), 0);
+        let c = l.cron("backup").unwrap();
+        assert_eq!(c.health_reason.as_deref(), Some("budget_exhausted"));
+        assert_eq!(c.last_run_task_id, None);
+        assert_eq!(c.next_run_ms, Some(SIX + DAY), "keeps trying on schedule");
+        // The alert still gets its one try.
+        let sent = alerts(&db, "backup");
+        assert_eq!(sent[0]["reason"], "budget_exhausted");
+        let d = &l.publish_due(P, SIX).unwrap()[0];
+        assert!(matches!(
+            l.claim(&d.task_id, d.generation, SIX).unwrap(),
+            Claimed::Deliver(_)
+        ));
+    }
+
+    #[test]
+    fn a_cron_stops_when_the_trial_ends() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.put_cron(daily("backup"), T0).unwrap();
+        let end = T0 + TRIAL_DURATION_MS;
+        l.fire_crons(end).unwrap();
+        let c = l.cron("backup").unwrap();
+        assert_eq!(c.next_run_ms, None);
+        assert_eq!(c.health_reason.as_deref(), Some("trial_expired"));
+        assert_eq!(alerts(&db, "backup").len(), 1);
+        assert_eq!(
+            l.put_cron(daily("other"), end).unwrap_err().code,
+            "trial_expired"
+        );
+    }
+
+    #[test]
+    fn replaces_lists_and_deletes_crons() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.put_cron(daily("b"), T0).unwrap();
+        l.put_cron(daily("a"), T0).unwrap();
+        let hourly = CronRequest {
+            schedule: "0 * * * *".into(),
+            ..daily("b")
+        };
+        let (c, created) = l.put_cron(hourly, T0 + 1).unwrap();
+        assert!(!created);
+        assert_eq!(
+            (c.schedule.as_str(), c.next_run_ms),
+            ("0 * * * *", Some(T0 + 3_600_000))
+        );
+        let names: Vec<_> = l
+            .crons()
+            .unwrap()
+            .crons
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, ["a", "b"]);
+
+        l.delete_cron("b").unwrap();
+        assert_eq!(l.cron("b").unwrap_err().code, "cron_not_found");
+        assert_eq!(l.delete_cron("b").unwrap_err().status, 404);
+        assert_eq!(l.next_wake().unwrap(), Some(SIX));
+
+        let err = l
+            .put_cron(
+                CronRequest {
+                    schedule: "*/5 * * * *".into(),
+                    ..daily("c")
+                },
+                T0,
+            )
+            .unwrap_err();
+        assert_eq!((err.status, err.field), (400, Some("schedule")));
+        for i in 1..MAX_CRONS {
+            l.put_cron(daily(&format!("n{i}")), T0).unwrap();
+        }
+        assert_eq!(
+            l.put_cron(daily("full"), T0).unwrap_err().code,
+            "cron_limit"
+        );
+        l.put_cron(daily("a"), T0).expect("replacing is not adding");
+    }
+
+    #[test]
+    fn a_deleted_crons_run_still_finishes_quietly() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.put_cron(daily("backup"), T0).unwrap();
+        l.fire_crons(SIX).unwrap();
+        let id = l.cron("backup").unwrap().last_run_task_id.unwrap();
+        l.delete_cron("backup").unwrap();
+        let d = &l.publish_due(P, SIX).unwrap()[0];
+        let a = deliver(&l, d, SIX);
+        l.finish(&id, a.fence, http(500), SIX, 0.0).unwrap();
+        assert_eq!(l.task(&id).unwrap().status, Status::Failed);
+        assert!(alerts(&db, "backup").is_empty());
+    }
+
+    #[test]
+    fn a_recreated_cron_ignores_its_predecessors_runs() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.put_cron(daily("backup"), T0).unwrap();
+        l.fire_crons(SIX).unwrap();
+        let old = l.cron("backup").unwrap().last_run_task_id.unwrap();
+        l.delete_cron("backup").unwrap();
+        l.put_cron(daily("backup"), SIX + 1).unwrap();
+        let d = &l.publish_due(P, SIX + 2).unwrap()[0];
+        assert_eq!(d.task_id, old);
+        let a = deliver(&l, d, SIX + 2);
+        l.finish(&old, a.fence, http(500), SIX + 2, 0.0).unwrap();
+        assert_eq!(l.cron("backup").unwrap().health, Health::Pending);
+        assert!(alerts(&db, "backup").is_empty());
+    }
+
+    #[test]
+    fn an_older_run_cannot_overrule_a_newer_one() {
+        let db = Memory::new();
+        let l = setup(&db);
+        let hourly = CronRequest {
+            schedule: "0 * * * *".into(),
+            max_attempts: Some(2),
+            ..daily("h")
+        };
+        l.put_cron(hourly, T0).unwrap();
+        let hour = 3_600_000;
+        l.fire_crons(T0 + hour).unwrap();
+        let first = l.cron("h").unwrap().last_run_task_id.unwrap();
+        l.fire_crons(T0 + 2 * hour).unwrap();
+        let second = l.cron("h").unwrap().last_run_task_id.unwrap();
+        let due = l.publish_due(P, T0 + 2 * hour).unwrap();
+        let attempt = |id: &str| {
+            let d = due.iter().find(|d| d.task_id == id).unwrap();
+            deliver(&l, d, T0 + 2 * hour)
+        };
+        let (a1, a2) = (attempt(&first), attempt(&second));
+        // The newer run succeeds first; the older one failing afterwards is old news.
+        l.finish(&second, a2.fence, http(200), T0 + 2 * hour + 1, 0.0)
+            .unwrap();
+        l.finish(&first, a1.fence, http(404), T0 + 2 * hour + 2, 0.0)
+            .unwrap();
+        assert_eq!(l.cron("h").unwrap().health, Health::Healthy);
+        assert!(alerts(&db, "h").is_empty());
+    }
+
+    #[test]
+    fn the_trial_ending_stops_crons_promptly() {
+        let db = Memory::new();
+        let l = setup(&db);
+        let yearly = CronRequest {
+            schedule: "0 0 1 1 *".into(),
+            ..daily("yearly")
+        };
+        l.put_cron(yearly, T0).unwrap();
+        let end = T0 + TRIAL_DURATION_MS;
+        assert_eq!(
+            l.next_wake().unwrap(),
+            Some(end),
+            "wakes at the trial's end"
+        );
+        l.fire_crons(end).unwrap();
+        let c = l.cron("yearly").unwrap();
+        assert_eq!(
+            (c.next_run_ms, c.health_reason.as_deref()),
+            (None, Some("trial_expired"))
+        );
+        assert_eq!(l.next_wake().unwrap(), alerts_wake(&db));
+    }
+
+    /// The only thing left to wake for: the alert just queued.
+    fn alerts_wake(db: &Memory) -> Option<i64> {
+        db.0.query_row(
+            "SELECT MIN(due_ms) FROM tasks WHERE alert_for IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
     }
 }

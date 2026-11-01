@@ -252,6 +252,26 @@ describe("api", () => {
     assert.deepEqual(page.json.tasks.map((t) => t.id), [...ids].reverse());
   });
 
+  test("stores crons and keeps the alarm healthy", async () => {
+    const body = { name: "nightly", schedule: "30 2 * * *", url: "https://receiver.example.com/nightly" };
+    const created = await api("POST", "/v1/crons", { body });
+    assert.equal(created.status, 201);
+    assert.equal(new Date(created.json.next_run_ms).getUTCHours(), 2);
+    const replaced = await api("POST", "/v1/crons", { body: { ...body, schedule: "0 3 * * *" } });
+    assert.equal(replaced.status, 200);
+    assert.equal(replaced.json.schedule, "0 3 * * *");
+    assert.equal((await api("POST", "/v1/crons", { body: { ...body, schedule: "*/10 * * * *" } })).json.error.field, "schedule");
+    assert.equal((await api("POST", "/v1/crons", { scope: "read", body })).status, 403);
+    assert.deepEqual((await api("GET", "/v1/crons")).json.crons.map((c) => c.name), ["nightly"]);
+
+    // The ledger still delivers with a cron armed (the alarm also wakes for next_run_ms).
+    const { json } = await api("POST", "/v1/tasks", { body: { url: "https://receiver.example.com/with-cron" } });
+    await settled("proj_a", json.id, ["succeeded"]);
+
+    assert.equal((await api("POST", "/v1/crons/nightly/delete", { scope: "cancel" })).status, 200);
+    assert.equal((await api("GET", "/v1/crons/nightly")).json.error.code, "cron_not_found");
+  });
+
   test("lists tasks newest first with a cursor", async () => {
     const page = await api("GET", "/v1/tasks?limit=2");
     assert.equal(page.json.tasks.length, 2);
