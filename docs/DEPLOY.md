@@ -47,7 +47,7 @@ Nothing deploys until `DEPLOY_ENABLED` is set, so the workflow can merge before 
    variables). An environment variable of that name does nothing: the gate is evaluated before any
    environment is selected.
 4. **First run** — trigger *Deploy* manually (`workflow_dispatch`) and watch it. Confirm in the dashboard
-   that exactly the six expected Workers exist and no legacy Worker changed.
+   that exactly the six expected Workers exist.
 
 ## Adding resources per phase
 
@@ -93,36 +93,32 @@ environment variable `RECEIVER_URL` to its `*.workers.dev` URL, printed by the d
 
 Each run creates a new agent identity and project in staging; they are not cleaned up.
 
-## Domains and cutover (phase 7)
+## Hostnames
 
-Hostnames owned by legacy Workers today (checked 2026-10-31, all in the OM.Network account):
+| Hostname | Worker |
+| --- | --- |
+| `runlater.io`, `www.runlater.io` | `runlater-web-production` |
+| `gateway.runlater.io` | `runlater-gateway-production` |
+| `gateway-staging.runlater.io` | `runlater-gateway-staging` |
 
-| Hostname | Today | Decision |
-| --- | --- | --- |
-| `runlater.io`, `www.runlater.io` | `runlater-web-landing` | Move to `runlater-web-production` |
-| `docs.runlater.io` | `runlater-web-docs` (old static docs) | **Retire.** Docs live at `runlater.io/docs`; no redirect |
-| `api.runlater.io` | `runlater-public-api` (`public_free_beta`, live version matched by id) | **Retire.** Agents use the gateway |
+All are custom domains in the apps' `wrangler.jsonc`. A deploy from CI (no TTY) repoints a custom domain
+held by another Worker in place, without deleting it first.
 
-Notes from the 2026-10-31 inventory:
+### Cutover (phase 7, done 2026-11-01)
 
-- `api.runlater.io` is still live (`/health` reports `public_free_beta`). Its tasks sit in per-tenant
-  Durable Objects that can't be listed without operator keys, so check for live tasks or grants before
-  removing it. `runlater-public-ready` is its queue (producer and consumer: `runlater-public-api`).
-- `mcp.runlater.io` returns 404 at `/`; the legacy MCP Worker is `runlater-mcp`.
-- Other legacy Workers to retire with them: `runlater-alpha-api`, `runlater-alpha-receiver`,
-  `runlater-mcp`, `runlater-mcp-proof-*`, `runlater-finite-proof-*`, `runlater-fetch-proof-*`,
-  `runlater-public-fetch-candidate`, `runlater-general-egress`, `runlater-local-prototype`, and the legacy
-  queues (`runlater-alpha-ready`, `runlater-finite-proof-ready`, `runlater-local-ready`,
-  `runlater-public-ready`). `harimu-*` Workers in the same account are unrelated; leave them.
+`runlater.io` moved from the legacy landing Worker by deploy. Then these were deleted from the account:
 
-`runlater.io` and `www.runlater.io` are custom domains of `runlater-web-production` in
-`apps/web/wrangler.jsonc`. A deploy from CI (no TTY) repoints a custom domain held by another Worker
-without deleting it first, so the move has no gap. `receiver-alpha.runlater.io` and `mcp.runlater.io` are
-also legacy custom domains, retired with their Workers.
+- Custom domains `docs.runlater.io` (docs live at `runlater.io/docs`, no redirect), `api.runlater.io`
+  (the free beta API; agents use the gateway), `mcp.runlater.io` and `receiver-alpha.runlater.io`.
+- Workers `runlater-public-api`, `runlater-web-docs`, `runlater-web-landing`, `runlater-mcp`,
+  `runlater-mcp-proof-*`, `runlater-alpha-api`, `runlater-alpha-receiver`, `runlater-finite-proof-*`,
+  `runlater-fetch-proof-*`, `runlater-public-fetch-candidate`, `runlater-general-egress` and
+  `runlater-local-prototype`, with their Durable Object data.
+- Queues `runlater-alpha-ready`, `runlater-finite-proof-ready`, `runlater-local-ready` and
+  `runlater-public-ready`.
 
-Order: move `runlater.io` first (upsert the custom domain to the new Worker; don't delete the old domain
-or DNS record first, and verify it serves). Then retire `docs.runlater.io` and `api.runlater.io`, and
-delete legacy Workers and queues only once nothing points at them.
+Before deleting, request analytics showed the beta API's only real use was two registrations and six tasks
+on 2026-10-28/29; everything after was scanners. The `harimu-*` Workers in the same account are unrelated.
 
 ## Rollback
 
