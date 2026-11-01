@@ -1,13 +1,19 @@
 import Link from "next/link";
 import { Code } from "../components/Code";
 import { LIMITS } from "../lib/site";
-import { scheduleCall, taskResult } from "../lib/snippets";
+import { cronCall, delayCall, laneCall, scheduleCall, taskResult } from "../lib/snippets";
 
 const STEPS = [
   ["Connect", <>Register with Agent Auth. The agent gets its own keys — no account, no API key, no human sign-up.</>],
   ["Create a project", <>One call to <code>create_project</code> starts a free trial: 100 delivery attempts over 7 days.</>],
-  ["Schedule", <>Call <code>schedule_http</code> with a URL, a body and a time up to 7 days out.</>],
-  ["Check", <>Hours later, <code>get_task</code> shows whether it succeeded and every attempt along the way.</>],
+  ["Schedule", <>Call <code>schedule_http</code> with a URL, a body and a time or delay up to 7 days out.</>],
+  ["Check", <>Later, <code>get_task</code> shows whether it succeeded and every attempt, or a callback tells you.</>],
+] as const;
+
+const MODES = [
+  ["Delay a task", "Send it in 90 seconds or 24 hours. An idempotency key makes a repeated call return the same task.", delayCall],
+  ["Queue with a lane", "Tasks in one lane run one at a time, in order, even through retries. The result goes to a callback.", laneCall],
+  ["Schedule a cron", "Run on a UTC schedule, up to once an hour. When runs start failing, a signed alert says so.", cronCall],
 ] as const;
 
 const FEATURES = [
@@ -15,7 +21,10 @@ const FEATURES = [
   ["Retries with backoff", "Timeouts, 429s and 5xx responses are retried with growing, jittered delays. Retry-After is respected."],
   ["Every attempt recorded", "Each try keeps its time, HTTP status or error. “Did it happen?” has a real answer."],
   ["Safe to repeat", "Pass an idempotency key and a retried schedule_http call returns the same task instead of a duplicate."],
+  ["Callbacks when done", "Pass callback_url and the final status and attempts are POSTed there, signed, when the task finishes."],
+  ["Alerts when a cron stops", "If a cron's runs fail or can't start, alert_url gets cron.failing, then cron.recovered once it works again."],
   ["Public HTTPS only", "Destinations must be public https:// names. Private networks, IPs and localhost are refused."],
+  ["No pile-up after downtime", "If a cron misses several runs, it runs once when it can, not once for every slot it missed."],
   ["Works from MCP", "MCP clients connect through the Agent Auth bridge. Agents in code use the Agent Auth SDK."],
 ] as const;
 
@@ -44,6 +53,25 @@ export default function Home() {
         <div className="demo" aria-label="Example">
           <Code label="the agent, today">{scheduleCall}</Code>
           <Code label="get_task, tomorrow">{taskResult}</Code>
+        </div>
+      </section>
+
+      <section className="section">
+        <div className="wrap">
+          <p className="eyebrow">Three ways to run later</p>
+          <h2>Once, in order, or on a schedule</h2>
+          <p className="intro">
+            One-off tasks, ordered queues and recurring jobs are the same signed, retried delivery underneath.
+          </p>
+          <div className="modes">
+            {MODES.map(([title, body, call]) => (
+              <div className="card" key={title}>
+                <h3>{title}</h3>
+                <p>{body}</p>
+                <Code>{call}</Code>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -90,7 +118,7 @@ export default function Home() {
             <p className="eyebrow">Limits</p>
             <h2>What the free trial covers</h2>
             <p className="muted">
-              Version 1 is one-shot requests only. Recurring schedules, a dashboard and paid plans come later.
+              One-off tasks, lanes and crons are all included. A dashboard and paid plans come later.
             </p>
             <Link href="/docs/delivery">How delivery works →</Link>
           </div>
