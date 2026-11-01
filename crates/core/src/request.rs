@@ -243,10 +243,15 @@ impl ScheduleRequest {
         .expect("plain data always serializes");
         let mut hash = Sha256::new();
         hash.update(canonical);
-        if self.delay.is_some() || self.callback_url.is_some() {
-            let extra = serde_json::to_vec(&(&self.delay, &self.callback_url))
-                .expect("plain data always serializes");
-            hash.update(extra);
+        // Each later field adds its own tagged entry, so adding another field never changes
+        // the fingerprint of a request that does not use it.
+        let extras = [("delay", &self.delay), ("callback_url", &self.callback_url)];
+        for (name, value) in extras {
+            if let Some(value) = value {
+                hash.update(
+                    serde_json::to_vec(&(name, value)).expect("plain data always serializes"),
+                );
+            }
         }
         hex::encode(hash.finalize())
     }
