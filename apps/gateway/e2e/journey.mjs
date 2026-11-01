@@ -1,11 +1,14 @@
 // The agent journey against a deployed (or local) stack: a fresh Agent Auth identity, a
 // project, and real deliveries to the staging receiver, checked end to end including the
-// signature. Used by `staging.mjs` after each staging deploy, and by agent.e2e.mjs locally.
+// signature, lanes, delays, callbacks and crons. Used by `staging.mjs` after each staging deploy, and by agent.e2e.mjs locally.
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { AgentAuthClient, MemoryStorage } from "@auth/agent";
 
-const CAPABILITIES = ["create_project", "get_project", "schedule_http", "get_task", "list_tasks", "cancel_task", "redrive_task"];
+const CAPABILITIES = [
+  "create_project", "get_project", "schedule_http", "get_task", "list_tasks", "cancel_task", "redrive_task",
+  "create_cron", "get_cron", "list_crons", "delete_cron",
+];
 
 class JourneyError extends Error {}
 const check = (ok, message) => {
@@ -57,8 +60,19 @@ export async function runJourney(c) {
     capabilities: CAPABILITIES,
     name: "journey",
   });
-  const exec = (capability, args = {}) =>
-    client.executeCapability({ agentId, capability, arguments: args }).then((r) => r.data ?? r);
+  // Agent Auth allows 60 capability calls a minute; a 429 is refused before it runs, so the
+  // journey waits it out and sends the same call again.
+  const exec = async (capability, args = {}) => {
+    for (let tries = 1; ; tries++) {
+      try {
+        const r = await client.executeCapability({ agentId, capability, arguments: args });
+        return r.data ?? r;
+      } catch (e) {
+        if (e?.status !== 429 || tries >= 8) throw e;
+        await new Promise((r) => setTimeout(r, 10_000));
+      }
+    }
+  };
   log("agent registered");
 
   const project = await exec("create_project");
@@ -101,15 +115,26 @@ export async function runJourney(c) {
   check(verify(okDelivery, body), "RunLater-Signature does not verify with the project's signing_secret");
   log("signed delivery verified");
 
-  // 2. A 503 is retried with backoff and then succeeds.
-  const flaky = await exec("schedule_http", { url: hook("flaky") });
+  // 2. A 503 is retried with backoff and then succeeds. It holds its lane meanwhile: the
+  //    task queued behind it is delivered only after the retry.
+  const lane = `journey-${run}`;
+  const flaky = await exec("schedule_http", { url: hook("flaky"), lane });
+  const behind = await exec("schedule_http", { url: hook("behind"), lane });
+  check(flaky.lane === lane && behind.lane === lane, "schedule_http did not keep the lane");
   const flakyDone = await settled(flaky, ["succeeded", "failed"]);
   const outcomes = flakyDone.attempts.map((a) => a.outcome);
   check(
     flakyDone.status === "succeeded" && outcomes.join() === "http_503,http_200",
     `flaky task: ${flakyDone.status} ${outcomes.join()}`,
   );
-  log("retry after 503 succeeded");
+  // Waits on the receiver, not get_task: the gateway rate-limits capability calls.
+  const inLane = await until("the task behind in the lane", async () => {
+    const ds = (await deliveries()).filter((d) => d.name === "flaky" || d.name === "behind");
+    return ds.some((d) => d.name === "behind") && ds;
+  });
+  const order = inLane.map((d) => d.name);
+  check(order.join() === "flaky,flaky,behind", `lane delivered out of order: ${order.join()}`);
+  log("retry after 503 succeeded, and its lane waited for it");
 
   // 3. A 404 fails without a retry.
   const gone = await exec("schedule_http", { url: hook("gone"), method: "DELETE" });
@@ -136,7 +161,50 @@ export async function runJourney(c) {
   check(invalid?.code === "invalid_request", `insecure URL was not rejected: ${invalid?.code ?? "accepted"}`);
   log("idempotency and validation ok");
 
-  check(!(await deliveries()).some((d) => d.name === "later"), "a canceled task was delivered");
+  // 6. A relative delay, then the final result posted to callback_url, signed.
+  const delayed = await exec("schedule_http", { url: hook("delayed"), delay: "5s", callback_url: hook("callback") });
+  check(delayed.run_at_ms - delayed.created_ms === 5_000, `delay 5s gave run_at_ms ${delayed.run_at_ms - delayed.created_ms}ms out`);
+  const callback = await until("the callback", async () => (await deliveries()).find((d) => d.name === "callback"));
+  const sent = (await deliveries()).find((d) => d.name === "delayed");
+  check(sent && sent.received_at >= delayed.run_at_ms, "the delayed task was delivered early");
+  check(verify(callback, callback.body), "the callback's RunLater-Signature does not verify");
+  const report = JSON.parse(callback.body);
+  check(
+    report.event === "task.finished" && report.task?.id === delayed.id && report.task.status === "succeeded",
+    `unexpected callback body: ${callback.body.slice(0, 200)}`,
+  );
+  log("delay held, signed callback received");
+
+  // 7. A cron: created, replaced by name, read, and deleted. An hourly cron cannot fire
+  //    inside one journey; firing and alerts are covered by the API's tests.
+  const cronArgs = { name: "journey", schedule: "0 6 * * *", url: hook("cron"), alert_url: hook("alert") };
+  const cron = await exec("create_cron", cronArgs);
+  const next = new Date(cron.next_run_ms ?? 0);
+  check(
+    cron.health === "pending" && next.getUTCHours() === 6 && next.getUTCMinutes() === 0 && cron.next_run_ms > cron.created_ms,
+    `create_cron returned ${JSON.stringify(cron)}`,
+  );
+  const replaced = await exec("create_cron", { ...cronArgs, schedule: "30 7 * * 1" });
+  check(replaced.schedule === "30 7 * * 1" && new Date(replaced.next_run_ms).getUTCDay() === 1, "create_cron did not replace by name");
+  const tooOften = await exec("create_cron", { ...cronArgs, schedule: "*/10 * * * *" }).then(
+    () => null,
+    (e) => e,
+  );
+  check(tooOften?.code === "invalid_request", `a 10-minute cron was not rejected: ${tooOften?.code ?? "accepted"}`);
+  const listed = await exec("list_crons");
+  check(listed.crons?.map((c) => c.name).join() === "journey", `list_crons returned ${JSON.stringify(listed)}`);
+  check((await exec("get_cron", { name: "journey" })).schedule === "30 7 * * 1", "get_cron disagrees with list_crons");
+  await exec("delete_cron", { name: "journey" });
+  const deleted = await exec("get_cron", { name: "journey" }).then(
+    () => null,
+    (e) => e,
+  );
+  check(deleted?.code === "cron_not_found", `deleted cron still readable: ${deleted?.code ?? "found"}`);
+  log("cron created, replaced, listed and deleted");
+
+  const all = await deliveries();
+  check(!all.some((d) => d.name === "later"), "a canceled task was delivered");
+  check(!all.some((d) => d.name === "cron" || d.name === "alert"), "the deleted cron sent something");
   const used = (await exec("get_project")).attempts_used;
   log(`done: ${used} delivery attempts used`);
   return { run, projectId: project.id, attemptsUsed: used };
