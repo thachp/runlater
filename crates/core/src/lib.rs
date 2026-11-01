@@ -4,11 +4,13 @@
 //! Time is always passed in as unix milliseconds; nothing here reads a clock or a RNG.
 //! The API stores tasks as rows and drives them through [`Task`]'s transitions.
 
+pub mod cron;
 pub mod limits;
 mod request;
 mod retry;
 mod task;
 
+pub use cron::{valid_cron_name, CronError, CronRequest, CronRequestError, CronSpec, Schedule};
 pub use request::{valid_lane, Method, ScheduleRequest, TaskSpec, ValidationError};
 pub use retry::{backoff_ms, classify, Outcome, Verdict};
 pub use task::{Attempt, CancelError, Cancelled, ClaimError, RedriveError, Stale, Status, Task};

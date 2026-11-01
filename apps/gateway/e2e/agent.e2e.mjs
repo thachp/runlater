@@ -23,7 +23,10 @@ const apiDir = fileURLToPath(new URL("../../api/", import.meta.url));
 const receiverDir = fileURLToPath(new URL("../../receiver/", import.meta.url));
 const RECEIVER_HOST = "receiver.example.com";
 const receiverToken = randomBytes(16).toString("hex");
-const CAPABILITIES = ["create_project", "get_project", "schedule_http", "get_task", "list_tasks", "cancel_task", "redrive_task"];
+const CAPABILITIES = [
+  "create_project", "get_project", "schedule_http", "get_task", "list_tasks", "cancel_task", "redrive_task",
+  "create_cron", "get_cron", "list_crons", "delete_cron",
+];
 
 // Gateway → API assertion keys, fresh per run.
 const seed = randomBytes(32);
@@ -251,6 +254,34 @@ describe("agent journey through the gateway", () => {
     // The SDK keeps code and status; the response body also names the field.
     const last = sent.findLast((s) => s.url.endsWith("/capability/execute"));
     assert.equal((await last.response.json()).field, "url");
+  });
+
+  test("crons can be created, read, listed and deleted", async () => {
+    const run = (capability, args) => client.executeCapability({ agentId, capability, arguments: args }).then((r) => r.data);
+    const cron = await run("create_cron", {
+      name: "daily-backup",
+      schedule: "0 6 * * *",
+      url: "https://dest.example.com/backup",
+      alert_url: "https://dest.example.com/alerts",
+    });
+    assert.equal(cron.health, "pending");
+    assert.ok(cron.next_run_ms > Date.now());
+    assert.equal(new Date(cron.next_run_ms).getUTCHours(), 6);
+    assert.equal((await run("get_cron", { name: "daily-backup" })).schedule, "0 6 * * *");
+    assert.deepEqual((await run("list_crons", {})).crons.map((c) => c.name), ["daily-backup"]);
+    await assert.rejects(
+      client.executeCapability({ agentId, capability: "create_cron", arguments: { name: "x", schedule: "* * * * *", url: "https://dest.example.com/" } }),
+      { code: "invalid_request", status: 400 },
+    );
+    await assert.rejects(
+      client.executeCapability({ agentId, capability: "get_cron", arguments: { name: ".." } }),
+      { code: "invalid_request", status: 400 },
+    );
+    assert.equal((await run("delete_cron", { name: "daily-backup" })).name, "daily-backup");
+    await assert.rejects(
+      client.executeCapability({ agentId, capability: "get_cron", arguments: { name: "daily-backup" } }),
+      { code: "cron_not_found", status: 404 },
+    );
   });
 
   test("task ids cannot be used to escape the API path", async () => {

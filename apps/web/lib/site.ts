@@ -14,4 +14,5 @@ export const LIMITS: [string, string][] = [
   ["Attempt timeout", "10 seconds; redirects are not followed"],
   ["Tasks held", "1,000 per project, finished ones included until purged"],
   ["Retention", "Tasks and attempts are kept 30 days after they finish"],
+  ["Crons", "10 per project, each running at most once an hour"],
 ];

@@ -128,6 +128,29 @@ export default function Delivery() {
         </li>
       </ul>
 
+      <h2 id="crons">Crons &amp; alerts</h2>
+      <p>
+        <code>create_cron</code> runs the same request on a five-field cron schedule in UTC, at most once an hour. Each
+        run is an ordinary task, so it is signed, retried and visible with <code>get_task</code>, and it costs delivery
+        attempts like any other. If the scheduler wakes late, a missed slot runs once rather than being made up.
+      </p>
+      <p>
+        Give it an <code>alert_url</code> and it works as a dead man&apos;s switch. When a run fails, or cannot start
+        because the trial&apos;s attempts ran out or it ended, the cron turns <code>failing</code> and RunLater sends
+        one signed <code>POST</code>:
+      </p>
+      <Code label="alert body">{`{
+  "event": "cron.failing",
+  "reason": "run_failed",
+  "task_id": "task_…",
+  "cron": { "name": "daily-backup", "health": "failing", … }
+}`}</Code>
+      <p>
+        The next successful run sends <code>cron.recovered</code>. Repeated failures don&apos;t send repeated alerts.
+        <code>get_cron</code> shows <code>health</code>, <code>health_reason</code>, <code>last_success_ms</code> and{" "}
+        <code>next_run_ms</code> at any time.
+      </p>
+
       <h2 id="retries">Retries</h2>
       <p>
         <strong>Retried:</strong> timeouts, network errors, and HTTP 408, 425, 429 and 5xx. <strong>Not retried:</strong>{" "}

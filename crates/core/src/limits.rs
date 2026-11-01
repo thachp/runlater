@@ -13,6 +13,12 @@ pub const MAX_SCHEDULE_AHEAD_MS: i64 = 7 * DAY_MS;
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
 pub const MAX_LANE_BYTES: usize = 64;
 
+/// Crons a project may hold.
+pub const MAX_CRONS: i64 = 10;
+/// Shortest gap allowed between two runs of one cron. The trial has 100 attempts over 7
+/// days, so an hourly cron already uses it up in about four days.
+pub const MIN_CRON_INTERVAL_MS: i64 = HOUR_MS;
+
 pub const DEFAULT_MAX_ATTEMPTS: u32 = 5;
 pub const MAX_ATTEMPTS: u32 = 5;
 pub const ATTEMPT_TIMEOUT_MS: i64 = 10 * SECOND_MS;

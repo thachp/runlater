@@ -6,7 +6,7 @@ use crate::db::{Db, DbError, Param};
 use crate::ledger::{ApiError, Claimed, Delivery, Dispatch, Ledger};
 use futures_util::future::{join_all, select, Either};
 use runlater_core::limits::ATTEMPT_TIMEOUT_MS;
-use runlater_core::{Outcome, ScheduleRequest, Status};
+use runlater_core::{CronRequest, Outcome, ScheduleRequest, Status};
 use runlater_egress::{sign, Destination};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -113,6 +113,10 @@ fn required_scope(method: &Method, path: &[&str]) -> Option<Scope> {
         (Method::Get, ["v1", "tasks", _]) => Scope::Read,
         (Method::Post, ["v1", "tasks", _, "cancel"]) => Scope::Cancel,
         (Method::Post, ["v1", "tasks", _, "redrive"]) => Scope::Schedule,
+        (Method::Post, ["v1", "crons"]) => Scope::Schedule,
+        (Method::Get, ["v1", "crons"]) => Scope::Read,
+        (Method::Get, ["v1", "crons", _]) => Scope::Read,
+        (Method::Post, ["v1", "crons", _, "delete"]) => Scope::Cancel,
         _ => return None,
     })
 }
@@ -281,6 +285,15 @@ impl TaskLedger {
             (Method::Post, ["v1", "tasks", id, "redrive"]) => {
                 ledger.redrive(id, t).map(|v| json(&v, 200))
             }
+            (Method::Post, ["v1", "crons"]) => match body::<CronRequest>(req).await {
+                Ok(r) => ledger.put_cron(r, t).map(|(c, was)| created(&c, was)),
+                Err(e) => Err(e),
+            },
+            (Method::Get, ["v1", "crons"]) => ledger.crons().map(|c| json(&c, 200)),
+            (Method::Get, ["v1", "crons", name]) => ledger.cron(name).map(|c| json(&c, 200)),
+            (Method::Post, ["v1", "crons", name, "delete"]) => {
+                ledger.delete_cron(name).map(|c| json(&c, 200))
+            }
             (Method::Post, ["internal", "claim"]) => match body::<ClaimBody>(req).await {
                 Ok(c) => ledger.claim(&c.task_id, c.generation, t).map(|claimed| {
                     let reply = match claimed {
@@ -351,6 +364,7 @@ impl DurableObject for TaskLedger {
         let failed = |e: DbError| Error::RustError(e.to_string());
         ledger.recover(t, jitter).map_err(failed)?;
         ledger.purge(t).map_err(failed)?;
+        ledger.fire_crons(t).map_err(failed)?;
         if let Ok(project) = ledger.project() {
             let due = ledger.publish_due(&project.id, t).map_err(failed)?;
             if !due.is_empty() {

@@ -27,7 +27,8 @@ const { agentId } = await client.connectAgent({
   mode: "autonomous",
   name: "my agent",
   capabilities: ["create_project", "get_project", "schedule_http", "get_task",
-                 "list_tasks", "cancel_task", "redrive_task"],
+                 "list_tasks", "cancel_task", "redrive_task",
+                 "create_cron", "get_cron", "list_crons", "delete_cron"],
 });
 const run = (capability, args = {}) =>
   client.executeCapability({ agentId, capability, arguments: args }).then((r) => r.data);
