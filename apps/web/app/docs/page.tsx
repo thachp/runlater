@@ -66,6 +66,24 @@ export default function Quickstart() {
       </p>
       <Code label="agent.mjs">{sdkExample}</Code>
 
+      <h2 id="new-capabilities">When RunLater adds a capability</h2>
+      <p>
+        An agent is granted the capabilities that existed when it connected. When RunLater adds one, such as the cron
+        tools (<code>create_cron</code>, <code>get_cron</code>, <code>list_crons</code>, <code>delete_cron</code>),
+        an agent that connected earlier gets <code>capability_not_granted</code> until it asks for it once. The grant
+        is immediate; nobody has to approve it.
+      </p>
+      <ul>
+        <li>
+          From the MCP bridge, the agent calls <code>request_capability</code> with its <code>agent_id</code> and the
+          new capability names. The bridge tells agents to do this on <code>capability_not_granted</code>.
+        </li>
+        <li>
+          From code, call <code>client.requestCapability({"{ agentId, capabilities: [\"create_cron\", \"get_cron\", \"list_crons\", \"delete_cron\"] }"})</code>.
+        </li>
+      </ul>
+      <p>The project, its tasks and its keys stay the same; there is no need to connect again.</p>
+
       <h2 id="next">Next</h2>
       <ul>
         <li>

@@ -19,6 +19,7 @@ const AGENT_ROUTES = new Set([
   "/agent/revoke",
   "/agent/rotate-key",
   "/agent/reactivate",
+  "/agent/request-capability",
   "/capability/list",
   "/capability/describe",
   "/capability/execute",

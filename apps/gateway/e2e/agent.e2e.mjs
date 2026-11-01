@@ -128,14 +128,18 @@ before(async () => {
   const db = await mf.getD1Database("DB", "gateway");
   for (const file of (await readdir(join(gatewayDir, "migrations"))).sort()) {
     const sql = await readFile(join(gatewayDir, "migrations", file), "utf8");
-    const statements = sql.split(";").map((s) => s.replace(/^\s*--.*$/gm, "").trim()).filter(Boolean);
-    await db.batch(statements.map((s) => db.prepare(s)));
+    await db.batch(splitSql(sql).map((s) => db.prepare(s)));
   }
 });
 after(async () => {
   await mf?.dispose();
   await receiver?.dispose();
 });
+
+/** A migration file's statements, without comments. */
+function splitSql(sql) {
+  return sql.split(";").map((s) => s.replace(/^\s*--.*$/gm, "").trim()).filter(Boolean);
+}
 
 /** Every request the SDK made, so tests can replay one. */
 const sent = [];
@@ -192,6 +196,7 @@ describe("agent journey through the gateway", () => {
     assert.equal(config.provider_name, "RunLater");
     const paths = Object.values(config.endpoints).map((u) => new URL(u).pathname);
     assert.ok(paths.includes("/api/auth/capability/execute"));
+    assert.ok(paths.includes("/api/auth/agent/request-capability"));
     assert.ok(paths.every((p) => !p.includes("/agent/list") && !p.includes("/host/create")));
   });
 
@@ -324,6 +329,28 @@ describe("agent journey through the gateway", () => {
       code: "host_revoked",
       status: 403,
     });
+  });
+
+  test("a host registered before a capability existed can still be granted it", async () => {
+    // Agent Auth saves a host's capabilities when it activates and never widens them, so
+    // hosts from before the cron tools were added hold only the original seven.
+    const original = CAPABILITIES.filter((c) => !c.endsWith("_cron") && c !== "list_crons");
+    const old = sdk();
+    const conn = await old.connectAgent({ provider: origin, mode: "autonomous", capabilities: original, name: "old host" });
+    const db = await mf.getD1Database("DB", "gateway");
+    await db.prepare('UPDATE "agentHost" SET "defaultCapabilities" = ? WHERE id = ?').bind(JSON.stringify(original), conn.hostId).run();
+    await old.executeCapability({ agentId: conn.agentId, capability: "create_project", arguments: {} });
+    const listCrons = () => old.executeCapability({ agentId: conn.agentId, capability: "list_crons", arguments: {} });
+    const request = () => old.requestCapability({ agentId: conn.agentId, capabilities: ["list_crons"] });
+
+    await request();
+    await assert.rejects(listCrons(), { code: "capability_not_granted" });
+
+    for (const file of (await readdir(join(gatewayDir, "migrations"))).filter((f) => /^000[3-9]_/.test(f)).sort()) {
+      await db.batch(splitSql(await readFile(join(gatewayDir, "migrations", file), "utf8")).map((q) => db.prepare(q)));
+    }
+    await request();
+    assert.deepEqual(data(await listCrons()).crons, []);
   });
 
   test("another agent on the same host shares the project", async () => {
