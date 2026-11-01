@@ -88,7 +88,7 @@ The bridge keeps the agent's keys in `~/.agent-auth`. Losing them loses access t
 | --- | --- | --- |
 | `create_project` | — | project id, trial budget, expiry |
 | `get_project` | — | budget used/remaining, expiry, signing key id |
-| `schedule_http` | `url`, `method`, `headers?`, `body?`, `run_at?`, `idempotency_key?`, `max_attempts?` | `task_id`, `status` |
+| `schedule_http` | `url`, `method`, `headers?`, `body?`, `run_at?` or `delay?`, `idempotency_key?`, `max_attempts?`, `callback_url?` | `task_id`, `status` |
 | `get_task` | `task_id` | task + attempts |
 | `list_tasks` | `status?`, `cursor?` | page of tasks |
 | `cancel_task` | `task_id` | task |
@@ -106,6 +106,8 @@ services, not a public product in v1.
 - **Timeout:** 10 s per attempt. Redirects are not followed.
 - **Success:** any 2xx. Retry on 408, 425, 429, 5xx, timeouts and network errors. Anything else (other 4xx, 3xx) fails without retry.
 - **Idempotency:** an optional `idempotency_key` makes `schedule_http` safe to repeat. The same key with the same request returns the original task; with a different request it is a conflict.
+- **Delay:** `delay` is a relative alternative to `run_at_ms`: a whole number followed by `s`, `m`, `h` or `d` (`"90s"`, `"24h"`, `"7d"`), at most 7 days. Giving both is an error.
+- **Callbacks:** with `callback_url`, every time the task finishes (succeeded, failed or canceled) RunLater queues a *callback task*: a signed `POST` of `{"event": "task.finished", "task": {…}}` (the task as `get_task` returns it) to that URL. It follows the same destination rules, retries and signing, and is visible with `get_task` (`callback_task_id` on the task, `callback_for` on the callback). Each callback try costs one delivery attempt, so scheduling a task with a callback reserves two attempts and two task slots. Callbacks do not themselves call back. A callback always gets at least one try, even after the trial's attempts run out or it expires (but no retries then). The report includes the task's full `url`, query string included, so don't put secrets there if the callback goes to another party. Callback tasks appear in `list_tasks` like any other.
 
 ## v1 limits
 

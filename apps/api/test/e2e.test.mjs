@@ -197,6 +197,44 @@ describe("api", () => {
     assert.equal(clash.json.error.code, "idempotency_conflict");
   });
 
+  test("schedules after a relative delay", async () => {
+    const before = Date.now();
+    const { status, json } = await api("POST", "/v1/tasks", {
+      body: { url: "https://receiver.example.com/delayed", delay: "1h" },
+    });
+    assert.equal(status, 201);
+    assert.ok(json.run_at_ms >= before + 3_600_000 && json.run_at_ms <= Date.now() + 3_600_000);
+    await api("POST", `/v1/tasks/${json.id}/cancel`);
+    const both = await api("POST", "/v1/tasks", {
+      body: { url: "https://receiver.example.com/delayed", delay: "1h", run_at_ms: before },
+    });
+    assert.equal(both.json.error.field, "delay");
+  });
+
+  test("posts the final result to callback_url, signed", async () => {
+    replies.set("/job", [404]);
+    const { json } = await api("POST", "/v1/tasks", {
+      body: { url: "https://receiver.example.com/job", callback_url: "https://receiver.example.com/callback" },
+    });
+    assert.equal(json.callback_url, "https://receiver.example.com/callback");
+    const failed = await settled("proj_a", json.id, ["failed"]);
+    assert.match(failed.callback_task_id, /^task_[0-9a-f]{20}$/);
+
+    const cb = await settled("proj_a", failed.callback_task_id, ["succeeded"]);
+    assert.equal(cb.callback_for, json.id);
+    const sent = received.find((r) => r.headers["runlater-task-id"] === cb.id);
+    assert.equal(sent.method, "POST");
+    assert.equal(sent.headers["content-type"], "application/json");
+    const ts = sent.headers["runlater-timestamp"];
+    const expected = createHmac("sha256", secret).update(`${ts}.${cb.id}.1.${sent.body}`).digest("hex");
+    assert.equal(sent.headers["runlater-signature"], `v1=${expected}`);
+    const report = JSON.parse(sent.body);
+    assert.equal(report.event, "task.finished");
+    assert.equal(report.task.id, json.id);
+    assert.equal(report.task.status, "failed");
+    assert.deepEqual(report.task.attempts.map((a) => a.http_status), [404]);
+  });
+
   test("lists tasks newest first with a cursor", async () => {
     const page = await api("GET", "/v1/tasks?limit=2");
     assert.equal(page.json.tasks.length, 2);
