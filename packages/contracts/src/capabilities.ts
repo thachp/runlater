@@ -116,7 +116,7 @@ export const capabilities: CapabilityDefinition[] = [
   {
     name: "create_cron",
     description:
-      "Run an HTTP request on a recurring schedule: a 5-field cron expression in UTC, at most once an hour " +
+      "Run an HTTP request on a recurring schedule: a 5-field cron expression in UTC with a single minute value (at most once an hour) " +
       "(e.g. \"0 6 * * *\" is daily at 06:00 UTC). Each run is an ordinary task (see get_task) and costs delivery attempts. " +
       "Dead man's switch: if a run fails, or cannot start because the trial's attempts ran out or it ended, " +
       "RunLater POSTs a signed alert to alert_url, and again when a run next succeeds. " +

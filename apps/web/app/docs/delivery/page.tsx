@@ -130,7 +130,8 @@ export default function Delivery() {
 
       <h2 id="crons">Crons &amp; alerts</h2>
       <p>
-        <code>create_cron</code> runs the same request on a five-field cron schedule in UTC, at most once an hour. Each
+        <code>create_cron</code> runs the same request on a five-field cron schedule in UTC. The minute field must be a
+        single value, so a cron runs at most once an hour. Each
         run is an ordinary task, so it is signed, retried and visible with <code>get_task</code>, and it costs delivery
         attempts like any other. If the scheduler wakes late, a missed slot runs once rather than being made up.
       </p>

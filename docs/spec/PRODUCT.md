@@ -116,12 +116,12 @@ services, not a public product in v1.
 
 ## Crons
 
-A cron runs the same HTTP request on a schedule: five fields (`minute hour day-of-month month day-of-week`, with `*`, numbers, `a-b`, `*/n`, `a-b/n` and lists), evaluated in **UTC**. When both day fields are restricted, a day matches if either does.
+A cron runs the same HTTP request on a schedule: five fields (`minute hour day-of-month month day-of-week`, with `*`, numbers, `a-b`, `*/n`, `a-b/n` and lists), evaluated in **UTC**, at most 128 characters. When both day fields are restricted, a day matches if either does; if either starts with `*` (e.g. `*/2`), both must match, as in Vixie cron.
 
 - **Runs are tasks.** At each slot the ledger starts a task (`cron` names its cron) with the cron's request and `max_attempts`; `get_task` shows it. Runs are admitted like any task, so each costs delivery attempts. A run that cannot start (no attempts left, task cap reached) is a failure, not a silent skip.
 - **Missed slots are not made up.** If the scheduler wakes late, the cron runs once and moves to the next slot after now.
-- **At most once an hour.** Schedules whose runs can be closer than 60 minutes are refused. The trial's 100 attempts last about four days at hourly, about three months at daily.
-- **Dead man's switch.** `health` is `pending` until a run finishes, `healthy` after a success, `failing` after a failed run or a run that could not start (`health_reason`: `run_failed`, `budget_exhausted`, `task_limit`, `trial_expired`). Becoming failing sends one signed alert to `alert_url` (`{"event": "cron.failing", "reason", "task_id", "cron"}`); the next success sends `cron.recovered`. Alerts are tasks like callbacks (`alert_for` names the cron) and get one try even past the trial.
+- **At most once an hour.** The minute field must be a single value; anything that could run twice in an hour is refused. The trial's 100 attempts last about four days at hourly, about three months at daily.
+- **Dead man's switch.** `health` is `pending` until a run finishes, `healthy` after a success, `failing` after a failed run or a run that could not start (`health_reason`: `run_failed`, `budget_exhausted`, `task_limit`, `trial_expired`). Becoming failing sends one signed alert to `alert_url` (`{"event": "cron.failing", "reason", "task_id", "cron"}`); the next success sends `cron.recovered`. Alerts are tasks like callbacks (`alert_for` names the cron) and get one try even past the trial; they are not admitted, so they can exceed the task cap by one per health change. The alert includes the cron's full `url`, query string included. A run that started but could not be attempted (attempts ran out between start and send) reports `run_failed`. Only runs of the current cron count, and a run older than the one that last set the health is ignored.
 - **The trial ending stops crons:** `next_run_ms` becomes null and they alert with `trial_expired`.
 - Re-creating a cron by name replaces its schedule and request and keeps its health. Deleting one stops it; a run already started finishes but no longer affects health.
 

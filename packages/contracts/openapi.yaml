@@ -219,7 +219,7 @@ components:
       required: [name, schedule, url]
       properties:
         name: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$" }
-        schedule: { type: string, description: "5-field cron in UTC; runs at most once an hour." }
+        schedule: { type: string, maxLength: 128, description: "5-field cron in UTC; one minute value, so it runs at most once an hour." }
         url: { type: string, maxLength: 2048 }
         method: { $ref: "#/components/schemas/Method", default: POST }
         headers: { type: object, maxProperties: 32, additionalProperties: { type: string } }

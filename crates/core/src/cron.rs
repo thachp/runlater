@@ -2,7 +2,8 @@
 //!
 //! `minute hour day-of-month month day-of-week`, each `*`, a number, a range `a-b`, a step
 //! `*/n` or `a-b/n`, or a comma list of those. Day of week is 0-7 with 0 and 7 both Sunday.
-//! As in classic cron, when both day fields are restricted a day matches if *either* does.
+//! As in Vixie cron, when both day fields are restricted a day matches if *either* does; a
+//! day field starting with `*` (like `*/2`) makes both fields apply together instead.
 
 use crate::limits::{DAY_MS, MAX_LANE_BYTES, MINUTE_MS, MIN_CRON_INTERVAL_MS};
 use crate::request::{valid_lane, Method, ScheduleRequest, TaskSpec, ValidationError};
@@ -10,6 +11,8 @@ use runlater_egress::{Destination, DestinationError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
+
+const MAX_SCHEDULE_BYTES: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Schedule {
@@ -24,6 +27,7 @@ pub struct Schedule {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CronError {
+    TooLong,
     Fields,
     Field(&'static str),
 }
@@ -31,6 +35,7 @@ pub enum CronError {
 impl fmt::Display for CronError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::TooLong => write!(f, "schedule is longer than {MAX_SCHEDULE_BYTES} characters"),
             Self::Fields => f.write_str(
                 "schedule must have five fields: minute hour day-of-month month day-of-week",
             ),
@@ -84,6 +89,9 @@ fn field(spec: &str, min: u32, max: u32, name: &'static str) -> Result<u64, Cron
 
 impl Schedule {
     pub fn parse(s: &str) -> Result<Self, CronError> {
+        if s.len() > MAX_SCHEDULE_BYTES {
+            return Err(CronError::TooLong);
+        }
         let parts: Vec<&str> = s.split_ascii_whitespace().collect();
         let [m, h, dom, mon, dow] = parts[..] else {
             return Err(CronError::Fields);
@@ -98,8 +106,8 @@ impl Schedule {
             days: field(dom, 1, 31, "day-of-month")? as u32,
             months: field(mon, 1, 12, "month")? as u16,
             weekdays: weekdays as u8,
-            any_day: dom == "*",
-            any_weekday: dow == "*",
+            any_day: dom.starts_with('*'),
+            any_weekday: dow.starts_with('*'),
         })
     }
 
@@ -112,11 +120,11 @@ impl Schedule {
         let weekday = (day + 4).rem_euclid(7) as u32;
         let by_dom = self.days & (1 << dom) != 0;
         let by_dow = self.weekdays & (1 << weekday) != 0;
-        match (self.any_day, self.any_weekday) {
-            (true, true) => true,
-            (true, false) => by_dow,
-            (false, true) => by_dom,
-            (false, false) => by_dom || by_dow,
+        // A starred field matches every day it allows, so AND leaves the other in charge.
+        if self.any_day || self.any_weekday {
+            by_dom && by_dow
+        } else {
+            by_dom || by_dow
         }
     }
 
@@ -141,18 +149,10 @@ impl Schedule {
         None
     }
 
-    /// The shortest gap between consecutive runs over the next `runs` runs after `from_ms`.
-    pub fn min_gap_ms(&self, from_ms: i64, runs: usize) -> Option<i64> {
-        let mut prev = self.next_after(from_ms)?;
-        let mut gap = None::<i64>;
-        for _ in 1..runs {
-            let Some(next) = self.next_after(prev) else {
-                break;
-            };
-            gap = Some(gap.map_or(next - prev, |g| g.min(next - prev)));
-            prev = next;
-        }
-        gap
+    /// Whether runs are always at least an hour apart. With one minute value they are,
+    /// even across midnight; with two or more, two runs fall within the same hour.
+    pub fn at_most_hourly(&self) -> bool {
+        self.minutes.count_ones() == 1
     }
 }
 
@@ -243,10 +243,11 @@ impl CronRequest {
             return Err(CronRequestError::Name);
         }
         let schedule = Schedule::parse(&self.schedule).map_err(CronRequestError::Schedule)?;
-        match schedule.min_gap_ms(now_ms, 400) {
-            _ if schedule.next_after(now_ms).is_none() => return Err(CronRequestError::Never),
-            Some(gap) if gap < MIN_CRON_INTERVAL_MS => return Err(CronRequestError::TooFrequent),
-            _ => {}
+        if !schedule.at_most_hourly() {
+            return Err(CronRequestError::TooFrequent);
+        }
+        if schedule.next_after(now_ms).is_none() {
+            return Err(CronRequestError::Never);
         }
         let alert = self
             .alert_url
@@ -366,13 +367,31 @@ mod tests {
     }
 
     #[test]
-    fn measures_the_shortest_gap() {
-        let gap = |s: &str| Schedule::parse(s).unwrap().min_gap_ms(T0, 200).unwrap();
-        assert_eq!(gap("0 * * * *"), HOUR_MS);
-        assert_eq!(gap("*/30 * * * *"), 30 * MINUTE_MS);
-        assert_eq!(gap("0,30 9 * * *"), 30 * MINUTE_MS);
-        assert_eq!(gap("0 6 * * *"), DAY_MS);
-        assert_eq!(gap("0 9,17 * * 1-5"), 8 * HOUR_MS);
+    fn knows_when_runs_are_at_most_hourly() {
+        let hourly = |s: &str| Schedule::parse(s).unwrap().at_most_hourly();
+        assert!(hourly("0 * * * *"));
+        assert!(hourly("59 23 31 12 *"));
+        assert!(hourly("0 9,17 * * 1-5"));
+        assert!(!hourly("*/30 * * * *"));
+        assert!(!hourly("0,30 9 * * *"));
+        assert!(!hourly("0-1 3 * * *"));
+    }
+
+    #[test]
+    fn a_starred_day_field_does_not_widen_the_other() {
+        // Vixie cron: when a day field starts with *, both must match.
+        // An odd day *and* a Monday: 2026-01-05, then 2026-01-19.
+        assert_eq!(next("0 9 */2 * 1", T0), T0 + 4 * DAY_MS + 9 * HOUR_MS);
+        assert_eq!(
+            next("0 9 */2 * 1", T0 + 5 * DAY_MS),
+            T0 + 18 * DAY_MS + 9 * HOUR_MS
+        );
+    }
+
+    #[test]
+    fn refuses_very_long_schedules() {
+        let long = format!("{} * * * *", vec!["0"; 100].join(","));
+        assert_eq!(Schedule::parse(&long), Err(CronError::TooLong));
     }
 
     fn cron(schedule: &str) -> CronRequest {
