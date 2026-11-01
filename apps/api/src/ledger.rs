@@ -1212,7 +1212,7 @@ impl<'a, D: Db> Ledger<'a, D> {
         let Some(cron) = self.cron_row(name)? else {
             return Ok(());
         };
-        if run.created_ms < cron.created_ms {
+        if run.created_ms <= cron.created_ms {
             return Ok(());
         }
         match status {
