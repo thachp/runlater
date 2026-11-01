@@ -85,7 +85,8 @@ const MIGRATIONS: &[&[&str]] = &[
     // 2: lanes.
     &[
         "ALTER TABLE tasks ADD COLUMN lane TEXT",
-        "CREATE INDEX IF NOT EXISTS tasks_by_lane ON tasks (lane, status)",
+        // Covers LANE_CLEAR's lookup, so finding a lane's head stays a seek.
+        "CREATE INDEX IF NOT EXISTS tasks_by_lane ON tasks (lane, status, due_ms, seq)",
     ],
 ];
 
@@ -763,7 +764,11 @@ impl<'a, D: Db> Ledger<'a, D> {
             return Ok(Claimed::Skip("stale"));
         }
 
-        if row.lane.is_some() && task.generation == generation && !self.lane_clear(task_id)? {
+        if row.lane.is_some()
+            && task.generation == generation
+            && task.is_due(now)
+            && !self.lane_clear(task_id)?
+        {
             // Published while it was the lane's head, but something else got there first.
             // It is published again once it is next.
             self.db.exec(
@@ -1857,7 +1862,7 @@ mod tests {
         l.cancel("b", T0 + 2).unwrap();
         assert_eq!(published(&l, T0 + 2), ["c"]);
 
-        // A redriven task rejoins the lane behind what is already waiting.
+        // A redriven task rejoins the lane as due now: ahead of d, which is due later.
         l.schedule(in_lane("pay", T0 + 10), "d", T0 + 3).unwrap();
         l.redrive("a", T0 + 4).unwrap();
         run(&l, "c", 200, T0 + 5);

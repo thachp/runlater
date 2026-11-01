@@ -116,6 +116,10 @@ export default function Delivery() {
       <ul>
         <li>A failed or canceled task does not block the lane; a redriven task rejoins it as due now.</li>
         <li>
+          Order is by due time, not submission: schedule A with <code>delay: &quot;1h&quot;</code>, then B for now, in the
+          same lane, and B runs first.
+        </li>
+        <li>
           Lanes order delivery attempts. Delivery is still at least once, so a lost attempt may be repeated before the
           next task starts.
         </li>
