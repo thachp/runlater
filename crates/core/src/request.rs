@@ -1,6 +1,7 @@
 use crate::limits::{
     DAY_MS, DEFAULT_MAX_ATTEMPTS, HOUR_MS, MAX_ATTEMPTS, MAX_BODY_BYTES, MAX_HEADERS,
-    MAX_HEADER_BYTES, MAX_IDEMPOTENCY_KEY_BYTES, MAX_SCHEDULE_AHEAD_MS, MINUTE_MS, SECOND_MS,
+    MAX_HEADER_BYTES, MAX_IDEMPOTENCY_KEY_BYTES, MAX_LANE_BYTES, MAX_SCHEDULE_AHEAD_MS, MINUTE_MS,
+    SECOND_MS,
 };
 use runlater_egress::{validate_header, Destination, DestinationError, HeaderError};
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,9 @@ pub struct ScheduleRequest {
     /// Where to POST the task's final state once it succeeds, fails or is canceled.
     #[serde(default)]
     pub callback_url: Option<String>,
+    /// Tasks sharing a lane run one at a time, in order.
+    #[serde(default)]
+    pub lane: Option<String>,
     #[serde(default)]
     pub idempotency_key: Option<String>,
     #[serde(default)]
@@ -68,6 +72,7 @@ pub struct TaskSpec {
     pub max_attempts: u32,
     pub idempotency_key: Option<String>,
     pub callback: Option<Destination>,
+    pub lane: Option<String>,
     /// Hash of the request as submitted. A repeated idempotency key with a different
     /// fingerprint is a conflict, not a replay.
     pub fingerprint: String,
@@ -88,6 +93,7 @@ pub enum ValidationError {
     Delay,
     DelayTooFar,
     Callback(DestinationError),
+    Lane,
     MaxAttempts,
     IdempotencyKey,
 }
@@ -103,6 +109,7 @@ impl ValidationError {
             Self::RunAtNegative | Self::RunAtTooFar => "run_at_ms",
             Self::RunAtAndDelay | Self::Delay | Self::DelayTooFar => "delay",
             Self::Callback(_) => "callback_url",
+            Self::Lane => "lane",
             Self::MaxAttempts => "max_attempts",
             Self::IdempotencyKey => "idempotency_key",
         }
@@ -127,6 +134,10 @@ impl fmt::Display for ValidationError {
             ),
             Self::DelayTooFar => f.write_str("delay is more than 7 days"),
             Self::Callback(e) => write!(f, "callback_url: {e}"),
+            Self::Lane => write!(
+                f,
+                "lane must be 1-{MAX_LANE_BYTES} characters of A-Z a-z 0-9 _ - . :"
+            ),
             Self::MaxAttempts => write!(f, "max_attempts must be between 1 and {MAX_ATTEMPTS}"),
             Self::IdempotencyKey => write!(
                 f,
@@ -207,6 +218,12 @@ impl ScheduleRequest {
             }
         }
 
+        if let Some(lane) = &self.lane {
+            if !valid_lane(lane) {
+                return Err(ValidationError::Lane);
+            }
+        }
+
         let fingerprint = self.fingerprint(&destination, callback.as_ref());
         Ok(TaskSpec {
             destination,
@@ -217,6 +234,7 @@ impl ScheduleRequest {
             max_attempts,
             idempotency_key: self.idempotency_key,
             callback,
+            lane: self.lane,
             fingerprint,
         })
     }
@@ -248,6 +266,7 @@ impl ScheduleRequest {
         let extras = [
             ("delay", self.delay.as_deref()),
             ("callback_url", callback.map(Destination::as_str)),
+            ("lane", self.lane.as_deref()),
         ];
         for (name, value) in extras {
             if let Some(value) = value {
@@ -258,6 +277,15 @@ impl ScheduleRequest {
         }
         hex::encode(hash.finalize())
     }
+}
+
+/// Lane names: what `schedule_http` accepts and `list_tasks` filters on.
+pub fn valid_lane(lane: &str) -> bool {
+    !lane.is_empty()
+        && lane.len() <= MAX_LANE_BYTES
+        && lane
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':'))
 }
 
 /// `"<n><unit>"` with unit `s`, `m`, `h` or `d`, in milliseconds.
@@ -510,5 +538,28 @@ mod tests {
             ..ok()
         };
         assert_eq!(fp(shouty, NOW), fp(called, NOW));
+    }
+
+    #[test]
+    fn checks_lane() {
+        let lane = |l: &str| ScheduleRequest {
+            lane: Some(l.into()),
+            ..ok()
+        };
+        let spec = lane("payments:user-42.eu_1").validate(NOW).unwrap();
+        assert_eq!(spec.lane.as_deref(), Some("payments:user-42.eu_1"));
+        for bad in [
+            "",
+            "has space",
+            "a/b",
+            "ünicode",
+            &"l".repeat(MAX_LANE_BYTES + 1),
+        ] {
+            assert_eq!(invalid(lane(bad)), ValidationError::Lane, "{bad:?}");
+        }
+        assert!(lane(&"l".repeat(MAX_LANE_BYTES)).validate(NOW).is_ok());
+        let fp = |r: ScheduleRequest| r.validate(NOW).unwrap().fingerprint;
+        assert_ne!(fp(lane("a")), fp(lane("b")));
+        assert_ne!(fp(lane("a")), fp(ok()));
     }
 }

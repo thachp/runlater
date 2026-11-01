@@ -235,6 +235,23 @@ describe("api", () => {
     assert.deepEqual(report.task.attempts.map((a) => a.http_status), [404]);
   });
 
+  test("runs a lane one task at a time, in order", async () => {
+    replies.set("/lane-1", [503]);
+    const ids = [];
+    for (const n of [1, 2, 3]) {
+      const { json } = await api("POST", "/v1/tasks", {
+        body: { url: `https://receiver.example.com/lane-${n}`, lane: "payments" },
+      });
+      assert.equal(json.lane, "payments");
+      ids.push(json.id);
+    }
+    for (const id of ids) await settled("proj_a", id, ["succeeded"], 40_000);
+    const hits = received.filter((r) => r.url.includes("/lane-")).map((r) => new URL(r.url).pathname);
+    assert.deepEqual(hits, ["/lane-1", "/lane-1", "/lane-2", "/lane-3"], "lane-1's retry finishes before lane-2 starts");
+    const page = await api("GET", "/v1/tasks?lane=payments");
+    assert.deepEqual(page.json.tasks.map((t) => t.id), [...ids].reverse());
+  });
+
   test("lists tasks newest first with a cursor", async () => {
     const page = await api("GET", "/v1/tasks?limit=2");
     assert.equal(page.json.tasks.length, 2);

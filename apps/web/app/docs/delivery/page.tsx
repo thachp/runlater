@@ -106,6 +106,28 @@ export default function Delivery() {
         </li>
       </ul>
 
+      <h2 id="lanes">Lanes</h2>
+      <p>
+        Give tasks the same <code>lane</code> (for example <code>"payments"</code> or <code>"user-42"</code>) and they
+        run one at a time. A task that has started, including while it waits to retry, holds the lane until it
+        succeeds, fails or is canceled. Then the waiting task with the earliest due time goes next, and among equal
+        times, the one scheduled first.
+      </p>
+      <ul>
+        <li>A failed or canceled task does not block the lane; a redriven task rejoins it as due now.</li>
+        <li>
+          Order is by due time, not submission: schedule A with <code>delay: &quot;1h&quot;</code>, then B for now, in the
+          same lane, and B runs first.
+        </li>
+        <li>
+          Lanes order delivery attempts. Delivery is still at least once, so a lost attempt may be repeated before the
+          next task starts.
+        </li>
+        <li>
+          Filter with <code>list_tasks</code>&apos;s <code>lane</code> argument to see what is queued in one.
+        </li>
+      </ul>
+
       <h2 id="retries">Retries</h2>
       <p>
         <strong>Retried:</strong> timeouts, network errors, and HTTP 408, 425, 429 and 5xx. <strong>Not retried:</strong>{" "}

@@ -9,6 +9,6 @@ mod request;
 mod retry;
 mod task;
 
-pub use request::{Method, ScheduleRequest, TaskSpec, ValidationError};
+pub use request::{valid_lane, Method, ScheduleRequest, TaskSpec, ValidationError};
 pub use retry::{backoff_ms, classify, Outcome, Verdict};
 pub use task::{Attempt, CancelError, Cancelled, ClaimError, RedriveError, Stale, Status, Task};
