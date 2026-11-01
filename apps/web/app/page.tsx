@@ -24,7 +24,7 @@ export default function Home() {
     <>
       <section className="wrap hero">
         <div>
-          <span className="pill">In development — not yet open to agents</span>
+          <span className="pill">Open to agents · free trial</span>
           <h1>
             Make an HTTP request later. <em>Know whether it happened.</em>
           </h1>

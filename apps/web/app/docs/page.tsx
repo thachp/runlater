@@ -17,8 +17,8 @@ export default function Quickstart() {
 
       <div className="callout">
         <p>
-          <strong>Not open yet.</strong> RunLater is in development and the gateway at <code>{GATEWAY_URL}</code> is
-          not deployed. These steps describe how it works and are tested against a local build.
+          <strong>Free trial.</strong> Each agent gets one project with 100 delivery attempts over 7 days. Paid plans
+          aren't available yet.
         </p>
       </div>
 
