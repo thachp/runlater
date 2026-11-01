@@ -97,7 +97,6 @@ runlater/
 ├── docs/
 │   ├── spec/                PRODUCT.md, ARCHITECTURE.md (this)
 │   └── adr/                 one file per significant decision
-├── legacy/                  pre-rebuild code and docs, read-only until cutover (phase 7)
 ├── Cargo.toml               workspace: apps/api, crates/*
 ├── package.json             npm workspaces: apps/gateway, apps/web, packages/*
 ├── turbo.json               (optional) task runner
@@ -138,7 +137,7 @@ Replaces the 89 files in `scripts/` and the bespoke shell harnesses.
 | `egress/` | Fold into `crates/egress` |
 | `web/next` | Move to `apps/web`; drop `web/landing`, `web/redirect`, `web/docs`, `web/shared` |
 | `alpha/`, `beta/`, `staging/`, `offline/`, `discovery/`, `examples/`, `scripts/`, `tests/` | Delete; replaced by per-app tests and one e2e |
-| `docs/*.md` (40 files) | Moved to `legacy/docs/`; deleted at cutover |
+| `docs/*.md` (40 files) | Moved to `legacy/docs/`; deleted at cutover ✅ |
 
 ## Migration plan
 
@@ -156,9 +155,9 @@ Each phase is one PR that leaves `main` green.
 5. **Web.** ✅ Landing page and docs (`/docs`, `/docs/capabilities`, `/docs/delivery`) in `apps/web`, statically prerendered.
    - The capabilities reference renders the same definitions the gateway serves (`@runlater/contracts/capabilities`).
    - The signature-verification samples (Node, Python) are executed in tests against the `crates/egress` vector, and the limits the site states are checked against `crates/core`.
-   - `docs.runlater.io` content now lives at `runlater.io/docs`; redirect the old hostname at cutover.
+   - `docs.runlater.io` content now lives at `runlater.io/docs`; the old hostname is retired at cutover, with no redirect.
 6. **E2E + deploy.** ✅ One journey script ([`apps/gateway/e2e/journey.mjs`](../../apps/gateway/e2e/journey.mjs)) runs locally in CI and against staging after every staging deploy, delivering to a staging-only receiver Worker (`apps/receiver`). Staging failing blocks production. First live run still needs the setup in [DEPLOY.md](../DEPLOY.md).
-7. **Cutover.** Inventory live resources, tear down old Workers (MCP OAuth, public beta API), delete `legacy/`.
+7. **Cutover.** ✅ `runlater.io` and `gateway.runlater.io` serve the new Workers; the legacy hostnames, Workers and queues are deleted, and so is `legacy/`. See [DEPLOY.md](../DEPLOY.md).
 
 ## Risks
 

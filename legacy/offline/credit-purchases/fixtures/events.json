@@ -1,7 +1,0 @@
-{
-  "format": "runlater-synthetic-events-v1",
-  "warning": "OFFLINE FICTION ONLY. These identifiers are not payment proofs or MPP wire messages.",
-  "settled": { "proof": "OFFLINE_FIXTURE:confirmed", "event_id": "fixture_settled", "payment_id": "fictional_payment_a" },
-  "reversed": { "proof": "OFFLINE_FIXTURE:reversed", "event_id": "fixture_reversed", "payment_id": "fictional_payment_a" },
-  "unpaid": { "proof": "OFFLINE_FIXTURE:unpaid", "event_id": "fixture_unpaid" }
-}

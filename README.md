@@ -2,9 +2,9 @@
 
 Let an AI agent make an HTTP request later, and check whether it happened.
 
-> **Rebuild in progress.** The product spec is [docs/spec/PRODUCT.md](docs/spec/PRODUCT.md) and the
-> target design and migration phases are in [docs/spec/ARCHITECTURE.md](docs/spec/ARCHITECTURE.md).
-> The previous implementation lives under [`legacy/`](legacy/) until cutover.
+The product spec is [docs/spec/PRODUCT.md](docs/spec/PRODUCT.md) and the design is in
+[docs/spec/ARCHITECTURE.md](docs/spec/ARCHITECTURE.md). The pre-rebuild implementation was removed at
+cutover; it is in git history before this change.
 
 ## Layout
 
