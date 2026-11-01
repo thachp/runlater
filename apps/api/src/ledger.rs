@@ -12,8 +12,8 @@ use runlater_core::limits::{
     DEFAULT_MAX_ATTEMPTS, MAX_RETAINED_TASKS, RETENTION_MS, TRIAL_ATTEMPTS, TRIAL_DURATION_MS,
 };
 use runlater_core::{
-    Attempt, CancelError, ClaimError, Method, Outcome, RedriveError, ScheduleRequest, Status, Task,
-    ValidationError,
+    valid_lane, Attempt, CancelError, ClaimError, Method, Outcome, RedriveError, ScheduleRequest,
+    Status, Task, ValidationError,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -82,7 +82,22 @@ const MIGRATIONS: &[&[&str]] = &[
         "ALTER TABLE tasks ADD COLUMN callback_task_id TEXT",
         "ALTER TABLE tasks ADD COLUMN callback_for TEXT",
     ],
+    // 2: lanes.
+    &[
+        "ALTER TABLE tasks ADD COLUMN lane TEXT",
+        "CREATE INDEX IF NOT EXISTS tasks_by_lane ON tasks (lane, status)",
+    ],
 ];
+
+/// SQL condition, over `tasks t`: the task may run now as far as its lane is concerned.
+/// A lane runs one task at a time. A task that has started (delivering, or retrying after a
+/// failed attempt) holds the lane until it finishes; otherwise the waiting task with the
+/// earliest due time, then the earliest scheduled, goes next. Finished tasks never block.
+const LANE_CLEAR: &str =
+    "(t.lane IS NULL OR t.status IN ('delivering', 'retrying') OR NOT EXISTS ( \
+    SELECT 1 FROM tasks o WHERE o.lane = t.lane AND o.seq != t.seq AND ( \
+    o.status IN ('delivering', 'retrying') OR (o.status = 'scheduled' AND \
+    (o.due_ms < t.due_ms OR (o.due_ms = t.due_ms AND o.seq < t.seq))))))";
 
 // ---------------------------------------------------------------------------------------
 // Errors
@@ -188,6 +203,8 @@ pub struct TaskView {
     pub callback_task_id: Option<String>,
     /// Set on a callback task: the task it reports on.
     pub callback_for: Option<String>,
+    /// Tasks in the same lane run one at a time.
+    pub lane: Option<String>,
     pub created_ms: i64,
     pub updated_ms: i64,
     pub finished_ms: Option<i64>,
@@ -283,6 +300,7 @@ struct TaskRow {
     callback_url: Option<String>,
     callback_task_id: Option<String>,
     callback_for: Option<String>,
+    lane: Option<String>,
     created_ms: i64,
     updated_ms: i64,
 }
@@ -346,6 +364,7 @@ impl TaskRow {
             callback_url: self.callback_url.clone(),
             callback_task_id: self.callback_task_id.clone(),
             callback_for: self.callback_for.clone(),
+            lane: self.lane.clone(),
             created_ms: self.created_ms,
             updated_ms: self.updated_ms,
             finished_ms: task.terminal_ms,
@@ -357,7 +376,7 @@ impl TaskRow {
 const TASK_COLUMNS: &str = "seq, id, status, due_ms, max_attempts, run_attempts, \
     total_attempts, generation, fence, lease_until_ms, cancel_requested, terminal_ms, \
     method, url, headers, body, run_at_ms, idempotency_key, callback_url, callback_task_id, \
-    callback_for, created_ms, updated_ms";
+    callback_for, lane, created_ms, updated_ms";
 
 /// A row to insert into `tasks`.
 struct NewTask<'s> {
@@ -372,6 +391,7 @@ struct NewTask<'s> {
     fingerprint: &'s str,
     callback_url: Option<&'s str>,
     callback_for: Option<&'s str>,
+    lane: Option<&'s str>,
 }
 
 /// Callback task ids are derived, so queueing the same callback twice is harmless. A task's
@@ -558,6 +578,7 @@ impl<'a, D: Db> Ledger<'a, D> {
                 fingerprint: &spec.fingerprint,
                 callback_url: spec.callback.as_ref().map(|c| c.as_str()),
                 callback_for: None,
+                lane: spec.lane.as_deref(),
             },
             now,
         )?;
@@ -643,6 +664,7 @@ impl<'a, D: Db> Ledger<'a, D> {
     pub fn list(
         &self,
         status: Option<Status>,
+        lane: Option<&str>,
         cursor: Option<&str>,
         limit: Option<usize>,
     ) -> Result<TaskPage, ApiError> {
@@ -659,6 +681,13 @@ impl<'a, D: Db> Ledger<'a, D> {
         if let Some(status) = status {
             sql.push_str(" AND status = ?");
             params.push(text(&status).into());
+        }
+        if let Some(lane) = lane {
+            if !valid_lane(lane) {
+                return Err(ApiError::bad_request("lane is not valid"));
+            }
+            sql.push_str(" AND lane = ?");
+            params.push(lane.into());
         }
         sql.push_str(" ORDER BY seq DESC LIMIT ?");
         params.push((limit as i64 + 1).into());
@@ -683,10 +712,12 @@ impl<'a, D: Db> Ledger<'a, D> {
     /// republish them until [`REPUBLISH_MS`] has passed without a claim.
     pub fn publish_due(&self, project_id: &str, now: i64) -> Result<Vec<Dispatch>, DbError> {
         let due: Vec<DueRow> = self.db.query(
-            "SELECT id, generation FROM tasks \
-             WHERE status IN ('scheduled', 'retrying') AND due_ms <= ? \
-             AND (published_ms IS NULL OR published_ms <= ?) \
-             ORDER BY due_ms LIMIT ?",
+            &format!(
+                "SELECT id, generation FROM tasks t \
+                 WHERE status IN ('scheduled', 'retrying') AND due_ms <= ? \
+                 AND (published_ms IS NULL OR published_ms <= ?) AND {LANE_CLEAR} \
+                 ORDER BY due_ms LIMIT ?"
+            ),
             vec![
                 now.into(),
                 (now - REPUBLISH_MS).into(),
@@ -730,6 +761,16 @@ impl<'a, D: Db> Ledger<'a, D> {
                 return Ok(Claimed::Skip("budget_exhausted"));
             }
             return Ok(Claimed::Skip("stale"));
+        }
+
+        if row.lane.is_some() && task.generation == generation && !self.lane_clear(task_id)? {
+            // Published while it was the lane's head, but something else got there first.
+            // It is published again once it is next.
+            self.db.exec(
+                "UPDATE tasks SET published_ms = NULL WHERE id = ?",
+                vec![task_id.into()],
+            )?;
+            return Ok(Claimed::Skip("lane_busy"));
         }
 
         let attempt: Attempt = match task.claim(generation, now) {
@@ -826,7 +867,7 @@ impl<'a, D: Db> Ledger<'a, D> {
                 "SELECT MIN(t) AS t FROM ( \
                  SELECT CASE WHEN published_ms IS NOT NULL AND published_ms + {REPUBLISH_MS} > due_ms \
                         THEN published_ms + {REPUBLISH_MS} ELSE due_ms END AS t \
-                   FROM tasks WHERE status IN ('scheduled', 'retrying') \
+                   FROM tasks t WHERE status IN ('scheduled', 'retrying') AND {LANE_CLEAR} \
                  UNION ALL SELECT lease_until_ms FROM tasks WHERE status = 'delivering' \
                  UNION ALL SELECT terminal_ms + {RETENTION_MS} FROM tasks WHERE terminal_ms IS NOT NULL)"
             ),
@@ -836,6 +877,14 @@ impl<'a, D: Db> Ledger<'a, D> {
     }
 
     // -- helpers --------------------------------------------------------------------------
+
+    fn lane_clear(&self, task_id: &str) -> Result<bool, DbError> {
+        let rows: Vec<IdRow> = self.db.query(
+            &format!("SELECT id FROM tasks t WHERE id = ? AND {LANE_CLEAR}"),
+            vec![task_id.into()],
+        )?;
+        Ok(!rows.is_empty())
+    }
 
     fn insert(&self, new: NewTask<'_>, now: i64) -> Result<(), DbError> {
         let NewTask { id, task, .. } = &new;
@@ -851,8 +900,8 @@ impl<'a, D: Db> Ledger<'a, D> {
                 "{verb} INTO tasks (id, status, due_ms, max_attempts, run_attempts, \
              total_attempts, generation, fence, lease_until_ms, cancel_requested, terminal_ms, \
              published_ms, method, url, headers, body, run_at_ms, idempotency_key, fingerprint, \
-             callback_url, callback_for, created_ms, updated_ms) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+             callback_url, callback_for, lane, created_ms, updated_ms) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             ),
             vec![
                 (*id).into(),
@@ -875,6 +924,7 @@ impl<'a, D: Db> Ledger<'a, D> {
                 new.fingerprint.into(),
                 new.callback_url.into(),
                 new.callback_for.into(),
+                new.lane.into(),
                 now.into(),
                 now.into(),
             ],
@@ -925,6 +975,7 @@ impl<'a, D: Db> Ledger<'a, D> {
                 fingerprint: "callback",
                 callback_url: None,
                 callback_for: Some(task_id),
+                lane: None,
             },
             now,
         )
@@ -1088,7 +1139,7 @@ mod tests {
             .schedule(req("https://a.example.com/"), "t1", T0)
             .unwrap_err();
         assert_eq!(err.code, "project_not_found");
-        assert_eq!(l.list(None, None, None).unwrap_err().status, 404);
+        assert_eq!(l.list(None, None, None, None).unwrap_err().status, 404);
     }
 
     #[test]
@@ -1415,18 +1466,22 @@ mod tests {
         }
         l.cancel("t3", T0).unwrap();
 
-        let page = l.list(None, None, Some(2)).unwrap();
+        let page = l.list(None, None, None, Some(2)).unwrap();
         let ids: Vec<_> = page.tasks.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, ["t4", "t3"]);
         assert!(page.tasks[0].attempts.is_none());
-        let page2 = l.list(None, page.next_cursor.as_deref(), Some(2)).unwrap();
+        let page2 = l
+            .list(None, None, page.next_cursor.as_deref(), Some(2))
+            .unwrap();
         assert_eq!(page2.tasks[0].id, "t2");
-        let last = l.list(None, page2.next_cursor.as_deref(), Some(2)).unwrap();
+        let last = l
+            .list(None, None, page2.next_cursor.as_deref(), Some(2))
+            .unwrap();
         assert_eq!((last.tasks.len(), last.next_cursor), (1, None));
 
-        let canceled = l.list(Some(Status::Canceled), None, None).unwrap();
+        let canceled = l.list(Some(Status::Canceled), None, None, None).unwrap();
         assert_eq!(canceled.tasks.len(), 1);
-        assert_eq!(l.list(None, Some("x"), None).unwrap_err().status, 400);
+        assert_eq!(l.list(None, None, Some("x"), None).unwrap_err().status, 400);
     }
 
     #[test]
@@ -1718,5 +1773,139 @@ mod tests {
             .schedule(req("https://a.example.com/"), "t1", T0)
             .unwrap_err();
         assert_eq!(err.status, 500, "an id collision is an error, not a 404");
+    }
+
+    fn in_lane(lane: &str, run_at_ms: i64) -> ScheduleRequest {
+        ScheduleRequest {
+            lane: Some(lane.into()),
+            run_at_ms: Some(run_at_ms),
+            max_attempts: Some(2),
+            ..req("https://a.example.com/")
+        }
+    }
+
+    fn published(l: &Ledger<'_, Memory>, now: i64) -> Vec<String> {
+        l.publish_due(P, now)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.task_id)
+            .collect()
+    }
+
+    /// Claims and finishes the one published task `id` with `status`.
+    fn run(l: &Ledger<'_, Memory>, id: &str, status: u16, now: i64) {
+        let row = l.task(id).unwrap();
+        let generation: u64 =
+            l.db.query::<DueRow>(
+                "SELECT id, generation FROM tasks WHERE id = ?",
+                vec![id.into()],
+            )
+            .unwrap()[0]
+                .generation;
+        assert!(row.next_attempt_ms.is_some(), "{id} is waiting");
+        let a = deliver(
+            l,
+            &Dispatch {
+                project_id: P.into(),
+                task_id: id.into(),
+                generation,
+            },
+            now,
+        );
+        l.finish(id, a.fence, http(status), now, 0.0).unwrap();
+    }
+
+    #[test]
+    fn a_lane_runs_one_task_at_a_time_in_order() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.schedule(in_lane("pay", T0), "a", T0).unwrap();
+        l.schedule(in_lane("pay", T0), "b", T0).unwrap();
+        l.schedule(in_lane("other", T0), "x", T0).unwrap();
+        l.schedule(req("https://a.example.com/"), "free", T0)
+            .unwrap();
+        assert_eq!(published(&l, T0), ["a", "x", "free"]);
+        assert_eq!(l.task("b").unwrap().lane.as_deref(), Some("pay"));
+
+        // a retries: it keeps the lane through its backoff.
+        run(&l, "a", 503, T0);
+        let a = l.task("a").unwrap();
+        assert_eq!(a.status, Status::Retrying);
+        let retry_at = a.next_attempt_ms.unwrap();
+        assert!(published(&l, retry_at - 1).is_empty());
+        assert_eq!(
+            l.next_wake().unwrap(),
+            Some(retry_at),
+            "only a's retry wakes the lane; b is blocked"
+        );
+        assert_eq!(published(&l, retry_at), ["a"]);
+        run(&l, "a", 200, retry_at);
+        assert_eq!(published(&l, retry_at), ["b"]);
+    }
+
+    #[test]
+    fn a_failed_or_canceled_task_frees_its_lane() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.schedule(in_lane("pay", T0), "a", T0).unwrap();
+        l.schedule(in_lane("pay", T0), "b", T0).unwrap();
+        l.schedule(in_lane("pay", T0), "c", T0).unwrap();
+        assert_eq!(published(&l, T0), ["a"]);
+        run(&l, "a", 404, T0);
+        assert_eq!(l.task("a").unwrap().status, Status::Failed);
+        assert_eq!(published(&l, T0 + 1), ["b"]);
+        l.cancel("b", T0 + 2).unwrap();
+        assert_eq!(published(&l, T0 + 2), ["c"]);
+
+        // A redriven task rejoins the lane behind what is already waiting.
+        l.schedule(in_lane("pay", T0 + 10), "d", T0 + 3).unwrap();
+        l.redrive("a", T0 + 4).unwrap();
+        run(&l, "c", 200, T0 + 5);
+        assert_eq!(published(&l, T0 + 6), ["a"]);
+        run(&l, "a", 200, T0 + 6);
+        assert_eq!(published(&l, T0 + 10), ["d"]);
+    }
+
+    #[test]
+    fn a_later_task_waits_for_an_earlier_one_due_first() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.schedule(in_lane("pay", T0 + 60_000), "later", T0)
+            .unwrap();
+        l.schedule(in_lane("pay", T0 + 1_000), "sooner", T0)
+            .unwrap();
+        assert_eq!(l.next_wake().unwrap(), Some(T0 + 1_000));
+        assert_eq!(published(&l, T0 + 1_000), ["sooner"]);
+        run(&l, "sooner", 200, T0 + 1_000);
+        assert_eq!(l.next_wake().unwrap(), Some(T0 + 60_000));
+    }
+
+    #[test]
+    fn a_stale_claim_cannot_jump_the_lane() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.schedule(in_lane("pay", T0), "a", T0).unwrap();
+        l.schedule(in_lane("pay", T0), "b", T0).unwrap();
+        assert_eq!(published(&l, T0), ["a"]);
+        // A duplicate message for b (e.g. from before a was scheduled) must not run b.
+        let gen_b = 1;
+        assert_eq!(l.claim("b", gen_b, T0).unwrap(), Claimed::Skip("lane_busy"));
+        run(&l, "a", 200, T0);
+        assert_eq!(published(&l, T0 + 1), ["b"]);
+    }
+
+    #[test]
+    fn lists_by_lane() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.schedule(in_lane("pay", T0), "a", T0).unwrap();
+        l.schedule(in_lane("mail", T0), "b", T0).unwrap();
+        let page = l.list(None, Some("pay"), None, None).unwrap();
+        let ids: Vec<_> = page.tasks.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["a"]);
+        assert_eq!(
+            l.list(None, Some("a b"), None, None).unwrap_err().status,
+            400
+        );
     }
 }

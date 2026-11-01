@@ -205,6 +205,7 @@ struct FinishBody {
 #[derive(Deserialize)]
 struct ListQuery {
     status: Option<Status>,
+    lane: Option<String>,
     cursor: Option<String>,
     limit: Option<usize>,
 }
@@ -269,7 +270,7 @@ impl TaskLedger {
             },
             (Method::Get, ["v1", "tasks"]) => match serde_urlencoded_query::<ListQuery>(&url) {
                 Ok(q) => ledger
-                    .list(q.status, q.cursor.as_deref(), q.limit)
+                    .list(q.status, q.lane.as_deref(), q.cursor.as_deref(), q.limit)
                     .map(|p| json(&p, 200)),
                 Err(e) => Err(e),
             },

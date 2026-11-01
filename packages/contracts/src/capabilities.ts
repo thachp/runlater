@@ -10,6 +10,7 @@ export interface CapabilityDefinition {
 }
 
 const TASK_ID = { type: "string", pattern: "^task_[0-9a-f]{20}$", description: "The task id returned by schedule_http." };
+export const LANE_PATTERN = "^[A-Za-z0-9_.:-]{1,64}$";
 export const STATUSES = ["scheduled", "delivering", "retrying", "succeeded", "failed", "canceled"];
 
 const noArgs = { type: "object", additionalProperties: false, properties: {} };
@@ -70,6 +71,13 @@ export const capabilities: CapabilityDefinition[] = [
           description: "Repeat a call with the same key and request to get the same task back.",
         },
         max_attempts: { type: "integer", minimum: 1, maximum: 5, default: 5 },
+        lane: {
+          type: "string",
+          pattern: LANE_PATTERN,
+          description:
+            "Run one at a time with other tasks in this lane, e.g. \"payments\" or \"user-42\". The next task starts only " +
+            "after the current one succeeds, fails or is canceled (retries included); due time, then scheduling order, decides who is next.",
+        },
       },
     },
   },
@@ -86,6 +94,7 @@ export const capabilities: CapabilityDefinition[] = [
       additionalProperties: false,
       properties: {
         status: { type: "string", enum: STATUSES },
+        lane: { type: "string", pattern: LANE_PATTERN, description: "Only tasks in this lane." },
         cursor: { type: "string", pattern: "^[0-9]{1,16}$" },
         limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
       },

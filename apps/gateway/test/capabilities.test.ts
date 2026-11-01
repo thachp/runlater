@@ -53,6 +53,8 @@ describe("capabilities", () => {
     expect(() => route("list_tasks", { status: "done" })).toThrow(ArgumentError);
     expect(() => route("list_tasks", { cursor: "1&status=x" })).toThrow(ArgumentError);
     expect(() => route("list_tasks", { limit: 500 })).toThrow(ArgumentError);
+    expect(() => route("list_tasks", { lane: "a&status=x" })).toThrow(ArgumentError);
+    expect(route("list_tasks", { lane: "payments:eu" }).path).toBe("/v1/tasks?lane=payments%3Aeu");
     expect(() => route("nope", {})).toThrow(ArgumentError);
   });
 });

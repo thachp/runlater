@@ -1,7 +1,7 @@
 // Maps each capability (defined in @runlater/contracts) to exactly one call on the private
 // API (packages/contracts/openapi.yaml), validating arguments that end up in a path.
 
-import { STATUSES } from "@runlater/contracts/capabilities";
+import { LANE_PATTERN, STATUSES } from "@runlater/contracts/capabilities";
 import type { ApiClient, Scope } from "./api";
 
 export { capabilities, capabilityNames } from "@runlater/contracts/capabilities";
@@ -35,11 +35,15 @@ function taskId(args: Args): string {
 }
 
 function listQuery(args: Args): string {
-  only(args, ["status", "cursor", "limit"]);
+  only(args, ["status", "lane", "cursor", "limit"]);
   const q = new URLSearchParams();
   if (args.status !== undefined) {
     if (typeof args.status !== "string" || !STATUSES.includes(args.status)) throw new ArgumentError("unknown status", "status");
     q.set("status", args.status);
+  }
+  if (args.lane !== undefined) {
+    if (typeof args.lane !== "string" || !new RegExp(LANE_PATTERN).test(args.lane)) throw new ArgumentError("invalid lane", "lane");
+    q.set("lane", args.lane);
   }
   if (args.cursor !== undefined) {
     if (typeof args.cursor !== "string" || !/^[0-9]{1,16}$/.test(args.cursor)) throw new ArgumentError("invalid cursor", "cursor");

@@ -11,6 +11,7 @@ pub const MAX_HEADERS: usize = 32;
 pub const MAX_HEADER_BYTES: usize = 8 * 1024;
 pub const MAX_SCHEDULE_AHEAD_MS: i64 = 7 * DAY_MS;
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
+pub const MAX_LANE_BYTES: usize = 64;
 
 pub const DEFAULT_MAX_ATTEMPTS: u32 = 5;
 pub const MAX_ATTEMPTS: u32 = 5;
