@@ -8,12 +8,15 @@
 //! queue until a consumer claims it, so a lost queue message is simply republished.
 
 use crate::db::{Db, DbError, Param};
-use runlater_core::limits::{MAX_RETAINED_TASKS, RETENTION_MS, TRIAL_ATTEMPTS, TRIAL_DURATION_MS};
+use runlater_core::limits::{
+    DEFAULT_MAX_ATTEMPTS, MAX_RETAINED_TASKS, RETENTION_MS, TRIAL_ATTEMPTS, TRIAL_DURATION_MS,
+};
 use runlater_core::{
     Attempt, CancelError, ClaimError, Method, Outcome, RedriveError, ScheduleRequest, Status, Task,
     ValidationError,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// A published task that has not been claimed after this long is published again.
 pub const REPUBLISH_MS: i64 = 60_000;
@@ -67,6 +70,18 @@ const SCHEMA: &[&str] = &[
         http_status INTEGER,
         PRIMARY KEY (task_id, number)
     )",
+    "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)",
+];
+
+/// Changes to ledgers created by an earlier [`SCHEMA`]. Each entry runs once per ledger, in
+/// order; how many have run is kept in `meta`. Append only.
+const MIGRATIONS: &[&[&str]] = &[
+    // 1: callbacks.
+    &[
+        "ALTER TABLE tasks ADD COLUMN callback_url TEXT",
+        "ALTER TABLE tasks ADD COLUMN callback_task_id TEXT",
+        "ALTER TABLE tasks ADD COLUMN callback_for TEXT",
+    ],
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -167,6 +182,12 @@ pub struct TaskView {
     pub max_attempts: u32,
     pub attempt_count: u32,
     pub idempotency_key: Option<String>,
+    /// Where this task's final state is POSTed once it finishes.
+    pub callback_url: Option<String>,
+    /// The callback task for the most recent time this task finished.
+    pub callback_task_id: Option<String>,
+    /// Set on a callback task: the task it reports on.
+    pub callback_for: Option<String>,
     pub created_ms: i64,
     pub updated_ms: i64,
     pub finished_ms: Option<i64>,
@@ -259,6 +280,9 @@ struct TaskRow {
     body: Option<String>,
     run_at_ms: i64,
     idempotency_key: Option<String>,
+    callback_url: Option<String>,
+    callback_task_id: Option<String>,
+    callback_for: Option<String>,
     created_ms: i64,
     updated_ms: i64,
 }
@@ -319,6 +343,9 @@ impl TaskRow {
             max_attempts: task.max_attempts,
             attempt_count: task.total_attempts,
             idempotency_key: self.idempotency_key.clone(),
+            callback_url: self.callback_url.clone(),
+            callback_task_id: self.callback_task_id.clone(),
+            callback_for: self.callback_for.clone(),
             created_ms: self.created_ms,
             updated_ms: self.updated_ms,
             finished_ms: task.terminal_ms,
@@ -329,7 +356,31 @@ impl TaskRow {
 
 const TASK_COLUMNS: &str = "seq, id, status, due_ms, max_attempts, run_attempts, \
     total_attempts, generation, fence, lease_until_ms, cancel_requested, terminal_ms, \
-    method, url, headers, body, run_at_ms, idempotency_key, created_ms, updated_ms";
+    method, url, headers, body, run_at_ms, idempotency_key, callback_url, callback_task_id, \
+    callback_for, created_ms, updated_ms";
+
+/// A row to insert into `tasks`.
+struct NewTask<'s> {
+    id: &'s str,
+    task: Task,
+    method: Method,
+    url: &'s str,
+    headers: &'s [(String, String)],
+    body: Option<String>,
+    run_at_ms: i64,
+    idempotency_key: Option<String>,
+    fingerprint: &'s str,
+    callback_url: Option<&'s str>,
+    callback_for: Option<&'s str>,
+}
+
+/// Callback task ids are derived, so queueing the same callback twice is harmless. A task's
+/// generation differs every time it finishes (only a redrive can follow a finish, and it
+/// moves the generation on), so each finish gets its own callback.
+fn callback_id(task_id: &str, generation: u64) -> String {
+    let digest = Sha256::digest(format!("callback/{task_id}/{generation}"));
+    format!("task_{}", hex::encode(&digest[..10]))
+}
 
 // ---------------------------------------------------------------------------------------
 
@@ -341,6 +392,19 @@ impl<'a, D: Db> Ledger<'a, D> {
     pub fn open(db: &'a D) -> Result<Self, DbError> {
         for statement in SCHEMA {
             db.exec(statement, vec![])?;
+        }
+        let applied: Vec<MetaRow> =
+            db.query("SELECT value FROM meta WHERE key = 'schema'", vec![])?;
+        let applied = applied.first().map_or(0, |m| m.value as usize);
+        if applied < MIGRATIONS.len() {
+            for statement in MIGRATIONS[applied..].iter().copied().flatten() {
+                db.exec(statement, vec![])?;
+            }
+            db.exec(
+                "INSERT INTO meta (key, value) VALUES ('schema', ?) \
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                vec![(MIGRATIONS.len() as i64).into()],
+            )?;
         }
         Ok(Self { db })
     }
@@ -387,9 +451,16 @@ impl<'a, D: Db> Ledger<'a, D> {
         Ok((self.project()?, true))
     }
 
-    /// Admission for new work: the trial must be live, every waiting task must still be able
-    /// to get at least one attempt, and a new row must fit under the retained-task cap.
-    fn admit(&self, project: &ProjectRow, new_row: bool, now: i64) -> Result<(), ApiError> {
+    /// Admission for new work: the trial must be live, every waiting task (and the callback
+    /// it will send) must still be able to get at least one attempt, and new rows must fit
+    /// under the retained-task cap. `rows` and `attempts` are what the new work needs.
+    fn admit(
+        &self,
+        project: &ProjectRow,
+        rows: i64,
+        attempts: i64,
+        now: i64,
+    ) -> Result<(), ApiError> {
         if now >= project.expires_ms {
             return Err(ApiError::new(
                 403,
@@ -399,12 +470,13 @@ impl<'a, D: Db> Ledger<'a, D> {
         }
         let counts: Vec<Counts> = self.db.query(
             "SELECT COUNT(*) AS total, \
-             COALESCE(SUM(status IN ('scheduled', 'retrying', 'delivering')), 0) AS waiting \
+             COALESCE(SUM(CASE WHEN status IN ('scheduled', 'retrying', 'delivering') \
+             THEN 1 + (callback_url IS NOT NULL) ELSE 0 END), 0) AS waiting \
              FROM tasks",
             vec![],
         )?;
         let (total, waiting) = counts.first().map_or((0, 0), |c| (c.total, c.waiting));
-        if new_row && total >= MAX_RETAINED_TASKS {
+        if rows > 0 && total + rows > MAX_RETAINED_TASKS {
             return Err(ApiError::new(
                 429,
                 "task_limit",
@@ -414,7 +486,7 @@ impl<'a, D: Db> Ledger<'a, D> {
                 ),
             ));
         }
-        if waiting + 1 > project.attempt_budget - project.attempts_used {
+        if waiting + attempts > project.attempt_budget - project.attempts_used {
             return Err(ApiError::new(
                 402,
                 "budget_exhausted",
@@ -434,6 +506,11 @@ impl<'a, D: Db> Ledger<'a, D> {
         now: i64,
     ) -> Result<(TaskView, bool), ApiError> {
         let project = self.project_row()?.ok_or_else(no_project)?;
+        let when_field = if request.delay.is_some() {
+            "delay"
+        } else {
+            "run_at_ms"
+        };
         let spec = request.validate(now).map_err(ApiError::invalid)?;
 
         if let Some(key) = &spec.idempotency_key {
@@ -453,43 +530,30 @@ impl<'a, D: Db> Ledger<'a, D> {
             }
         }
 
-        self.admit(&project, true, now)?;
+        let needs = 1 + i64::from(spec.callback.is_some());
+        self.admit(&project, needs, needs, now)?;
         if spec.run_at_ms >= project.expires_ms {
             return Err(ApiError {
-                field: Some("run_at_ms"),
-                ..ApiError::bad_request("run_at_ms is after this project's trial ends")
+                field: Some(when_field),
+                ..ApiError::bad_request(format!("{when_field} is after this project's trial ends"))
             });
         }
 
-        let task = Task::new(spec.run_at_ms, spec.max_attempts);
-        let headers = serde_json::to_string(&spec.headers).map_err(|e| DbError(e.to_string()))?;
-        self.db.exec(
-            "INSERT INTO tasks (id, status, due_ms, max_attempts, run_attempts, total_attempts, \
-             generation, fence, lease_until_ms, cancel_requested, terminal_ms, published_ms, \
-             method, url, headers, body, run_at_ms, idempotency_key, fingerprint, created_ms, \
-             updated_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            vec![
-                task_id.into(),
-                text(&task.status).into(),
-                task.due_ms.into(),
-                task.max_attempts.into(),
-                task.run_attempts.into(),
-                task.total_attempts.into(),
-                task.generation.into(),
-                task.fence.into(),
-                task.lease_until_ms.into(),
-                task.cancel_requested.into(),
-                task.terminal_ms.into(),
-                spec.method.as_str().into(),
-                spec.destination.as_str().into(),
-                headers.into(),
-                spec.body.into(),
-                spec.run_at_ms.into(),
-                spec.idempotency_key.into(),
-                spec.fingerprint.into(),
-                now.into(),
-                now.into(),
-            ],
+        self.insert(
+            NewTask {
+                id: task_id,
+                task: Task::new(spec.run_at_ms, spec.max_attempts),
+                method: spec.method,
+                url: spec.destination.as_str(),
+                headers: &spec.headers,
+                body: spec.body,
+                run_at_ms: spec.run_at_ms,
+                idempotency_key: spec.idempotency_key,
+                fingerprint: &spec.fingerprint,
+                callback_url: spec.callback.as_ref().map(|c| c.as_str()),
+                callback_for: None,
+            },
+            now,
         )?;
         Ok((self.task(task_id)?, true))
     }
@@ -507,7 +571,7 @@ impl<'a, D: Db> Ledger<'a, D> {
                 ))
             }
         }
-        self.save(task_id, &task, now)?;
+        self.save_row(&row, &task, now)?;
         self.task(task_id)
     }
 
@@ -526,8 +590,9 @@ impl<'a, D: Db> Ledger<'a, D> {
                 ),
             ));
         }
-        self.admit(&project, false, now)?;
-        self.save(task_id, &task, now)?;
+        let callbacks = i64::from(row.callback_url.is_some());
+        self.admit(&project, callbacks, 1 + callbacks, now)?;
+        self.save_row(&row, &task, now)?;
         self.task(task_id)
     }
 
@@ -546,10 +611,14 @@ impl<'a, D: Db> Ledger<'a, D> {
     /// One task with its attempt history.
     pub fn task(&self, task_id: &str) -> Result<TaskView, ApiError> {
         let row = self.task_row(task_id)?.ok_or_else(no_task)?;
+        Ok(self.full_view(&row)?)
+    }
+
+    fn full_view(&self, row: &TaskRow) -> Result<TaskView, DbError> {
         let attempts: Vec<AttemptRow> = self.db.query(
             "SELECT number, started_ms, finished_ms, outcome, http_status FROM attempts \
              WHERE task_id = ? ORDER BY number",
-            vec![task_id.into()],
+            vec![row.id.as_str().into()],
         )?;
         let attempts = attempts
             .into_iter()
@@ -561,7 +630,7 @@ impl<'a, D: Db> Ledger<'a, D> {
                 http_status: a.http_status,
             })
             .collect();
-        Ok(row.view(Some(attempts))?)
+        row.view(Some(attempts))
     }
 
     /// Newest first. `cursor` is the `next_cursor` of the previous page.
@@ -646,7 +715,7 @@ impl<'a, D: Db> Ledger<'a, D> {
 
         if !project.can_attempt(now) {
             if task.generation == generation && task.is_due(now) && task.abandon(now) {
-                self.save(task_id, &task, now)?;
+                self.save_row(&row, &task, now)?;
                 return Ok(Claimed::Skip("budget_exhausted"));
             }
             return Ok(Claimed::Skip("stale"));
@@ -665,7 +734,7 @@ impl<'a, D: Db> Ledger<'a, D> {
             "INSERT INTO attempts (task_id, number, started_ms) VALUES (?, ?, ?)",
             vec![task_id.into(), attempt.number.into(), now.into()],
         )?;
-        self.save(task_id, &task, now)?;
+        self.save_row(&row, &task, now)?;
         Ok(Claimed::Deliver(Box::new(Delivery {
             task_id: task_id.into(),
             attempt: attempt.number,
@@ -695,7 +764,7 @@ impl<'a, D: Db> Ledger<'a, D> {
             return Ok(None);
         };
         self.record_outcome(task_id, fence, &outcome, now)?;
-        self.save(task_id, &task, now)?;
+        self.save_row(&row, &task, now)?;
         Ok(Some(status))
     }
 
@@ -713,7 +782,7 @@ impl<'a, D: Db> Ledger<'a, D> {
             let fence = task.fence;
             if task.expire_lease(now, jitter()).is_some() {
                 self.record_outcome(&row.id, fence, &Outcome::LeaseExpired, now)?;
-                self.save(&row.id, &task, now)?;
+                self.save_row(row, &task, now)?;
             }
         }
         Ok(rows.len())
@@ -756,6 +825,92 @@ impl<'a, D: Db> Ledger<'a, D> {
     }
 
     // -- helpers --------------------------------------------------------------------------
+
+    fn insert(&self, new: NewTask<'_>, now: i64) -> Result<(), DbError> {
+        let NewTask { id, task, .. } = &new;
+        let headers = serde_json::to_string(new.headers).map_err(|e| DbError(e.to_string()))?;
+        // OR IGNORE only matters for derived callback ids; scheduled ids are fresh.
+        self.db.exec(
+            "INSERT OR IGNORE INTO tasks (id, status, due_ms, max_attempts, run_attempts, \
+             total_attempts, generation, fence, lease_until_ms, cancel_requested, terminal_ms, \
+             published_ms, method, url, headers, body, run_at_ms, idempotency_key, fingerprint, \
+             callback_url, callback_for, created_ms, updated_ms) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            vec![
+                (*id).into(),
+                text(&task.status).into(),
+                task.due_ms.into(),
+                task.max_attempts.into(),
+                task.run_attempts.into(),
+                task.total_attempts.into(),
+                task.generation.into(),
+                task.fence.into(),
+                task.lease_until_ms.into(),
+                task.cancel_requested.into(),
+                task.terminal_ms.into(),
+                new.method.as_str().into(),
+                new.url.into(),
+                headers.into(),
+                new.body.into(),
+                new.run_at_ms.into(),
+                new.idempotency_key.into(),
+                new.fingerprint.into(),
+                new.callback_url.into(),
+                new.callback_for.into(),
+                now.into(),
+                now.into(),
+            ],
+        )
+    }
+
+    /// Saves a change to a task loaded as `row`; if the change finished the task, queues
+    /// its callback in the same transaction.
+    fn save_row(&self, row: &TaskRow, task: &Task, now: i64) -> Result<(), DbError> {
+        self.save(&row.id, task, now)?;
+        let was_finished = parse::<Status>(&row.status)?.is_terminal();
+        match &row.callback_url {
+            Some(url) if task.status.is_terminal() && !was_finished => {
+                self.queue_callback(&row.id, url, task.generation, now)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// A callback is an ordinary task: signed, retried and visible through get_task. It is
+    /// sent even if it outlives the trial's budget reservation, which admission made for it.
+    fn queue_callback(
+        &self,
+        task_id: &str,
+        url: &str,
+        generation: u64,
+        now: i64,
+    ) -> Result<(), DbError> {
+        let id = callback_id(task_id, generation);
+        self.db.exec(
+            "UPDATE tasks SET callback_task_id = ? WHERE id = ?",
+            vec![id.as_str().into(), task_id.into()],
+        )?;
+        let row = self
+            .task_row(task_id)?
+            .ok_or_else(|| DbError(format!("task {task_id} vanished")))?;
+        let report = serde_json::json!({ "event": "task.finished", "task": self.full_view(&row)? });
+        self.insert(
+            NewTask {
+                id: &id,
+                task: Task::new(now, DEFAULT_MAX_ATTEMPTS),
+                method: Method::Post,
+                url,
+                headers: &[("Content-Type".into(), "application/json".into())],
+                body: Some(report.to_string()),
+                run_at_ms: now,
+                idempotency_key: None,
+                fingerprint: "callback",
+                callback_url: None,
+                callback_for: Some(task_id),
+            },
+            now,
+        )
+    }
 
     fn save(&self, task_id: &str, task: &Task, now: i64) -> Result<(), DbError> {
         // A new generation is a new schedule: it must be published again. Succeeded and
@@ -810,6 +965,11 @@ impl<'a, D: Db> Ledger<'a, D> {
             ],
         )
     }
+}
+
+#[derive(Deserialize)]
+struct MetaRow {
+    value: i64,
 }
 
 #[derive(Deserialize)]
@@ -1265,5 +1425,235 @@ mod tests {
         assert_eq!(l.purge(T0 + RETENTION_MS).unwrap(), 1);
         assert_eq!(l.task("t1").unwrap_err().code, "task_not_found");
         assert_eq!(l.next_wake().unwrap(), None);
+    }
+
+    fn with_callback(url: &str) -> ScheduleRequest {
+        ScheduleRequest {
+            callback_url: Some("https://cb.example.com/done".into()),
+            ..req(url)
+        }
+    }
+
+    #[test]
+    fn migrates_a_v1_ledger_in_place() {
+        let db = Memory::new();
+        for statement in &SCHEMA[..SCHEMA.len() - 1] {
+            db.0.execute(statement, []).unwrap();
+        }
+        db.0.execute(
+            "INSERT INTO tasks (id, status, due_ms, max_attempts, run_attempts, total_attempts, \
+             generation, fence, cancel_requested, method, url, headers, run_at_ms, fingerprint, \
+             created_ms, updated_ms) VALUES ('old', 'scheduled', 1, 5, 0, 0, 1, 0, 0, 'POST', \
+             'https://a.example.com/', '[]', 1, 'f', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let l = Ledger::open(&db).unwrap();
+        let t = l.task("old").unwrap();
+        assert_eq!((t.callback_url, t.callback_task_id), (None, None));
+        Ledger::open(&db).expect("migrations run once");
+        let version: i64 =
+            db.0.query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn delay_errors_name_the_delay_field() {
+        let db = Memory::new();
+        let l = setup(&db);
+        let mut r = req("https://a.example.com/");
+        r.delay = Some("soon".into());
+        assert_eq!(l.schedule(r, "t1", T0).unwrap_err().field, Some("delay"));
+
+        // Past the trial end: blame the field the caller used.
+        db.0.execute("UPDATE project SET expires_ms = ?", [T0 + 3_600_000])
+            .unwrap();
+        let mut r = req("https://a.example.com/");
+        r.delay = Some("2h".into());
+        assert_eq!(l.schedule(r, "t2", T0).unwrap_err().field, Some("delay"));
+        let mut r = req("https://a.example.com/");
+        r.delay = Some("30m".into());
+        let (t, _) = l.schedule(r, "t3", T0).unwrap();
+        assert_eq!(t.run_at_ms, T0 + 1_800_000);
+    }
+
+    #[test]
+    fn a_finished_task_posts_its_result_to_the_callback() {
+        let db = Memory::new();
+        let l = setup(&db);
+        let (t, _) = l
+            .schedule(with_callback("https://a.example.com/"), "t1", T0)
+            .unwrap();
+        assert_eq!(
+            t.callback_url.as_deref(),
+            Some("https://cb.example.com/done")
+        );
+        assert_eq!(t.callback_task_id, None);
+
+        let d = &l.publish_due(P, T0).unwrap()[0];
+        let a = deliver(&l, d, T0);
+        l.finish("t1", a.fence, http(204), T0 + 5, 0.0).unwrap();
+
+        let t = l.task("t1").unwrap();
+        let cb_id = t.callback_task_id.clone().expect("callback queued");
+        assert!(cb_id.starts_with("task_") && cb_id.len() == 25, "{cb_id}");
+        let cb = l.task(&cb_id).unwrap();
+        assert_eq!(cb.callback_for.as_deref(), Some("t1"));
+        assert_eq!((cb.status, cb.method), (Status::Scheduled, Method::Post));
+        assert_eq!(cb.url, "https://cb.example.com/done");
+        assert_eq!(cb.callback_url, None, "callbacks do not call back");
+
+        let d = &l.publish_due(P, T0 + 5).unwrap()[0];
+        assert_eq!(d.task_id, cb_id);
+        let delivery = deliver(&l, d, T0 + 5);
+        assert_eq!(
+            delivery.headers,
+            [("Content-Type".to_string(), "application/json".to_string())]
+        );
+        let report: serde_json::Value =
+            serde_json::from_str(delivery.body.as_deref().unwrap()).unwrap();
+        assert_eq!(report["event"], "task.finished");
+        assert_eq!(report["task"]["id"], "t1");
+        assert_eq!(report["task"]["status"], "succeeded");
+        assert_eq!(report["task"]["callback_task_id"], cb_id.as_str());
+        assert_eq!(report["task"]["attempts"][0]["http_status"], 204);
+
+        l.finish(&cb_id, delivery.fence, http(200), T0 + 6, 0.0)
+            .unwrap();
+        assert_eq!(l.task(&cb_id).unwrap().status, Status::Succeeded);
+        assert_eq!(l.next_wake().unwrap(), Some(T0 + 5 + RETENTION_MS));
+        assert_eq!(l.project().unwrap().attempts_used, 2);
+    }
+
+    #[test]
+    fn every_way_of_finishing_calls_back_once() {
+        let db = Memory::new();
+        let l = setup(&db);
+        let callbacks = |id: &str| -> i64 {
+            db.0.query_row(
+                "SELECT COUNT(*) FROM tasks WHERE callback_for = ?",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let mut later = with_callback("https://a.example.com/");
+        later.run_at_ms = Some(T0 + 60_000);
+
+        // Canceled while waiting; canceling again does not call back twice.
+        l.schedule(later.clone(), "c", T0).unwrap();
+        l.cancel("c", T0).unwrap();
+        l.cancel("c", T0 + 1).unwrap();
+        assert_eq!(callbacks("c"), 1);
+
+        // Failed, redriven and failed again: one callback per finish.
+        let mut once = with_callback("https://a.example.com/");
+        once.max_attempts = Some(1);
+        l.schedule(once, "f", T0).unwrap();
+        for now in [T0, T0 + 10] {
+            let d = l
+                .publish_due(P, now)
+                .unwrap()
+                .into_iter()
+                .find(|d| d.task_id == "f")
+                .unwrap();
+            let a = deliver(&l, &d, now);
+            l.finish("f", a.fence, http(500), now, 0.0).unwrap();
+            if now == T0 {
+                assert_eq!(callbacks("f"), 1);
+                l.redrive("f", T0 + 10).unwrap();
+            }
+        }
+        assert_eq!(callbacks("f"), 2);
+
+        // Lost attempt that exhausts the task's attempts.
+        let mut lost = with_callback("https://a.example.com/");
+        lost.max_attempts = Some(1);
+        l.schedule(lost, "l", T0).unwrap();
+        let d = l
+            .publish_due(P, T0 + 20)
+            .unwrap()
+            .into_iter()
+            .find(|d| d.task_id == "l")
+            .unwrap();
+        deliver(&l, &d, T0 + 20);
+        l.recover(T0 + 20 + LEASE_MS, || 0.0).unwrap();
+        assert_eq!(l.task("l").unwrap().status, Status::Failed);
+        assert_eq!(callbacks("l"), 1);
+    }
+
+    #[test]
+    fn admission_reserves_an_attempt_and_a_row_for_the_callback() {
+        let db = Memory::new();
+        let l = setup(&db);
+        db.0.execute("UPDATE project SET attempt_budget = 3", [])
+            .unwrap();
+        l.schedule(with_callback("https://a.example.com/"), "t1", T0)
+            .unwrap();
+        let err = l
+            .schedule(with_callback("https://a.example.com/"), "t2", T0)
+            .unwrap_err();
+        assert_eq!(err.code, "budget_exhausted");
+        l.schedule(req("https://a.example.com/"), "t3", T0).unwrap();
+
+        // Abandoned for lack of budget still reports, and that callback is abandoned too.
+        db.0.execute("UPDATE project SET attempts_used = 3", [])
+            .unwrap();
+        let d = l
+            .publish_due(P, T0)
+            .unwrap()
+            .into_iter()
+            .find(|d| d.task_id == "t1")
+            .unwrap();
+        assert_eq!(
+            l.claim(&d.task_id, d.generation, T0).unwrap(),
+            Claimed::Skip("budget_exhausted")
+        );
+        let cb_id = l.task("t1").unwrap().callback_task_id.unwrap();
+        let d = l
+            .publish_due(P, T0 + REPUBLISH_MS)
+            .unwrap()
+            .into_iter()
+            .find(|d| d.task_id == cb_id)
+            .unwrap();
+        assert_eq!(
+            l.claim(&d.task_id, d.generation, T0 + REPUBLISH_MS)
+                .unwrap(),
+            Claimed::Skip("budget_exhausted")
+        );
+        assert_eq!(l.task(&cb_id).unwrap().status, Status::Failed);
+        assert_eq!(l.task(&cb_id).unwrap().callback_task_id, None);
+
+        // Near the retained-task cap a callback needs a second row.
+        db.0.execute(
+            "UPDATE project SET attempt_budget = 100, attempts_used = 0",
+            [],
+        )
+        .unwrap();
+        let mut later = req("https://a.example.com/");
+        later.run_at_ms = Some(T0 + 60_000);
+        let held: i64 =
+            db.0.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+                .unwrap();
+        for i in held..MAX_RETAINED_TASKS - 1 {
+            let id = format!("x{i}");
+            l.schedule(later.clone(), &id, T0).unwrap();
+            l.cancel(&id, T0).unwrap();
+        }
+        let err = l
+            .schedule(with_callback("https://a.example.com/"), "big", T0)
+            .unwrap_err();
+        assert_eq!(err.code, "task_limit");
+        l.schedule(later, "small", T0).unwrap();
+    }
+
+    #[test]
+    fn callback_ids_are_stable_and_distinct() {
+        assert_eq!(callback_id("t1", 1), callback_id("t1", 1));
+        assert_ne!(callback_id("t1", 1), callback_id("t1", 2));
+        assert_ne!(callback_id("t1", 1), callback_id("t2", 1));
     }
 }

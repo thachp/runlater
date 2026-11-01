@@ -1,6 +1,6 @@
 use crate::limits::{
-    DEFAULT_MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_BODY_BYTES, MAX_HEADERS, MAX_HEADER_BYTES,
-    MAX_IDEMPOTENCY_KEY_BYTES, MAX_SCHEDULE_AHEAD_MS,
+    DAY_MS, DEFAULT_MAX_ATTEMPTS, HOUR_MS, MAX_ATTEMPTS, MAX_BODY_BYTES, MAX_HEADERS,
+    MAX_HEADER_BYTES, MAX_IDEMPOTENCY_KEY_BYTES, MAX_SCHEDULE_AHEAD_MS, MINUTE_MS, SECOND_MS,
 };
 use runlater_egress::{validate_header, Destination, DestinationError, HeaderError};
 use serde::{Deserialize, Serialize};
@@ -45,6 +45,12 @@ pub struct ScheduleRequest {
     /// Unix milliseconds. Absent or in the past means "as soon as possible".
     #[serde(default)]
     pub run_at_ms: Option<i64>,
+    /// Relative alternative to `run_at_ms`, e.g. `"90s"`, `"15m"`, `"24h"`, `"7d"`.
+    #[serde(default)]
+    pub delay: Option<String>,
+    /// Where to POST the task's final state once it succeeds, fails or is canceled.
+    #[serde(default)]
+    pub callback_url: Option<String>,
     #[serde(default)]
     pub idempotency_key: Option<String>,
     #[serde(default)]
@@ -61,6 +67,7 @@ pub struct TaskSpec {
     pub run_at_ms: i64,
     pub max_attempts: u32,
     pub idempotency_key: Option<String>,
+    pub callback: Option<Destination>,
     /// Hash of the request as submitted. A repeated idempotency key with a different
     /// fingerprint is a conflict, not a replay.
     pub fingerprint: String,
@@ -77,6 +84,10 @@ pub enum ValidationError {
     BodyNotAllowed,
     RunAtNegative,
     RunAtTooFar,
+    RunAtAndDelay,
+    Delay,
+    DelayTooFar,
+    Callback(DestinationError),
     MaxAttempts,
     IdempotencyKey,
 }
@@ -90,6 +101,8 @@ impl ValidationError {
             Self::HeadersTooLarge => "headers",
             Self::BodyTooLarge | Self::BodyNotAllowed => "body",
             Self::RunAtNegative | Self::RunAtTooFar => "run_at_ms",
+            Self::RunAtAndDelay | Self::Delay | Self::DelayTooFar => "delay",
+            Self::Callback(_) => "callback_url",
             Self::MaxAttempts => "max_attempts",
             Self::IdempotencyKey => "idempotency_key",
         }
@@ -108,6 +121,12 @@ impl fmt::Display for ValidationError {
             Self::BodyNotAllowed => f.write_str("GET requests cannot have a body"),
             Self::RunAtNegative => f.write_str("run_at_ms must not be negative"),
             Self::RunAtTooFar => f.write_str("run_at_ms is more than 7 days away"),
+            Self::RunAtAndDelay => f.write_str("give run_at_ms or delay, not both"),
+            Self::Delay => f.write_str(
+                "delay must be a whole number followed by s, m, h or d, e.g. \"90s\" or \"24h\"",
+            ),
+            Self::DelayTooFar => f.write_str("delay is more than 7 days"),
+            Self::Callback(e) => write!(f, "callback_url: {e}"),
             Self::MaxAttempts => write!(f, "max_attempts must be between 1 and {MAX_ATTEMPTS}"),
             Self::IdempotencyKey => write!(
                 f,
@@ -148,14 +167,29 @@ impl ScheduleRequest {
             }
         }
 
-        let run_at_ms = match self.run_at_ms {
-            Some(t) if t < 0 => return Err(ValidationError::RunAtNegative),
-            Some(t) if t > now_ms.saturating_add(MAX_SCHEDULE_AHEAD_MS) => {
+        let run_at_ms = match (self.run_at_ms, &self.delay) {
+            (Some(_), Some(_)) => return Err(ValidationError::RunAtAndDelay),
+            (Some(t), None) if t < 0 => return Err(ValidationError::RunAtNegative),
+            (Some(t), None) if t > now_ms.saturating_add(MAX_SCHEDULE_AHEAD_MS) => {
                 return Err(ValidationError::RunAtTooFar)
             }
-            Some(t) => t.max(now_ms),
-            None => now_ms,
+            (Some(t), None) => t.max(now_ms),
+            (None, Some(d)) => {
+                let ms = parse_delay(d).ok_or(ValidationError::Delay)?;
+                if ms > MAX_SCHEDULE_AHEAD_MS {
+                    return Err(ValidationError::DelayTooFar);
+                }
+                now_ms.saturating_add(ms)
+            }
+            (None, None) => now_ms,
         };
+
+        let callback = self
+            .callback_url
+            .as_deref()
+            .map(Destination::parse)
+            .transpose()
+            .map_err(ValidationError::Callback)?;
 
         let max_attempts = self.max_attempts.unwrap_or(DEFAULT_MAX_ATTEMPTS);
         if !(1..=MAX_ATTEMPTS).contains(&max_attempts) {
@@ -182,12 +216,15 @@ impl ScheduleRequest {
             run_at_ms,
             max_attempts,
             idempotency_key: self.idempotency_key,
+            callback,
             fingerprint,
         })
     }
 
     /// Uses the normalized URL and lowercased header names so cosmetic differences replay,
-    /// and the *submitted* `run_at_ms` so "now" resolving differently on a retry still matches.
+    /// and the *submitted* `run_at_ms` or `delay` so "now" resolving differently on a retry
+    /// still matches. Fields added after v1 are only hashed when present, so fingerprints of
+    /// requests that do not use them are unchanged.
     fn fingerprint(&self, destination: &Destination) -> String {
         let headers: BTreeMap<_, _> = self
             .headers
@@ -204,14 +241,36 @@ impl ScheduleRequest {
             self.max_attempts,
         ))
         .expect("plain data always serializes");
-        hex::encode(Sha256::digest(canonical))
+        let mut hash = Sha256::new();
+        hash.update(canonical);
+        if self.delay.is_some() || self.callback_url.is_some() {
+            let extra = serde_json::to_vec(&(&self.delay, &self.callback_url))
+                .expect("plain data always serializes");
+            hash.update(extra);
+        }
+        hex::encode(hash.finalize())
     }
+}
+
+/// `"<n><unit>"` with unit `s`, `m`, `h` or `d`, in milliseconds.
+fn parse_delay(s: &str) -> Option<i64> {
+    let unit = match s.as_bytes().last()? {
+        b's' => SECOND_MS,
+        b'm' => MINUTE_MS,
+        b'h' => HOUR_MS,
+        b'd' => DAY_MS,
+        _ => return None,
+    };
+    let digits = &s[..s.len() - 1];
+    if digits.is_empty() || digits.len() > 7 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<i64>().ok()?.checked_mul(unit)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::limits::DAY_MS;
 
     const NOW: i64 = 1_767_225_600_000;
 
@@ -364,5 +423,79 @@ mod tests {
             ..a.clone()
         };
         assert_ne!(fp(a, NOW), fp(d, NOW));
+    }
+
+    #[test]
+    fn delay_is_relative_to_now() {
+        let after = |d: &str| ScheduleRequest {
+            delay: Some(d.into()),
+            ..ok()
+        };
+        let at = |d: &str| after(d).validate(NOW).unwrap().run_at_ms;
+        assert_eq!(at("0s"), NOW);
+        assert_eq!(at("90s"), NOW + 90 * SECOND_MS);
+        assert_eq!(at("15m"), NOW + 15 * MINUTE_MS);
+        assert_eq!(at("24h"), NOW + DAY_MS);
+        assert_eq!(at("7d"), NOW + 7 * DAY_MS);
+        assert_eq!(invalid(after("8d")), ValidationError::DelayTooFar);
+        assert_eq!(invalid(after("9999999d")), ValidationError::DelayTooFar);
+        for bad in [
+            "",
+            "h",
+            "24",
+            "1.5h",
+            "-1h",
+            "1H",
+            "1w",
+            "1h30m",
+            " 1h",
+            "+1h",
+            "99999999s",
+        ] {
+            assert_eq!(invalid(after(bad)), ValidationError::Delay, "{bad:?}");
+        }
+        let both = ScheduleRequest {
+            run_at_ms: Some(NOW),
+            ..after("1h")
+        };
+        assert_eq!(invalid(both).field(), "delay");
+    }
+
+    #[test]
+    fn checks_callback_url() {
+        let cb = |u: &str| ScheduleRequest {
+            callback_url: Some(u.into()),
+            ..ok()
+        };
+        let spec = cb("https://HOOKS.example.com/done").validate(NOW).unwrap();
+        assert_eq!(
+            spec.callback.unwrap().as_str(),
+            "https://hooks.example.com/done"
+        );
+        assert_eq!(ok().validate(NOW).unwrap().callback, None);
+        let e = invalid(cb("https://localhost/done"));
+        assert!(matches!(e, ValidationError::Callback(_)));
+        assert_eq!(e.field(), "callback_url");
+    }
+
+    #[test]
+    fn fingerprint_covers_delay_and_callback_without_changing_v1() {
+        let fp = |r: ScheduleRequest, now| r.validate(now).unwrap().fingerprint;
+        // Pinned: v1 fingerprints must not change, or stored idempotency keys would conflict.
+        assert_eq!(
+            fp(ok(), NOW),
+            "429b2ce0cefc16b752fe2b3c5e25be90d9fa34029d39f6c41d473be42d83c689"
+        );
+        let delayed = ScheduleRequest {
+            delay: Some("1h".into()),
+            ..ok()
+        };
+        assert_eq!(fp(delayed.clone(), NOW), fp(delayed.clone(), NOW + 60_000));
+        assert_ne!(fp(delayed, NOW), fp(ok(), NOW));
+        let called = ScheduleRequest {
+            callback_url: Some("https://hooks.example.com/done".into()),
+            ..ok()
+        };
+        assert_ne!(fp(called, NOW), fp(ok(), NOW));
     }
 }

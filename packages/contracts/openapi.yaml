@@ -186,7 +186,14 @@ components:
           maxProperties: 32
           additionalProperties: { type: string }
         body: { type: string, maxLength: 65536, description: Not allowed with GET. }
-        run_at_ms: { type: integer, minimum: 0, description: "Unix ms; absent or past means now. At most 7 days ahead." }
+        run_at_ms: { type: integer, minimum: 0, description: "Unix ms; absent or past means now. At most 7 days ahead. Not with delay." }
+        delay: { type: string, pattern: "^[0-9]{1,7}[smhd]$", description: "Relative alternative to run_at_ms, e.g. 90s, 15m, 24h, 7d. At most 7 days." }
+        callback_url:
+          type: string
+          maxLength: 2048
+          description: >
+            https:// to a public DNS name. When the task succeeds, fails or is canceled, a callback task POSTs
+            {"event": "task.finished", "task": <Task with attempts>} here, signed like any delivery.
         idempotency_key: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
         max_attempts: { type: integer, minimum: 1, maximum: 5, default: 5 }
     Attempt:
@@ -202,7 +209,7 @@ components:
         http_status: { type: [integer, "null"] }
     Task:
       type: object
-      required: [id, status, method, url, header_names, body_bytes, run_at_ms, next_attempt_ms, max_attempts, attempt_count, idempotency_key, created_ms, updated_ms, finished_ms]
+      required: [id, status, method, url, header_names, body_bytes, run_at_ms, next_attempt_ms, max_attempts, attempt_count, idempotency_key, callback_url, callback_task_id, callback_for, created_ms, updated_ms, finished_ms]
       description: Header values and the body are never returned; they may hold credentials.
       properties:
         id: { type: string }
@@ -216,6 +223,9 @@ components:
         max_attempts: { type: integer }
         attempt_count: { type: integer }
         idempotency_key: { type: [string, "null"] }
+        callback_url: { type: [string, "null"] }
+        callback_task_id: { type: [string, "null"], description: The callback task for the most recent time this task finished. }
+        callback_for: { type: [string, "null"], description: "Set on callback tasks: the task being reported on." }
         created_ms: { type: integer }
         updated_ms: { type: integer }
         finished_ms: { type: [integer, "null"] }

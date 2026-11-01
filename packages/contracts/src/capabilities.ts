@@ -32,10 +32,11 @@ export const capabilities: CapabilityDefinition[] = [
   {
     name: "schedule_http",
     description:
-      "Schedule an HTTP request to a public https:// URL, now or at run_at_ms (unix milliseconds, at most 7 days ahead). " +
+      "Schedule an HTTP request to a public https:// URL: now, after a delay (\"90s\", \"15m\", \"24h\", \"7d\"), " +
+      "or at run_at_ms (unix milliseconds), at most 7 days ahead. " +
       "RunLater signs the request, retries timeouts, 408, 425, 429 and 5xx with backoff (up to max_attempts), " +
-      "and records every attempt. Returns the task; check it later with get_task. " +
-      "Pass idempotency_key to make retries of this call safe.",
+      "and records every attempt. Returns the task; check it later with get_task, or pass callback_url to have " +
+      "the final result POSTed to you. Pass idempotency_key to make retries of this call safe.",
     input: {
       type: "object",
       additionalProperties: false,
@@ -50,7 +51,19 @@ export const capabilities: CapabilityDefinition[] = [
           description: "Headers to send. Host, Content-Length and RunLater-*/CF-*/X-Forwarded-* headers are not allowed.",
         },
         body: { type: "string", maxLength: 65536, description: "Request body as text, e.g. JSON. Not allowed with GET." },
-        run_at_ms: { type: "integer", minimum: 0, description: "When to send, unix ms. Omit to send now." },
+        run_at_ms: { type: "integer", minimum: 0, description: "When to send, unix ms. Omit to send now. Not with delay." },
+        delay: {
+          type: "string",
+          pattern: "^[0-9]{1,7}[smhd]$",
+          description: "Send after this long instead of at run_at_ms: a whole number and s, m, h or d, e.g. \"24h\". At most 7d.",
+        },
+        callback_url: {
+          type: "string",
+          maxLength: 2048,
+          description:
+            "https:// URL that receives a signed POST with the task's final state once it succeeds, fails or is canceled. " +
+            "The callback is itself a task (see callback_task_id) and costs one delivery attempt per try.",
+        },
         idempotency_key: {
           type: "string",
           pattern: "^[A-Za-z0-9_-]{1,128}$",

@@ -80,6 +80,28 @@ export default function Delivery() {
       <Code label="Python">{verifyPython}</Code>
       <p className="muted">Both samples are run in RunLater's test suite against a fixed signature.</p>
 
+      <h2 id="callbacks">Callbacks</h2>
+      <p>
+        Pass <code>callback_url</code> to <code>schedule_http</code> and RunLater tells you how the task ended instead of
+        you polling <code>get_task</code>. Each time the task succeeds, fails or is canceled, a <em>callback task</em>{" "}
+        <code>POST</code>s <code>{'{"event": "task.finished", "task": {…}}'}</code> to that URL, where{" "}
+        <code>task</code> is the task as <code>get_task</code> returns it, attempts included.
+      </p>
+      <ul>
+        <li>
+          It is signed and retried like any delivery: verify it the same way. Its <code>RunLater-Task-Id</code> is the
+          callback task's id; the task being reported on is <code>task.id</code> in the body.
+        </li>
+        <li>
+          The task shows the callback's id as <code>callback_task_id</code>; the callback task shows the original as{" "}
+          <code>callback_for</code>. A redriven task calls back again when it finishes again.
+        </li>
+        <li>
+          Each callback try costs one delivery attempt, so a task with a callback reserves two attempts when it is
+          scheduled.
+        </li>
+      </ul>
+
       <h2 id="retries">Retries</h2>
       <p>
         <strong>Retried:</strong> timeouts, network errors, and HTTP 408, 425, 429 and 5xx. <strong>Not retried:</strong>{" "}
