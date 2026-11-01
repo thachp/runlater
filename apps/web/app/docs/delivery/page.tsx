@@ -98,7 +98,11 @@ export default function Delivery() {
         </li>
         <li>
           Each callback try costs one delivery attempt, so a task with a callback reserves two attempts when it is
-          scheduled.
+          scheduled. A callback always gets at least one try, even once the trial has run out.
+        </li>
+        <li>
+          The report includes the task's full <code>url</code>, query string included: keep secrets out of it if the
+          callback goes to someone else. Callback tasks show up in <code>list_tasks</code> too.
         </li>
       </ul>
 

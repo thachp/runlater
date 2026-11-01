@@ -207,7 +207,7 @@ impl ScheduleRequest {
             }
         }
 
-        let fingerprint = self.fingerprint(&destination);
+        let fingerprint = self.fingerprint(&destination, callback.as_ref());
         Ok(TaskSpec {
             destination,
             method: self.method,
@@ -225,7 +225,7 @@ impl ScheduleRequest {
     /// and the *submitted* `run_at_ms` or `delay` so "now" resolving differently on a retry
     /// still matches. Fields added after v1 are only hashed when present, so fingerprints of
     /// requests that do not use them are unchanged.
-    fn fingerprint(&self, destination: &Destination) -> String {
+    fn fingerprint(&self, destination: &Destination, callback: Option<&Destination>) -> String {
         let headers: BTreeMap<_, _> = self
             .headers
             .iter()
@@ -245,7 +245,10 @@ impl ScheduleRequest {
         hash.update(canonical);
         // Each later field adds its own tagged entry, so adding another field never changes
         // the fingerprint of a request that does not use it.
-        let extras = [("delay", &self.delay), ("callback_url", &self.callback_url)];
+        let extras = [
+            ("delay", self.delay.as_deref()),
+            ("callback_url", callback.map(Destination::as_str)),
+        ];
         for (name, value) in extras {
             if let Some(value) = value {
                 hash.update(
@@ -501,6 +504,11 @@ mod tests {
             callback_url: Some("https://hooks.example.com/done".into()),
             ..ok()
         };
-        assert_ne!(fp(called, NOW), fp(ok(), NOW));
+        assert_ne!(fp(called.clone(), NOW), fp(ok(), NOW));
+        let shouty = ScheduleRequest {
+            callback_url: Some("https://HOOKS.example.com/done".into()),
+            ..ok()
+        };
+        assert_eq!(fp(shouty, NOW), fp(called, NOW));
     }
 }

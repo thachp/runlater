@@ -398,7 +398,12 @@ impl<'a, D: Db> Ledger<'a, D> {
         let applied = applied.first().map_or(0, |m| m.value as usize);
         if applied < MIGRATIONS.len() {
             for statement in MIGRATIONS[applied..].iter().copied().flatten() {
-                db.exec(statement, vec![])?;
+                // Storage errors do not roll back earlier statements, so a migration that
+                // stopped halfway is resumed: a column it already added is not an error.
+                match db.exec(statement, vec![]) {
+                    Err(e) if e.0.contains("duplicate column name") => {}
+                    other => other?,
+                }
             }
             db.exec(
                 "INSERT INTO meta (key, value) VALUES ('schema', ?) \
@@ -469,7 +474,8 @@ impl<'a, D: Db> Ledger<'a, D> {
             ));
         }
         let counts: Vec<Counts> = self.db.query(
-            "SELECT COUNT(*) AS total, \
+            "SELECT COUNT(*) + COALESCE(SUM(status IN ('scheduled', 'retrying', 'delivering') \
+             AND callback_url IS NOT NULL), 0) AS total, \
              COALESCE(SUM(CASE WHEN status IN ('scheduled', 'retrying', 'delivering') \
              THEN 1 + (callback_url IS NOT NULL) ELSE 0 END), 0) AS waiting \
              FROM tasks",
@@ -713,7 +719,12 @@ impl<'a, D: Db> Ledger<'a, D> {
         };
         let mut task = row.task()?;
 
-        if !project.can_attempt(now) {
+        // A callback reports on work already done, so it gets one try even when the trial
+        // has run out, but no retries.
+        let last_try = row.callback_for.is_some() && task.run_attempts == 0;
+        if !project.can_attempt(now) && last_try {
+            task.max_attempts = 1;
+        } else if !project.can_attempt(now) {
             if task.generation == generation && task.is_due(now) && task.abandon(now) {
                 self.save_row(&row, &task, now)?;
                 return Ok(Claimed::Skip("budget_exhausted"));
@@ -829,13 +840,20 @@ impl<'a, D: Db> Ledger<'a, D> {
     fn insert(&self, new: NewTask<'_>, now: i64) -> Result<(), DbError> {
         let NewTask { id, task, .. } = &new;
         let headers = serde_json::to_string(new.headers).map_err(|e| DbError(e.to_string()))?;
-        // OR IGNORE only matters for derived callback ids; scheduled ids are fresh.
+        // Callback ids are derived, so queueing the same callback again is a no-op.
+        let verb = if new.callback_for.is_some() {
+            "INSERT OR IGNORE"
+        } else {
+            "INSERT"
+        };
         self.db.exec(
-            "INSERT OR IGNORE INTO tasks (id, status, due_ms, max_attempts, run_attempts, \
+            &format!(
+                "{verb} INTO tasks (id, status, due_ms, max_attempts, run_attempts, \
              total_attempts, generation, fence, lease_until_ms, cancel_requested, terminal_ms, \
              published_ms, method, url, headers, body, run_at_ms, idempotency_key, fingerprint, \
              callback_url, callback_for, created_ms, updated_ms) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ),
             vec![
                 (*id).into(),
                 text(&task.status).into(),
@@ -876,8 +894,8 @@ impl<'a, D: Db> Ledger<'a, D> {
         }
     }
 
-    /// A callback is an ordinary task: signed, retried and visible through get_task. It is
-    /// sent even if it outlives the trial's budget reservation, which admission made for it.
+    /// A callback is an ordinary task: signed, retried and visible through get_task. Admission
+    /// reserved an attempt for it, and [`Self::claim`] gives it one try even past the trial.
     fn queue_callback(
         &self,
         task_id: &str,
@@ -1599,7 +1617,7 @@ mod tests {
         assert_eq!(err.code, "budget_exhausted");
         l.schedule(req("https://a.example.com/"), "t3", T0).unwrap();
 
-        // Abandoned for lack of budget still reports, and that callback is abandoned too.
+        // Abandoned for lack of budget still reports, and the callback gets one last try.
         db.0.execute("UPDATE project SET attempts_used = 3", [])
             .unwrap();
         let d = l
@@ -1619,13 +1637,14 @@ mod tests {
             .into_iter()
             .find(|d| d.task_id == cb_id)
             .unwrap();
+        let attempt = deliver(&l, &d, T0 + REPUBLISH_MS);
         assert_eq!(
-            l.claim(&d.task_id, d.generation, T0 + REPUBLISH_MS)
+            l.finish(&cb_id, attempt.fence, http(503), T0 + REPUBLISH_MS, 0.0)
                 .unwrap(),
-            Claimed::Skip("budget_exhausted")
+            Some(Status::Failed),
+            "no retries past the budget"
         );
-        assert_eq!(l.task(&cb_id).unwrap().status, Status::Failed);
-        assert_eq!(l.task(&cb_id).unwrap().callback_task_id, None);
+        assert_eq!(l.project().unwrap().attempts_remaining, 0);
 
         // Near the retained-task cap a callback needs a second row.
         db.0.execute(
@@ -1655,5 +1674,49 @@ mod tests {
         assert_eq!(callback_id("t1", 1), callback_id("t1", 1));
         assert_ne!(callback_id("t1", 1), callback_id("t1", 2));
         assert_ne!(callback_id("t1", 1), callback_id("t2", 1));
+    }
+
+    #[test]
+    fn owed_callbacks_count_against_the_task_cap() {
+        let db = Memory::new();
+        let l = setup(&db);
+        let mut later = req("https://a.example.com/");
+        later.run_at_ms = Some(T0 + 60_000);
+        let owes = ScheduleRequest {
+            run_at_ms: later.run_at_ms,
+            ..with_callback("https://a.example.com/")
+        };
+        l.schedule(owes, "w", T0).unwrap();
+        for i in 0..MAX_RETAINED_TASKS - 2 {
+            let id = format!("x{i}");
+            l.schedule(later.clone(), &id, T0).unwrap();
+            l.cancel(&id, T0).unwrap();
+        }
+        let err = l.schedule(later, "one_more", T0).unwrap_err();
+        assert_eq!(err.code, "task_limit", "w's callback still needs a row");
+    }
+
+    #[test]
+    fn resumes_a_migration_that_stopped_halfway() {
+        let db = Memory::new();
+        for statement in SCHEMA {
+            db.0.execute(statement, []).unwrap();
+        }
+        db.0.execute(MIGRATIONS[0][0], []).unwrap();
+        let l = Ledger::open(&db).unwrap();
+        l.create_project(P, "s", T0).unwrap();
+        l.schedule(with_callback("https://a.example.com/"), "t1", T0)
+            .unwrap();
+    }
+
+    #[test]
+    fn scheduling_never_silently_drops_a_task() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.schedule(req("https://a.example.com/"), "t1", T0).unwrap();
+        let err = l
+            .schedule(req("https://a.example.com/"), "t1", T0)
+            .unwrap_err();
+        assert_eq!(err.status, 500, "an id collision is an error, not a 404");
     }
 }
