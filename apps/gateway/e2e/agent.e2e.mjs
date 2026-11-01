@@ -422,7 +422,8 @@ describe("staging journey, run against the local stack", () => {
       receiverToken,
       timeoutMs: 60_000,
     });
-    // ok + flaky (2) + gone = 4 attempts; canceled tasks use none.
-    assert.equal(result.attemptsUsed, 4);
+    // ok + flaky (2) + gone + behind + delayed + its callback = 7 attempts; canceled tasks
+    // and the deleted cron use none.
+    assert.equal(result.attemptsUsed, 7);
   });
 });
