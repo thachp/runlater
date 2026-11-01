@@ -35,6 +35,7 @@
     "production": {
       "name": "runlater-gateway-production",
       "vars": { "PUBLIC_URL": "https://gateway.runlater.io" },
+      "routes": [{ "pattern": "gateway.runlater.io", "custom_domain": true }],
       "services": [{ "binding": "API", "service": "runlater-api-production" }],
       "d1_databases": [
         { "binding": "DB", "database_name": "runlater-gateway-production", "database_id": "73ca0a7b-8022-4d88-aba5-b57bed67ba5a", "migrations_dir": "migrations" }

@@ -9,6 +9,13 @@
   "preview_urls": false,
   "env": {
     "staging": { "name": "runlater-web-staging" },
-    "production": { "name": "runlater-web-production" }
+    "production": {
+      "name": "runlater-web-production",
+      // Taken over from the legacy runlater-web-landing Worker on deploy.
+      "routes": [
+        { "pattern": "runlater.io", "custom_domain": true },
+        { "pattern": "www.runlater.io", "custom_domain": true }
+      ]
+    }
   }
 }

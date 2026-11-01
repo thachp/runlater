@@ -74,8 +74,8 @@ and `env.production`, with that environment's resource name.
   `https://gateway.runlater.io`). Agent Auth checks JWT audiences against `PUBLIC_URL`, so it must be the
   hostname agents actually use.
 - Staging is routed to `gateway-staging.runlater.io` (a custom domain in `apps/gateway/wrangler.jsonc`).
-  Production's `gateway.runlater.io` is added once the staging journey passes. After each hostname
-  serves, set that environment's `GATEWAY_URL`.
+  Production is routed to `gateway.runlater.io`. After each hostname serves, set that environment's
+  `GATEWAY_URL`.
 
 ### Phase 6 — Staging journey
 
@@ -114,6 +114,11 @@ Notes from the 2026-10-31 inventory:
   `runlater-public-fetch-candidate`, `runlater-general-egress`, `runlater-local-prototype`, and the legacy
   queues (`runlater-alpha-ready`, `runlater-finite-proof-ready`, `runlater-local-ready`,
   `runlater-public-ready`). `harimu-*` Workers in the same account are unrelated; leave them.
+
+`runlater.io` and `www.runlater.io` are custom domains of `runlater-web-production` in
+`apps/web/wrangler.jsonc`. A deploy from CI (no TTY) repoints a custom domain held by another Worker
+without deleting it first, so the move has no gap. `receiver-alpha.runlater.io` and `mcp.runlater.io` are
+also legacy custom domains, retired with their Workers.
 
 Order: move `runlater.io` first (upsert the custom domain to the new Worker; don't delete the old domain
 or DNS record first, and verify it serves). Then retire `docs.runlater.io` and `api.runlater.io`, and
