@@ -52,7 +52,26 @@ console.log(status.status, status.attempts);`;
 export const scheduleCall = `schedule_http({
   url: "https://example.com/hooks/reminder",
   body: "{\\"remind\\":\\"invoice #42\\"}",
-  run_at_ms: 1767312000000
+  delay: "24h"
+})`;
+
+export const delayCall = `schedule_http({
+  url: "https://example.com/follow-up",
+  delay: "24h",
+  idempotency_key: "follow-up-42"
+})`;
+
+export const laneCall = `schedule_http({
+  url: "https://example.com/sync",
+  lane: "user-42",
+  callback_url: "https://example.com/done"
+})`;
+
+export const cronCall = `create_cron({
+  name: "nightly-report",
+  schedule: "0 6 * * *",
+  url: "https://example.com/report",
+  alert_url: "https://example.com/alert"
 })`;
 
 export const taskResult = `{

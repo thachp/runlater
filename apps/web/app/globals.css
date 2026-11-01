@@ -114,6 +114,11 @@ th { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: 
 .steps p, .features p { color: var(--muted); font-size: 15px; margin: 0; }
 .steps code { font-size: 0.85em; }
 .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.modes h3 { font-size: 18px; }
+.modes p { color: var(--muted); font-size: 15px; margin: 0 0 16px; }
+.modes .card { display: flex; flex-direction: column; }
+.modes .code { margin: auto 0 0; font-size: 12.5px; }
 .limits { display: grid; grid-template-columns: 1fr 1.2fr; gap: 48px; align-items: start; }
 .limits table { margin: 0; }
 .cta { text-align: center; padding: 72px 0 24px; }
@@ -146,6 +151,7 @@ th { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: 
   .hero, .limits { grid-template-columns: 1fr; gap: 32px; }
   .steps { grid-template-columns: repeat(2, 1fr); }
   .features { grid-template-columns: repeat(2, 1fr); }
+  .modes { grid-template-columns: minmax(0, 1fr); }
   .docs { grid-template-columns: minmax(0, 1fr); gap: 16px; padding-top: 24px; }
   .docs-nav { position: static; }
   .docs-nav ul { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
