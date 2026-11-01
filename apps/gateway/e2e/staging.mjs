@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Runs the agent journey against a deployed environment. Used by deploy-env.yml after the
-// staging deploy; a failure here stops production from deploying.
+// Runs the agent journey against a deployed environment. deploy-env.yml runs it after the
+// staging deploy (a failure stops production); monitor.yml runs it daily against production.
 //
 //   GATEWAY_URL=https://gateway-staging.runlater.io \
 //   RECEIVER_URL=https://runlater-receiver-staging.<account>.workers.dev \

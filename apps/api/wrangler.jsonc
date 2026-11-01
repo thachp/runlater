@@ -8,6 +8,8 @@
   // Internal only: the gateway reaches this Worker through a service binding.
   "workers_dev": false,
   "preview_urls": false,
+  // Workers Logs: request logs and exceptions, searchable in the dashboard. Inherited by each env.
+  "observability": { "enabled": true },
   "build": { "command": "worker-build --release" },
   // GATEWAY_PUBLIC_KEY (hex Ed25519 public key) is passed with `--var` at deploy (docs/DEPLOY.md).
   "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "TaskLedger" }] },
