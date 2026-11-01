@@ -1,6 +1,6 @@
 # RunLater — Product Spec (v1)
 
-Status: **draft for review** · Owner: Patrick Thach · Last updated: 2026-10-30
+Status: **v1, live** at `gateway.runlater.io` · Owner: Patrick Thach · Last updated: 2026-11-01
 
 ## One line
 
@@ -111,7 +111,7 @@ services, not a public product in v1.
 
 | Limit | Value |
 | --- | --- |
-| Request body | 64 KB (today's beta: 1 KB — to be raised) |
+| Request body | 64 KB |
 | Headers | 32 headers, 8 KB total |
 | Furthest `run_at` | 7 days out (bounded by trial expiry) |
 | Trial | 100 delivery attempts, 7 days |
