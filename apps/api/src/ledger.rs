@@ -10,11 +10,12 @@
 use crate::db::{Db, DbError, Param};
 use runlater_core::limits::{
     DEFAULT_MAX_ATTEMPTS, MAX_CRONS, MAX_RETAINED_TASKS, RETENTION_MS, TRIAL_ATTEMPTS,
-    TRIAL_DURATION_MS,
+    TRIAL_DURATION_MS, WATCH_EXCERPT_BYTES,
 };
 use runlater_core::{
-    valid_lane, Attempt, CancelError, ClaimError, CronRequest, CronRequestError, Method, Outcome,
-    RedriveError, Schedule, ScheduleRequest, Status, Task, ValidationError,
+    judge, next_poll, valid_lane, Attempt, CancelError, ClaimError, CronRequest, CronRequestError,
+    Method, Outcome, Poll, PollBody, RedriveError, Schedule, ScheduleRequest, Status, Task, Until,
+    ValidationError, Watch, WatchRequest, WatchRequestError,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -114,6 +115,12 @@ const MIGRATIONS: &[&[&str]] = &[
         "ALTER TABLE tasks ADD COLUMN cron TEXT",
         "ALTER TABLE tasks ADD COLUMN alert_for TEXT",
     ],
+    // 4: watches.
+    &[
+        "ALTER TABLE tasks ADD COLUMN watch TEXT",
+        "ALTER TABLE tasks ADD COLUMN watch_errors INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tasks ADD COLUMN watch_state TEXT",
+    ],
 ];
 
 /// SQL condition, over `tasks t`: the task may run now as far as its lane is concerned.
@@ -148,6 +155,13 @@ impl ApiError {
     }
 
     pub fn invalid_cron(e: CronRequestError) -> Self {
+        Self {
+            field: Some(e.field()),
+            ..Self::new(400, "invalid_request", e.to_string())
+        }
+    }
+
+    pub fn invalid_watch(e: WatchRequestError) -> Self {
         Self {
             field: Some(e.field()),
             ..Self::new(400, "invalid_request", e.to_string())
@@ -243,11 +257,39 @@ pub struct TaskView {
     pub cron: Option<String>,
     /// Set on a cron alert: the cron it is about.
     pub alert_for: Option<String>,
+    /// Set on a watch: what it polls for and how it is going.
+    pub watch: Option<WatchView>,
     pub created_ms: i64,
     pub updated_ms: i64,
     pub finished_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempts: Option<Vec<AttemptView>>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct WatchView {
+    pub every_ms: i64,
+    pub deadline_ms: i64,
+    pub until: Until,
+    /// Polls in a row that failed (5xx, timeout, network); three end the watch.
+    pub consecutive_errors: u32,
+    /// Why the watch ended: matched, timed_out, poll_failing, poll_rejected,
+    /// response_too_large or budget_exhausted. None while it is still polling, or if canceled.
+    pub reason: Option<String>,
+    /// The value that satisfied `until`.
+    pub matched: Option<serde_json::Value>,
+    /// The last poll's response status, and up to 16 KiB of its body.
+    pub last_status: Option<u16>,
+    pub last_body: Option<String>,
+}
+
+/// A watch's progress as stored in `tasks.watch_state`.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct WatchState {
+    reason: Option<String>,
+    matched: Option<serde_json::Value>,
+    last_status: Option<u16>,
+    last_body: Option<String>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -275,6 +317,9 @@ pub struct Delivery {
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
     pub signing_secret: String,
+    /// A watch's poll: the consumer reads the response body and reports it with the outcome.
+    #[serde(default)]
+    pub read_body: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -341,6 +386,9 @@ struct TaskRow {
     lane: Option<String>,
     cron: Option<String>,
     alert_for: Option<String>,
+    watch: Option<String>,
+    watch_errors: u32,
+    watch_state: Option<String>,
     created_ms: i64,
     updated_ms: i64,
 }
@@ -386,6 +434,39 @@ impl TaskRow {
         serde_json::from_str(&self.headers).map_err(|e| DbError(e.to_string()))
     }
 
+    fn watch(&self) -> Result<Option<Watch>, DbError> {
+        self.watch
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|e| DbError(e.to_string()))
+    }
+
+    fn watch_state(&self) -> Result<WatchState, DbError> {
+        Ok(match &self.watch_state {
+            Some(s) => serde_json::from_str(s).map_err(|e| DbError(e.to_string()))?,
+            None => WatchState::default(),
+        })
+    }
+
+    /// `full` includes the last response body; lists leave it out to stay small.
+    fn watch_view(&self, full: bool) -> Result<Option<WatchView>, DbError> {
+        let Some(watch) = self.watch()? else {
+            return Ok(None);
+        };
+        let state = self.watch_state()?;
+        Ok(Some(WatchView {
+            every_ms: watch.every_ms,
+            deadline_ms: watch.deadline_ms,
+            until: watch.until,
+            consecutive_errors: self.watch_errors,
+            reason: state.reason,
+            matched: state.matched,
+            last_status: state.last_status,
+            last_body: state.last_body.filter(|_| full),
+        }))
+    }
+
     fn view(&self, attempts: Option<Vec<AttemptView>>) -> Result<TaskView, DbError> {
         let task = self.task()?;
         Ok(TaskView {
@@ -407,6 +488,7 @@ impl TaskRow {
             lane: self.lane.clone(),
             cron: self.cron.clone(),
             alert_for: self.alert_for.clone(),
+            watch: self.watch_view(attempts.is_some())?,
             created_ms: self.created_ms,
             updated_ms: self.updated_ms,
             finished_ms: task.terminal_ms,
@@ -418,7 +500,7 @@ impl TaskRow {
 const TASK_COLUMNS: &str = "seq, id, status, due_ms, max_attempts, run_attempts, \
     total_attempts, generation, fence, lease_until_ms, cancel_requested, terminal_ms, \
     method, url, headers, body, run_at_ms, idempotency_key, callback_url, callback_task_id, \
-    callback_for, lane, cron, alert_for, created_ms, updated_ms";
+    callback_for, lane, cron, alert_for, watch, watch_errors, watch_state, created_ms, updated_ms";
 
 /// A row to insert into `tasks`.
 struct NewTask<'s> {
@@ -436,6 +518,8 @@ struct NewTask<'s> {
     lane: Option<&'s str>,
     cron: Option<&'s str>,
     alert_for: Option<&'s str>,
+    /// A watch's settings, as JSON.
+    watch: Option<String>,
 }
 
 /// Callback task ids are derived, so queueing the same callback twice is harmless. A task's
@@ -689,22 +773,8 @@ impl<'a, D: Db> Ledger<'a, D> {
             "run_at_ms"
         };
         let spec = request.validate(now).map_err(ApiError::invalid)?;
-
-        if let Some(key) = &spec.idempotency_key {
-            let existing: Vec<KeyRow> = self.db.query(
-                "SELECT id, fingerprint FROM tasks WHERE idempotency_key = ?",
-                vec![key.as_str().into()],
-            )?;
-            if let Some(existing) = existing.first() {
-                if existing.fingerprint != spec.fingerprint {
-                    return Err(ApiError::new(
-                        409,
-                        "idempotency_conflict",
-                        "idempotency_key was already used for a different request",
-                    ));
-                }
-                return Ok((self.task(&existing.id)?, false));
-            }
+        if let Some(existing) = self.replay(spec.idempotency_key.as_deref(), &spec.fingerprint)? {
+            return Ok((existing, false));
         }
 
         let needs = 1 + i64::from(spec.callback.is_some());
@@ -732,10 +802,82 @@ impl<'a, D: Db> Ledger<'a, D> {
                 lane: spec.lane.as_deref(),
                 cron: None,
                 alert_for: None,
+                watch: None,
             },
             now,
         )?;
         Ok((self.task(task_id)?, true))
+    }
+
+    /// Starts a watch: a task whose attempts poll `url` until `until` matches. Returns the
+    /// task and whether it was created (false for an idempotent replay).
+    pub fn watch(
+        &self,
+        request: WatchRequest,
+        task_id: &str,
+        now: i64,
+    ) -> Result<(TaskView, bool), ApiError> {
+        let project = self.project_row()?.ok_or_else(no_project)?;
+        let spec = request.validate(now).map_err(ApiError::invalid_watch)?;
+        let request = spec.request;
+        if let Some(existing) =
+            self.replay(request.idempotency_key.as_deref(), &request.fingerprint)?
+        {
+            return Ok((existing, false));
+        }
+        if spec.watch.deadline_ms >= project.expires_ms {
+            return Err(ApiError {
+                field: Some("deadline"),
+                ..ApiError::bad_request("deadline is after this project's trial ends")
+            });
+        }
+        let needs = 1 + i64::from(request.callback.is_some());
+        self.admit(&project, needs, needs, now)?;
+        let watch = serde_json::to_string(&spec.watch).map_err(|e| DbError(e.to_string()))?;
+        self.insert(
+            NewTask {
+                id: task_id,
+                task: Task::new(request.run_at_ms, request.max_attempts),
+                method: request.method,
+                url: request.destination.as_str(),
+                headers: &request.headers,
+                body: request.body,
+                run_at_ms: request.run_at_ms,
+                idempotency_key: request.idempotency_key,
+                fingerprint: &request.fingerprint,
+                callback_url: request.callback.as_ref().map(|c| c.as_str()),
+                callback_for: None,
+                lane: None,
+                cron: None,
+                alert_for: None,
+                watch: Some(watch),
+            },
+            now,
+        )?;
+        Ok((self.task(task_id)?, true))
+    }
+
+    /// The task an idempotency key already made, if any; a different request under the same
+    /// key is a conflict.
+    fn replay(&self, key: Option<&str>, fingerprint: &str) -> Result<Option<TaskView>, ApiError> {
+        let Some(key) = key else {
+            return Ok(None);
+        };
+        let existing: Vec<KeyRow> = self.db.query(
+            "SELECT id, fingerprint FROM tasks WHERE idempotency_key = ?",
+            vec![key.into()],
+        )?;
+        let Some(existing) = existing.first() else {
+            return Ok(None);
+        };
+        if existing.fingerprint != fingerprint {
+            return Err(ApiError::new(
+                409,
+                "idempotency_conflict",
+                "idempotency_key was already used for a different request",
+            ));
+        }
+        Ok(Some(self.task(&existing.id)?))
     }
 
     pub fn cancel(&self, task_id: &str, now: i64) -> Result<TaskView, ApiError> {
@@ -759,6 +901,13 @@ impl<'a, D: Db> Ledger<'a, D> {
     pub fn redrive(&self, task_id: &str, now: i64) -> Result<TaskView, ApiError> {
         let project = self.project_row()?.ok_or_else(no_project)?;
         let row = self.task_row(task_id)?.ok_or_else(no_task)?;
+        if row.watch.is_some() {
+            return Err(ApiError::new(
+                409,
+                "watch_not_redrivable",
+                "a watch cannot be redriven; start a new one",
+            ));
+        }
         let mut task = row.task()?;
         if let Err(RedriveError::NotFailed(s)) = task.redrive(now) {
             return Err(ApiError::new(
@@ -911,6 +1060,13 @@ impl<'a, D: Db> Ledger<'a, D> {
             task.max_attempts = 1;
         } else if !project.can_attempt(now) {
             if task.generation == generation && task.is_due(now) && task.abandon(now) {
+                if row.watch.is_some() {
+                    let state = WatchState {
+                        reason: Some("budget_exhausted".into()),
+                        ..row.watch_state()?
+                    };
+                    self.store_watch(task_id, row.watch_errors, &state)?;
+                }
                 self.save_row(&row, &task, now)?;
                 return Ok(Claimed::Skip("budget_exhausted"));
             }
@@ -954,6 +1110,7 @@ impl<'a, D: Db> Ledger<'a, D> {
             headers: row.headers()?,
             body: row.body.clone(),
             signing_secret: project.signing_secret,
+            read_body: row.watch.is_some(),
         })))
     }
 
@@ -966,9 +1123,25 @@ impl<'a, D: Db> Ledger<'a, D> {
         now: i64,
         jitter: f64,
     ) -> Result<Option<Status>, DbError> {
+        self.finish_response(task_id, fence, outcome, None, now, jitter)
+    }
+
+    /// [`Self::finish`], with the response body when the consumer read it (a watch's poll).
+    pub fn finish_response(
+        &self,
+        task_id: &str,
+        fence: u64,
+        outcome: Outcome,
+        body: Option<PollBody<'_>>,
+        now: i64,
+        jitter: f64,
+    ) -> Result<Option<Status>, DbError> {
         let Some(row) = self.task_row(task_id)? else {
             return Ok(None);
         };
+        if row.watch.is_some() {
+            return self.finish_poll(&row, fence, outcome, body, now);
+        }
         let mut task = row.task()?;
         let Ok(status) = task.finish(fence, outcome, now, jitter) else {
             return Ok(None);
@@ -990,6 +1163,10 @@ impl<'a, D: Db> Ledger<'a, D> {
         for row in &rows {
             let mut task = row.task()?;
             let fence = task.fence;
+            if row.watch.is_some() {
+                self.finish_poll(row, fence, Outcome::LeaseExpired, None, now)?;
+                continue;
+            }
             if task.expire_lease(now, jitter()).is_some() {
                 self.record_outcome(&row.id, fence, &Outcome::LeaseExpired, now)?;
                 self.save_row(row, &task, now)?;
@@ -1187,6 +1364,7 @@ impl<'a, D: Db> Ledger<'a, D> {
                     lane: None,
                     cron: Some(&cron.name),
                     alert_for: None,
+                    watch: None,
                 },
                 now,
             )?;
@@ -1316,8 +1494,70 @@ impl<'a, D: Db> Ledger<'a, D> {
                 lane: None,
                 cron: None,
                 alert_for: Some(name),
+                watch: None,
             },
             now,
+        )
+    }
+
+    // -- watches --------------------------------------------------------------------------
+
+    /// Judges a watch's poll: done when it matches, over when polling keeps failing or the
+    /// deadline passes, otherwise scheduled again. `None` if the poll no longer holds the task.
+    fn finish_poll(
+        &self,
+        row: &TaskRow,
+        fence: u64,
+        outcome: Outcome,
+        body: Option<PollBody<'_>>,
+        now: i64,
+    ) -> Result<Option<Status>, DbError> {
+        let watch = row
+            .watch()?
+            .ok_or_else(|| DbError(format!("task {} is not a watch", row.id)))?;
+        let mut task = row.task()?;
+        let mut state = row.watch_state()?;
+        let (poll, errors) = judge(&watch.until, &outcome, body, row.watch_errors);
+        let (next, matched) = match poll {
+            Poll::Matched(value) => {
+                state.reason = Some("matched".into());
+                state.matched = Some(value);
+                (None, true)
+            }
+            Poll::Fail(reason) => {
+                state.reason = Some(reason.into());
+                (None, false)
+            }
+            Poll::NotYet => match next_poll(now, &watch) {
+                Some(at) => (Some(at), false),
+                None => {
+                    state.reason = Some("timed_out".into());
+                    (None, false)
+                }
+            },
+        };
+        let Ok(status) = task.finish_poll(fence, next, matched, now) else {
+            return Ok(None);
+        };
+        if status == Status::Canceled {
+            state.reason = None;
+        }
+        state.last_status = match outcome {
+            Outcome::Http { status, .. } => Some(status),
+            _ => None,
+        };
+        state.last_body = body.map(|b| excerpt(b.text, WATCH_EXCERPT_BYTES));
+        self.record_outcome(&row.id, fence, &outcome, now)?;
+        self.store_watch(&row.id, errors, &state)?;
+        self.save_row(row, &task, now)?;
+        Ok(Some(status))
+    }
+
+    fn store_watch(&self, task_id: &str, errors: u32, state: &WatchState) -> Result<(), DbError> {
+        let state = serde_json::to_string(state).map_err(|e| DbError(e.to_string()))?;
+        self.db.exec(
+            "UPDATE tasks SET watch_errors = ?, watch_state = ? WHERE id = ?",
+            vec![errors.into(), state.into(), task_id.into()],
         )
     }
 
@@ -1346,8 +1586,8 @@ impl<'a, D: Db> Ledger<'a, D> {
                 "{verb} INTO tasks (id, status, due_ms, max_attempts, run_attempts, \
              total_attempts, generation, fence, lease_until_ms, cancel_requested, terminal_ms, \
              published_ms, method, url, headers, body, run_at_ms, idempotency_key, fingerprint, \
-             callback_url, callback_for, lane, cron, alert_for, created_ms, updated_ms) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+             callback_url, callback_for, lane, cron, alert_for, watch, created_ms, updated_ms) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             ),
             vec![
                 (*id).into(),
@@ -1373,6 +1613,7 @@ impl<'a, D: Db> Ledger<'a, D> {
                 new.lane.into(),
                 new.cron.into(),
                 new.alert_for.into(),
+                new.watch.into(),
                 now.into(),
                 now.into(),
             ],
@@ -1389,6 +1630,19 @@ impl<'a, D: Db> Ledger<'a, D> {
         }
         if let Some(name) = &row.cron {
             self.run_finished(name, row, task.status, now)?;
+        }
+        if row.watch.is_some() {
+            // A watch is never sent again, and its headers often carry an API token.
+            let names: Vec<(String, String)> = row
+                .headers()?
+                .into_iter()
+                .map(|(name, _)| (name, String::new()))
+                .collect();
+            let names = serde_json::to_string(&names).map_err(|e| DbError(e.to_string()))?;
+            self.db.exec(
+                "UPDATE tasks SET headers = ?, body = NULL WHERE id = ?",
+                vec![names.into(), row.id.as_str().into()],
+            )?;
         }
         match &row.callback_url {
             Some(url) => self.queue_callback(&row.id, url, task.generation, now),
@@ -1430,6 +1684,7 @@ impl<'a, D: Db> Ledger<'a, D> {
                 lane: None,
                 cron: None,
                 alert_for: None,
+                watch: None,
             },
             now,
         )
@@ -1488,6 +1743,15 @@ impl<'a, D: Db> Ledger<'a, D> {
             ],
         )
     }
+}
+
+/// The first `max` bytes of `s`, cut at a character boundary.
+fn excerpt(s: &str, max: usize) -> String {
+    let mut end = s.len().min(max);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
 }
 
 #[derive(Deserialize)]
@@ -2651,6 +2915,301 @@ mod tests {
             (None, Some("trial_expired"))
         );
         assert_eq!(l.next_wake().unwrap(), alerts_wake(&db));
+    }
+
+    // -- watches ----------------------------------------------------------------------
+
+    const MIN: i64 = 60_000;
+
+    fn watching(extra: serde_json::Value) -> WatchRequest {
+        let mut v = serde_json::json!({
+            "url": "https://api.example.com/jobs/1",
+            "headers": { "Authorization": "Bearer secret-token" },
+            "every": "5m",
+            "until": { "path": "/status", "in": ["succeeded", "failed"] },
+            "deadline": "1h",
+        });
+        for (k, x) in extra.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    /// Runs the watch's due poll at `now` with this response.
+    fn poll(
+        l: &Ledger<'_, Memory>,
+        id: &str,
+        outcome: Outcome,
+        body: Option<&str>,
+        now: i64,
+    ) -> Status {
+        let d = l
+            .publish_due(P, now)
+            .unwrap()
+            .into_iter()
+            .find(|d| d.task_id == id)
+            .expect("poll is due");
+        let a = deliver(l, &d, now);
+        assert!(a.read_body, "polls read the response");
+        let body = body.map(|text| PollBody {
+            text,
+            truncated: false,
+        });
+        l.finish_response(id, a.fence, outcome, body, now, 0.0)
+            .unwrap()
+            .expect("current poll")
+    }
+
+    fn watch_view(l: &Ledger<'_, Memory>, id: &str) -> WatchView {
+        l.task(id).unwrap().watch.expect("a watch")
+    }
+
+    #[test]
+    fn a_watch_polls_until_it_matches_then_calls_back() {
+        let db = Memory::new();
+        let l = setup(&db);
+        let req = watching(serde_json::json!({ "callback_url": "https://cb.example.com/done" }));
+        let (t, created) = l.watch(req, "w1", T0).unwrap();
+        assert!(created);
+        assert_eq!(
+            (t.status, t.method, t.next_attempt_ms),
+            (Status::Scheduled, Method::Get, Some(T0))
+        );
+        let w = t.watch.unwrap();
+        assert_eq!(
+            (w.every_ms, w.deadline_ms, w.reason),
+            (5 * MIN, T0 + 60 * MIN, None)
+        );
+
+        let running = Some(r#"{"status":"running"}"#);
+        assert_eq!(poll(&l, "w1", http(200), running, T0), Status::Scheduled);
+        assert_eq!(l.task("w1").unwrap().next_attempt_ms, Some(T0 + 5 * MIN));
+        assert_eq!(watch_view(&l, "w1").last_body.as_deref(), running);
+        assert!(
+            l.publish_due(P, T0 + 5 * MIN - 1).unwrap().is_empty(),
+            "waits for the next poll"
+        );
+        assert_eq!(
+            poll(&l, "w1", http(200), running, T0 + 5 * MIN),
+            Status::Scheduled
+        );
+
+        let done = r#"{"status":"succeeded","output":"s3://bucket/out"}"#;
+        assert_eq!(
+            poll(&l, "w1", http(200), Some(done), T0 + 10 * MIN),
+            Status::Succeeded
+        );
+        let t = l.task("w1").unwrap();
+        assert_eq!(t.attempt_count, 3);
+        let w = t.watch.unwrap();
+        assert_eq!(w.reason.as_deref(), Some("matched"));
+        assert_eq!(w.matched, Some(serde_json::json!("succeeded")));
+        assert_eq!(
+            (w.last_status, w.last_body.as_deref()),
+            (Some(200), Some(done))
+        );
+        assert_eq!(l.project().unwrap().attempts_used, 3);
+
+        // The token is gone; the name stays.
+        assert_eq!(t.header_names, ["Authorization"]);
+        let stored: Vec<IdRow> = db
+            .query("SELECT headers AS id FROM tasks WHERE id = 'w1'", vec![])
+            .unwrap();
+        assert!(!stored[0].id.contains("secret-token"), "{}", stored[0].id);
+
+        let cb = l.task(t.callback_task_id.as_deref().unwrap()).unwrap();
+        let d = l.publish_due(P, T0 + 10 * MIN).unwrap();
+        assert_eq!(d[0].task_id, cb.id);
+        let report: serde_json::Value =
+            serde_json::from_str(deliver(&l, &d[0], T0 + 10 * MIN).body.as_deref().unwrap())
+                .unwrap();
+        assert_eq!(report["task"]["status"], "succeeded");
+        assert_eq!(report["task"]["watch"]["matched"], "succeeded");
+        assert_eq!(report["task"]["watch"]["last_body"], done);
+    }
+
+    #[test]
+    fn lists_leave_out_the_last_response_body() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.watch(watching(serde_json::json!({})), "w1", T0).unwrap();
+        poll(&l, "w1", http(200), Some(r#"{"status":"running"}"#), T0);
+        let listed = l
+            .list(None, None, None, None)
+            .unwrap()
+            .tasks
+            .remove(0)
+            .watch
+            .unwrap();
+        assert_eq!((listed.last_status, listed.last_body), (Some(200), None));
+        assert!(watch_view(&l, "w1").last_body.is_some(), "get_task has it");
+    }
+
+    #[test]
+    fn three_failed_polls_in_a_row_end_a_watch() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.watch(watching(serde_json::json!({})), "w1", T0).unwrap();
+        assert_eq!(poll(&l, "w1", http(503), None, T0), Status::Scheduled);
+        assert_eq!(
+            poll(&l, "w1", Outcome::Timeout, None, T0 + 5 * MIN),
+            Status::Scheduled
+        );
+        assert_eq!(watch_view(&l, "w1").consecutive_errors, 2);
+        // A good answer resets the count.
+        let running = Some(r#"{"status":"running"}"#);
+        assert_eq!(
+            poll(&l, "w1", http(200), running, T0 + 10 * MIN),
+            Status::Scheduled
+        );
+        assert_eq!(watch_view(&l, "w1").consecutive_errors, 0);
+        for n in 0..2 {
+            let at = T0 + (15 + 5 * n) * MIN;
+            assert_eq!(poll(&l, "w1", http(502), None, at), Status::Scheduled);
+        }
+        assert_eq!(
+            poll(&l, "w1", Outcome::Network, None, T0 + 25 * MIN),
+            Status::Failed
+        );
+        let w = watch_view(&l, "w1");
+        assert_eq!(
+            (w.reason.as_deref(), w.consecutive_errors),
+            (Some("poll_failing"), 3)
+        );
+    }
+
+    #[test]
+    fn a_rejected_poll_ends_a_watch_at_once() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.watch(watching(serde_json::json!({})), "w1", T0).unwrap();
+        assert_eq!(
+            poll(&l, "w1", http(401), Some("bad token"), T0),
+            Status::Failed
+        );
+        let w = watch_view(&l, "w1");
+        assert_eq!(w.reason.as_deref(), Some("poll_rejected"));
+        assert_eq!(
+            (w.last_status, w.last_body.as_deref()),
+            (Some(401), Some("bad token"))
+        );
+    }
+
+    #[test]
+    fn a_watch_times_out_after_polling_at_its_deadline() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.watch(
+            watching(serde_json::json!({ "every": "5m", "deadline": "12m" })),
+            "w1",
+            T0,
+        )
+        .unwrap();
+        let running = Some(r#"{"status":"running"}"#);
+        for at in [T0, T0 + 5 * MIN, T0 + 10 * MIN] {
+            assert_eq!(poll(&l, "w1", http(200), running, at), Status::Scheduled);
+        }
+        assert_eq!(l.task("w1").unwrap().next_attempt_ms, Some(T0 + 12 * MIN));
+        assert_eq!(
+            poll(&l, "w1", http(200), running, T0 + 12 * MIN),
+            Status::Failed
+        );
+        assert_eq!(watch_view(&l, "w1").reason.as_deref(), Some("timed_out"));
+        assert_eq!(l.task("w1").unwrap().attempt_count, 4);
+    }
+
+    #[test]
+    fn a_lost_poll_counts_as_a_failed_one() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.watch(watching(serde_json::json!({})), "w1", T0).unwrap();
+        let d = &l.publish_due(P, T0).unwrap()[0];
+        deliver(&l, d, T0);
+        l.recover(T0 + LEASE_MS, || 0.0).unwrap();
+        let t = l.task("w1").unwrap();
+        assert_eq!(
+            (t.status, t.next_attempt_ms),
+            (Status::Scheduled, Some(T0 + LEASE_MS + 5 * MIN))
+        );
+        assert_eq!(watch_view(&l, "w1").consecutive_errors, 1);
+        assert_eq!(
+            t.attempts.unwrap()[0].outcome.as_deref(),
+            Some("lease_expired")
+        );
+    }
+
+    #[test]
+    fn a_watch_can_be_canceled_but_not_redriven() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.watch(watching(serde_json::json!({})), "w1", T0).unwrap();
+        poll(&l, "w1", http(200), Some("{}"), T0);
+        let t = l.cancel("w1", T0 + 1).unwrap();
+        assert_eq!(t.status, Status::Canceled);
+        assert_eq!(t.watch.unwrap().reason, None);
+
+        l.watch(watching(serde_json::json!({})), "w2", T0).unwrap();
+        poll(&l, "w2", http(404), None, T0);
+        assert_eq!(
+            l.redrive("w2", T0 + 1).unwrap_err().code,
+            "watch_not_redrivable"
+        );
+    }
+
+    #[test]
+    fn a_watch_ends_when_the_trial_runs_out_of_attempts() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.watch(watching(serde_json::json!({})), "w1", T0).unwrap();
+        poll(&l, "w1", http(200), Some("{}"), T0);
+        db.exec("UPDATE project SET attempts_used = attempt_budget", vec![])
+            .unwrap();
+        let d = &l.publish_due(P, T0 + 5 * MIN).unwrap()[0];
+        assert_eq!(
+            l.claim(&d.task_id, d.generation, T0 + 5 * MIN).unwrap(),
+            Claimed::Skip("budget_exhausted")
+        );
+        let t = l.task("w1").unwrap();
+        assert_eq!(t.status, Status::Failed);
+        assert_eq!(t.watch.unwrap().reason.as_deref(), Some("budget_exhausted"));
+    }
+
+    #[test]
+    fn watch_requests_are_checked() {
+        let db = Memory::new();
+        let l = setup(&db);
+        let e = l
+            .watch(watching(serde_json::json!({ "every": "1m" })), "w1", T0)
+            .unwrap_err();
+        assert_eq!((e.status, e.field), (400, Some("every")));
+        let e = l
+            .watch(
+                watching(serde_json::json!({ "until": { "path": "/s" } })),
+                "w1",
+                T0,
+            )
+            .unwrap_err();
+        assert_eq!(e.field, Some("until"));
+        let e = l
+            .watch(
+                watching(serde_json::json!({ "every": "1d", "deadline": "7d" })),
+                "w1",
+                T0 + 1,
+            )
+            .unwrap_err();
+        assert_eq!(e.field, Some("deadline"), "past the trial's end");
+
+        let keyed = || watching(serde_json::json!({ "idempotency_key": "job-1" }));
+        let (first, created) = l.watch(keyed(), "w1", T0).unwrap();
+        assert!(created);
+        let (again, created) = l.watch(keyed(), "w2", T0 + 1_000).unwrap();
+        assert!(!created);
+        assert_eq!(again.id, first.id);
+        let changed = watching(serde_json::json!({ "idempotency_key": "job-1", "every": "10m" }));
+        assert_eq!(
+            l.watch(changed, "w3", T0).unwrap_err().code,
+            "idempotency_conflict"
+        );
     }
 
     /// The only thing left to wake for: the alert just queued.

@@ -5,8 +5,9 @@ use crate::assertion::{self, Scope};
 use crate::db::{Db, DbError, Param};
 use crate::ledger::{ApiError, Claimed, Delivery, Dispatch, Ledger};
 use futures_util::future::{join_all, select, Either};
-use runlater_core::limits::ATTEMPT_TIMEOUT_MS;
-use runlater_core::{CronRequest, Outcome, ScheduleRequest, Status};
+use futures_util::StreamExt;
+use runlater_core::limits::{ATTEMPT_TIMEOUT_MS, MAX_WATCH_RESPONSE_BYTES};
+use runlater_core::{CronRequest, Outcome, PollBody, ScheduleRequest, Status, WatchRequest};
 use runlater_egress::{sign, Destination};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -113,6 +114,7 @@ fn required_scope(method: &Method, path: &[&str]) -> Option<Scope> {
         (Method::Get, ["v1", "tasks", _]) => Scope::Read,
         (Method::Post, ["v1", "tasks", _, "cancel"]) => Scope::Cancel,
         (Method::Post, ["v1", "tasks", _, "redrive"]) => Scope::Schedule,
+        (Method::Post, ["v1", "watches"]) => Scope::Schedule,
         (Method::Post, ["v1", "crons"]) => Scope::Schedule,
         (Method::Get, ["v1", "crons"]) => Scope::Read,
         (Method::Get, ["v1", "crons", _]) => Scope::Read,
@@ -204,6 +206,11 @@ struct FinishBody {
     task_id: String,
     fence: u64,
     outcome: Outcome,
+    /// A watch's poll: up to 64 KiB of the response body, and whether it was longer.
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    truncated: bool,
 }
 
 #[derive(Deserialize)]
@@ -272,6 +279,13 @@ impl TaskLedger {
                 }
                 Err(e) => Err(e),
             },
+            (Method::Post, ["v1", "watches"]) => match body::<WatchRequest>(req).await {
+                Ok(r) => {
+                    let id = format!("task_{}", hex::encode(random_bytes(10)?));
+                    ledger.watch(r, &id, t).map(|(task, c)| created(&task, c))
+                }
+                Err(e) => Err(e),
+            },
             (Method::Get, ["v1", "tasks"]) => match serde_urlencoded_query::<ListQuery>(&url) {
                 Ok(q) => ledger
                     .list(q.status, q.lane.as_deref(), q.cursor.as_deref(), q.limit)
@@ -312,7 +326,17 @@ impl TaskLedger {
             },
             (Method::Post, ["internal", "finish"]) => match body::<FinishBody>(req).await {
                 Ok(f) => ledger
-                    .finish(&f.task_id, f.fence, f.outcome, t, jitter())
+                    .finish_response(
+                        &f.task_id,
+                        f.fence,
+                        f.outcome,
+                        f.body.as_deref().map(|text| PollBody {
+                            text,
+                            truncated: f.truncated,
+                        }),
+                        t,
+                        jitter(),
+                    )
                     .map(|s| json(&serde_json::json!({ "status": s }), 200))
                     .map_err(ApiError::from),
                 Err(e) => Err(e),
@@ -424,7 +448,8 @@ async fn process(env: &Env, d: &Dispatch) -> Result<()> {
     let Some(delivery) = claim.deliver else {
         return Ok(());
     };
-    let outcome = deliver(&delivery).await;
+    let (outcome, read) = deliver(&delivery).await;
+    let (body, truncated) = read.map_or((None, false), |(b, t)| (Some(b), t));
     let _: serde_json::Value = call(
         &stub,
         &d.project_id,
@@ -433,6 +458,8 @@ async fn process(env: &Env, d: &Dispatch) -> Result<()> {
             task_id: delivery.task_id,
             fence: delivery.fence,
             outcome,
+            body,
+            truncated,
         },
     )
     .await?;
@@ -455,11 +482,15 @@ async fn queue(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> Result
     Ok(())
 }
 
-async fn deliver(d: &Delivery) -> Outcome {
+/// A poll's response body as read, and whether it was cut short.
+type Read = Option<(String, bool)>;
+
+/// Makes one attempt. For a watch's poll, also returns up to 64 KiB of the response body.
+async fn deliver(d: &Delivery) -> (Outcome, Read) {
     // Re-check policy on every attempt; the provider flag `global_fetch_strictly_public`
     // separately refuses private addresses after DNS resolution.
     let Ok(destination) = Destination::parse(&d.url) else {
-        return Outcome::Rejected;
+        return (Outcome::Rejected, None);
     };
     let body = d.body.clone().unwrap_or_default();
     let signature = sign(
@@ -470,9 +501,27 @@ async fn deliver(d: &Delivery) -> Outcome {
         body.as_bytes(),
     );
     match send(&destination, d, body, signature.headers()).await {
-        Ok(outcome) => outcome,
-        Err(_) => Outcome::Network,
+        Ok(result) => result,
+        Err(_) => (Outcome::Network, None),
     }
+}
+
+/// Reads at most [`MAX_WATCH_RESPONSE_BYTES`] of a response, and whether there was more.
+async fn read_capped(response: &mut Response) -> Result<(String, bool)> {
+    let mut bytes = Vec::new();
+    let mut truncated = false;
+    // A response with no body has no stream; that is an empty body, not an error.
+    if let Ok(mut stream) = response.stream() {
+        while let Some(chunk) = stream.next().await {
+            bytes.extend_from_slice(&chunk?);
+            if bytes.len() > MAX_WATCH_RESPONSE_BYTES {
+                bytes.truncate(MAX_WATCH_RESPONSE_BYTES);
+                truncated = true;
+                break;
+            }
+        }
+    }
+    Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated))
 }
 
 async fn send(
@@ -480,7 +529,7 @@ async fn send(
     d: &Delivery,
     body: String,
     signed: [(&'static str, String); 4],
-) -> Result<Outcome> {
+) -> Result<(Outcome, Read)> {
     let headers = Headers::new();
     headers.set("User-Agent", USER_AGENT)?;
     for (k, v) in &d.headers {
@@ -508,11 +557,10 @@ async fn send(
     let controller = AbortController::default();
     let signal = controller.signal();
     let fetch = Fetch::Request(request);
-    let attempt = fetch.send_with_signal(&signal);
-    let deadline = Delay::from(Duration::from_millis(ATTEMPT_TIMEOUT_MS as u64));
-    futures_util::pin_mut!(attempt, deadline);
-    let outcome = match select(attempt, deadline).await {
-        Either::Left((Ok(response), _)) => Outcome::Http {
+    // The timeout covers reading a poll's body as well as the response itself.
+    let attempt = async {
+        let mut response = fetch.send_with_signal(&signal).await?;
+        let outcome = Outcome::Http {
             status: response.status_code(),
             retry_after_ms: response
                 .headers()
@@ -520,10 +568,23 @@ async fn send(
                 .ok()
                 .flatten()
                 .and_then(|v| crate::http::parse_retry_after(&v)),
-        },
-        Either::Left((Err(_), _)) => Outcome::Network,
-        Either::Right(_) => Outcome::Timeout,
+        };
+        if !d.read_body {
+            return Ok::<_, Error>((outcome, None));
+        }
+        // A body cut off mid-read is a failed poll, not an empty answer.
+        Ok(match read_capped(&mut response).await {
+            Ok(read) => (outcome, Some(read)),
+            Err(_) => (Outcome::Network, None),
+        })
+    };
+    let deadline = Delay::from(Duration::from_millis(ATTEMPT_TIMEOUT_MS as u64));
+    futures_util::pin_mut!(attempt, deadline);
+    let result = match select(attempt, deadline).await {
+        Either::Left((Ok(result), _)) => result,
+        Either::Left((Err(_), _)) => (Outcome::Network, None),
+        Either::Right(_) => (Outcome::Timeout, None),
     };
     controller.abort();
-    Ok(outcome)
+    Ok(result)
 }

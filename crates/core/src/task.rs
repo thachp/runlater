@@ -157,6 +157,37 @@ impl Task {
         Ok(self.status)
     }
 
+    /// Records the result of a watch's poll holding `fence`. `next_due` is when to poll
+    /// again, or `None` if the watch is over; `matched` ends it successfully. Polling again
+    /// is a fresh schedule, not a retry, so `max_attempts` never runs out.
+    pub fn finish_poll(
+        &mut self,
+        fence: u64,
+        next_due: Option<i64>,
+        matched: bool,
+        now_ms: i64,
+    ) -> Result<Status, Stale> {
+        if self.status != Status::Delivering || self.fence != fence {
+            return Err(Stale);
+        }
+        self.lease_until_ms = None;
+        self.status = match next_due {
+            _ if matched => Status::Succeeded,
+            _ if self.cancel_requested => Status::Canceled,
+            Some(_) => Status::Scheduled,
+            None => Status::Failed,
+        };
+        match next_due {
+            Some(due) if self.status == Status::Scheduled => {
+                self.due_ms = due;
+                self.run_attempts = 0;
+                self.generation += 1;
+            }
+            _ => self.terminal_ms = Some(now_ms),
+        }
+        Ok(self.status)
+    }
+
     /// Recovery: if the in-flight attempt's lease has passed, treat it as lost.
     /// Returns the new status if anything changed.
     pub fn expire_lease(&mut self, now_ms: i64, jitter: f64) -> Option<Status> {
@@ -447,6 +478,55 @@ mod tests {
         t.claim(1, T0).unwrap();
         assert!(!t.abandon(T0));
         assert_eq!(t.status, Status::Delivering);
+    }
+
+    #[test]
+    fn polls_reschedule_without_using_up_attempts() {
+        let mut t = Task::new(T0, 1);
+        for n in 1..=3 {
+            let a = t.claim(t.generation, t.due_ms).unwrap();
+            assert_eq!(a.number, n);
+            let next = t.due_ms + 300_000;
+            assert_eq!(
+                t.finish_poll(a.fence, Some(next), false, t.due_ms),
+                Ok(Status::Scheduled)
+            );
+            assert_eq!((t.due_ms, t.run_attempts, t.terminal_ms), (next, 0, None));
+        }
+        let stale = t.generation - 1;
+        assert_eq!(t.claim(stale, t.due_ms), Err(ClaimError::Stale));
+        let a = t.claim(t.generation, t.due_ms).unwrap();
+        assert_eq!(
+            t.finish_poll(a.fence, None, true, T0 + 1),
+            Ok(Status::Succeeded)
+        );
+        assert_eq!(t.terminal_ms, Some(T0 + 1));
+        assert_eq!(t.finish_poll(a.fence, None, true, T0 + 2), Err(Stale));
+    }
+
+    #[test]
+    fn a_poll_ends_failed_or_canceled() {
+        let mut t = Task::new(T0, 1);
+        let a = t.claim(1, T0).unwrap();
+        assert_eq!(t.finish_poll(a.fence, None, false, T0), Ok(Status::Failed));
+
+        let mut t = Task::new(T0, 1);
+        let a = t.claim(1, T0).unwrap();
+        t.cancel(T0).unwrap();
+        assert_eq!(
+            t.finish_poll(a.fence, Some(T0 + 300_000), false, T0),
+            Ok(Status::Canceled)
+        );
+        assert_eq!(t.terminal_ms, Some(T0));
+
+        // A match while a cancel waits is still the truth.
+        let mut t = Task::new(T0, 1);
+        let a = t.claim(1, T0).unwrap();
+        t.cancel(T0).unwrap();
+        assert_eq!(
+            t.finish_poll(a.fence, None, true, T0),
+            Ok(Status::Succeeded)
+        );
     }
 
     #[test]

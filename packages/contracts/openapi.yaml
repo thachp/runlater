@@ -109,6 +109,22 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/Task" }
         default: { $ref: "#/components/responses/Error" }
+  /v1/watches:
+    post:
+      operationId: watch
+      description: >
+        Starts a watch: a task whose attempts poll `url` (now, then every `every`) until the
+        response matches `until`, the deadline passes, or three polls in a row fail. Each poll
+        costs one delivery attempt. 201 created, 200 for an idempotent replay. Scope: schedule.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WatchRequest" }
+      responses:
+        "201": { $ref: "#/components/responses/Task" }
+        "200": { $ref: "#/components/responses/Task" }
+        default: { $ref: "#/components/responses/Error" }
   /v1/crons:
     post:
       operationId: putCron
@@ -196,7 +212,7 @@ components:
       description: >
         400 invalid_request, 401 unauthorized, 402 budget_exhausted, 403 forbidden or
         trial_expired, 404 not_found / project_not_found / task_not_found / cron_not_found,
-        409 idempotency_conflict / task_finished / task_not_failed,
+        409 idempotency_conflict / task_finished / task_not_failed / watch_not_redrivable,
         429 task_limit (1,000 tasks held, finished ones included until purged) / cron_limit,
         500 internal_error.
       content:
@@ -213,6 +229,47 @@ components:
                   message: { type: string }
                   field: { type: string, description: Request field at fault, when known. }
   schemas:
+    WatchRequest:
+      type: object
+      additionalProperties: false
+      required: [url, every, until, deadline]
+      properties:
+        url: { type: string, maxLength: 2048 }
+        method: { $ref: "#/components/schemas/Method", default: GET }
+        headers: { type: object, maxProperties: 32, additionalProperties: { type: string } }
+        body: { type: string, maxLength: 65536 }
+        every: { type: string, pattern: "^[0-9]{1,7}[smhd]$", description: "Between polls: 5m to 24h." }
+        until: { $ref: "#/components/schemas/Until" }
+        deadline: { type: string, pattern: "^[0-9]{1,7}[smhd]$", description: "At least one interval, at most 7d, and before the trial ends." }
+        callback_url: { type: string, maxLength: 2048 }
+        idempotency_key: { type: string, pattern: "^[A-Za-z0-9_-]{1,128}$" }
+    Until:
+      type: object
+      additionalProperties: false
+      description: >
+        path + in: a 2xx response whose JSON body (first 64 KiB) has one of these values at
+        this JSON Pointer. status: the response status is one of these. Given both, both hold.
+      properties:
+        path: { type: string, maxLength: 256 }
+        in: { type: array, minItems: 1, maxItems: 20, items: { type: [string, number, boolean, "null"] } }
+        status: { type: array, minItems: 1, maxItems: 20, items: { type: integer, minimum: 100, maximum: 599 } }
+    Watch:
+      type: object
+      required: [every_ms, deadline_ms, until, consecutive_errors, reason, matched, last_status, last_body]
+      properties:
+        every_ms: { type: integer }
+        deadline_ms: { type: integer }
+        until: { $ref: "#/components/schemas/Until" }
+        consecutive_errors: { type: integer, description: "Polls in a row that failed; three end the watch." }
+        reason:
+          type: [string, "null"]
+          description: >
+            Why it ended: matched, timed_out, poll_failing, poll_rejected, response_too_large or
+            budget_exhausted.
+            Null while polling, or if canceled.
+        matched: { description: The value that satisfied until (the status code for a status-only condition). }
+        last_status: { type: [integer, "null"] }
+        last_body: { type: [string, "null"], description: "Up to 16 KiB of the last poll's response body. Null in lists." }
     CronRequest:
       type: object
       additionalProperties: false
@@ -313,7 +370,7 @@ components:
         http_status: { type: [integer, "null"] }
     Task:
       type: object
-      required: [id, status, method, url, header_names, body_bytes, run_at_ms, next_attempt_ms, max_attempts, attempt_count, idempotency_key, callback_url, callback_task_id, callback_for, lane, cron, alert_for, created_ms, updated_ms, finished_ms]
+      required: [id, status, method, url, header_names, body_bytes, run_at_ms, next_attempt_ms, max_attempts, attempt_count, idempotency_key, callback_url, callback_task_id, callback_for, lane, cron, alert_for, watch, created_ms, updated_ms, finished_ms]
       description: Header values and the body are never returned; they may hold credentials.
       properties:
         id: { type: string }
@@ -333,6 +390,9 @@ components:
         lane: { type: [string, "null"] }
         cron: { type: [string, "null"], description: Set on a cron's runs. }
         alert_for: { type: [string, "null"], description: Set on cron alerts. }
+        watch:
+          oneOf: [{ $ref: "#/components/schemas/Watch" }, { type: "null" }]
+          description: Set on watches.
         created_ms: { type: integer }
         updated_ms: { type: integer }
         finished_ms: { type: [integer, "null"] }

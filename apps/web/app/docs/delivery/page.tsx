@@ -152,6 +152,42 @@ export default function Delivery() {
         <code>next_run_ms</code> at any time.
       </p>
 
+      <h2 id="watches">Watches</h2>
+      <p>
+        <code>watch_http</code> hands off waiting on a long-running job, such as a render, a batch or a deploy. RunLater
+        polls a status URL now, then every <code>every</code> (5 minutes to 24 hours), until the response matches{" "}
+        <code>until</code> or the <code>deadline</code> passes.
+      </p>
+      <Code label="watch_http">{`watch_http({
+  url: "https://api.example.com/jobs/123",
+  headers: { "Authorization": "Bearer …" },
+  every: "5m",
+  until: { path: "/status", in: ["succeeded", "failed"] },
+  deadline: "6h",
+  callback_url: "https://example.com/hooks/job-done"
+})`}</Code>
+      <ul>
+        <li>
+          <code>path</code> and <code>in</code> match a 2xx JSON response by the value at a JSON Pointer.{" "}
+          <code>status</code> matches the status code instead, e.g. <code>[404]</code> to wait until something is gone.
+          Only the first 64 KiB of a response is read.
+        </li>
+        <li>
+          A watch is a task: <code>get_task</code> shows its progress under <code>watch</code>, <code>cancel_task</code>{" "}
+          stops it, and the callback reports the matched value and up to 16 KiB of the last response.
+        </li>
+        <li>
+          It fails after three polls in a row get a 408, 425, 429, 5xx, timeout or network error; at once on any other
+          4xx or a redirect; when <code>until</code> needs a body longer than 64 KiB; or at the deadline (
+          <code>watch.reason</code>: <code>poll_failing</code>, <code>poll_rejected</code>,{" "}
+          <code>response_too_large</code>, <code>timed_out</code>).
+        </li>
+        <li>
+          Each poll costs one delivery attempt as it runs: every 5 minutes for 6 hours is 73 of the trial&apos;s 100,
+          and attempts a watch uses are not there for other tasks. Header values are deleted when the watch ends.
+        </li>
+      </ul>
+
       <h2 id="retries">Retries</h2>
       <p>
         <strong>Retried:</strong> timeouts, network errors, and HTTP 408, 425, 429 and 5xx. <strong>Not retried:</strong>{" "}

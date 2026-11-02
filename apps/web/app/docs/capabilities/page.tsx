@@ -3,11 +3,20 @@ import type { Metadata } from "next";
 
 export const metadata: Metadata = { title: "Capabilities" };
 
-type Prop = { type?: string; enum?: string[]; description?: string; default?: unknown; maximum?: number; minimum?: number };
+type Prop = {
+  type?: string;
+  enum?: string[];
+  description?: string;
+  default?: unknown;
+  maximum?: number;
+  minimum?: number;
+  additionalProperties?: unknown;
+};
 
 function typeOf(p: Prop): string {
   if (p.enum) return p.enum.join(" | ");
-  return p.type === "object" ? "object (string values)" : (p.type ?? "any");
+  if (p.type === "object" && typeof p.additionalProperties === "object") return "object (string values)";
+  return p.type ?? "any";
 }
 
 function details(p: Prop): string {

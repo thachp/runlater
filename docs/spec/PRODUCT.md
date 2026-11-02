@@ -97,6 +97,7 @@ The bridge keeps the agent's keys in `~/.agent-auth`. Losing them loses access t
 | `get_cron` | `name` | cron, with health |
 | `list_crons` | — | crons |
 | `delete_cron` | `name` | cron as it was |
+| `watch_http` | `url`, `every`, `until`, `deadline`, `method?`, `headers?`, `body?`, `callback_url?`, `idempotency_key?` | task, with `watch` |
 
 The REST routes underneath (`/v1/tasks`, …) are an internal contract between
 services, not a public product in v1.
@@ -125,6 +126,17 @@ A cron runs the same HTTP request on a schedule: five fields (`minute hour day-o
 - **The trial ending stops crons:** `next_run_ms` becomes null and they alert with `trial_expired`.
 - Re-creating a cron by name replaces its schedule and request and keeps its health. Deleting one stops it; a run already started finishes but no longer affects health.
 
+## Watches
+
+A watch hands off waiting on someone else's long-running job: RunLater polls a status URL until the job is done, then reports back.
+
+- **A watch is a task.** Its attempts are polls (`GET` by default), signed like any delivery. The first poll is immediate; after one that is not done, the next runs `every` later (5m–24h). `get_task` shows progress under `watch`, `cancel_task` stops it, and `callback_url` gets the final state, as with any task.
+- **Done means `until` matches.** `path` + `in`: a 2xx response whose JSON body has one of the listed values (strings, numbers, booleans, null) at that JSON Pointer, e.g. `{"path": "/status", "in": ["succeeded", "failed"]}`. `status`: the response status is one of the listed codes, e.g. `{"status": [404]}` to wait until something is gone. Given both, both must hold. Only the first 64 KiB of a response is read. Numbers compare by value (`3` matches `3.0`). No expressions or regexes.
+- **How it ends** (`watch.reason`): `matched` (succeeded; `watch.matched` is the value), `timed_out` (the last poll is at the deadline itself), `poll_failing` (3 polls in a row got a 408, 425, 429, 5xx, timeout or network error), `poll_rejected` (any other non-matching response that is not 2xx, e.g. 401, 404 or a redirect; it will not change by waiting), `response_too_large` (`until` has a `path` and the matching response's body is over 64 KiB, so it can never be read), `budget_exhausted` (the trial ran out of attempts). All but `matched` are failures. A canceled watch has no reason.
+- **Each poll costs one delivery attempt.** Admission reserves one, like any task; the rest come from the trial as polls run, so a long watch can use up attempts that tasks already scheduled were counting on (they then fail with `budget_exhausted`). Polling every 5 minutes for 6 hours is 73 attempts, most of the trial.
+- **What is kept:** `watch.last_status` and up to 16 KiB of the last response body (`watch.last_body`, in `get_task` and the callback but not in `list_tasks`). Header values and the body are deleted when the watch ends, since they often hold an API token; header names stay.
+- `deadline` is at most 7 days and must fall before the trial ends. A watch cannot be redriven (`409 watch_not_redrivable`); start a new one.
+
 ## v1 limits
 
 | Limit | Value |
@@ -137,6 +149,7 @@ A cron runs the same HTTP request on a schedule: five fields (`minute hour day-o
 | Tasks held per project | 1,000, finished ones included until purged. A task's body is dropped once it succeeds or is canceled; failed tasks keep it for redrive. |
 | Projects | 1 per agent host |
 | Crons | 10 per project, at most one run an hour each |
+| Watches | One poll every 5 min to 24 h, for at most 7 days; first 64 KB of a response read |
 
 ## Explicitly not in v1
 
