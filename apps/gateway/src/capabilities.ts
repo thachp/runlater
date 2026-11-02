@@ -97,6 +97,9 @@ export function route(capability: string, args: Args): { method: "GET" | "POST";
       return { method: "GET", path: "/v1/crons", scope: "read" };
     case "delete_cron":
       return { method: "POST", path: `/v1/crons/${cronName(args)}/delete`, scope: "cancel" };
+    case "watch_http":
+      // The API validates the watch fully and names the failing field.
+      return { method: "POST", path: "/v1/watches", scope: "schedule", body: args };
     default:
       throw new ArgumentError(`unknown capability ${capability}`);
   }

@@ -25,7 +25,7 @@ const RECEIVER_HOST = "receiver.example.com";
 const receiverToken = randomBytes(16).toString("hex");
 const CAPABILITIES = [
   "create_project", "get_project", "schedule_http", "get_task", "list_tasks", "cancel_task", "redrive_task",
-  "create_cron", "get_cron", "list_crons", "delete_cron",
+  "create_cron", "get_cron", "list_crons", "delete_cron", "watch_http",
 ];
 
 // Gateway → API assertion keys, fresh per run.
@@ -289,6 +289,27 @@ describe("agent journey through the gateway", () => {
     );
   });
 
+  test("watch_http polls until the condition matches", async () => {
+    const run = (capability, args) => client.executeCapability({ agentId, capability, arguments: args }).then((r) => r.data);
+    const watch = await run("watch_http", {
+      url: "https://dest.example.com/job-status",
+      every: "5m",
+      until: { status: [200] },
+      deadline: "1h",
+    });
+    assert.equal(watch.watch.every_ms, 300_000);
+    const done = await until(async () => {
+      const t = await run("get_task", { task_id: watch.id });
+      return t.status === "succeeded" && t;
+    });
+    assert.equal(done.watch.reason, "matched");
+    assert.equal(done.watch.matched, 200);
+    await assert.rejects(
+      client.executeCapability({ agentId, capability: "watch_http", arguments: { url: "https://dest.example.com/", every: "1m", until: { status: [200] }, deadline: "1h" } }),
+      { code: "invalid_request", status: 400 },
+    );
+  });
+
   test("task ids cannot be used to escape the API path", async () => {
     await assert.rejects(
       client.executeCapability({ agentId, capability: "get_task", arguments: { task_id: "../projects/self" } }),
@@ -334,7 +355,7 @@ describe("agent journey through the gateway", () => {
   test("a host registered before a capability existed can still be granted it", async () => {
     // Agent Auth saves a host's capabilities when it activates and never widens them, so
     // hosts from before the cron tools were added hold only the original seven.
-    const original = CAPABILITIES.filter((c) => !c.endsWith("_cron") && c !== "list_crons");
+    const original = CAPABILITIES.slice(0, 7);
     const old = sdk();
     const conn = await old.connectAgent({ provider: origin, mode: "autonomous", capabilities: original, name: "old host" });
     const db = await mf.getD1Database("DB", "gateway");
@@ -449,8 +470,8 @@ describe("staging journey, run against the local stack", () => {
       receiverToken,
       timeoutMs: 60_000,
     });
-    // ok + flaky (2) + gone + behind + delayed + its callback = 7 attempts; canceled tasks
-    // and the deleted cron use none.
-    assert.equal(result.attemptsUsed, 7);
+    // ok + flaky (2) + gone + behind + delayed + its callback + one poll = 8 attempts;
+    // canceled tasks and the deleted cron use none.
+    assert.equal(result.attemptsUsed, 8);
   });
 });

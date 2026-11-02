@@ -162,6 +162,77 @@ export const capabilities: CapabilityDefinition[] = [
     description: "Stop and remove a cron. A run already started still finishes.",
     input: cronArgs,
   },
+  {
+    name: "watch_http",
+    description:
+      "Hand off waiting on a long-running job: RunLater polls a public https:// URL (now, then every 5m to 24h) until the " +
+      "response matches `until`, the deadline passes (at most 7d), or 3 polls in a row fail (5xx, timeout, network). " +
+      "A 4xx or redirect ends it at once. Each poll costs one delivery attempt. The watch is a task: get_task shows its " +
+      "progress under `watch`, cancel_task stops it, and callback_url receives a signed POST with the result, including " +
+      "the matched value and up to 16 KiB of the last response body. Headers (e.g. an API token) are deleted when it ends.",
+    input: {
+      type: "object",
+      additionalProperties: false,
+      required: ["url", "every", "until", "deadline"],
+      properties: {
+        url: { type: "string", maxLength: 2048, description: "https:// status URL on a public domain name." },
+        method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], default: "GET" },
+        headers: {
+          type: "object",
+          maxProperties: 32,
+          additionalProperties: { type: "string" },
+          description: "Headers to send on every poll, e.g. Authorization. Same rules as schedule_http.",
+        },
+        body: { type: "string", maxLength: 65536, description: "Request body for every poll. Not allowed with GET." },
+        every: {
+          type: "string",
+          pattern: "^[0-9]{1,7}[smhd]$",
+          description: "Time between polls, from \"5m\" to \"24h\". The first poll is immediate.",
+        },
+        until: {
+          type: "object",
+          additionalProperties: false,
+          description:
+            "When the job is done. path + in: a 2xx JSON response has one of these values at this JSON Pointer, e.g. " +
+            "{ \"path\": \"/status\", \"in\": [\"succeeded\", \"failed\"] }. status: the response status is one of these, " +
+            "e.g. { \"status\": [404] } to wait until something is gone. Given both, both must hold. Only the first 64 KiB " +
+            "of a response is read.",
+          properties: {
+            path: { type: "string", maxLength: 256, description: "JSON Pointer (RFC 6901), e.g. \"/job/state\"." },
+            in: {
+              type: "array",
+              minItems: 1,
+              maxItems: 20,
+              items: { type: ["string", "number", "boolean", "null"] },
+              description: "Values that mean done.",
+            },
+            status: {
+              type: "array",
+              minItems: 1,
+              maxItems: 20,
+              items: { type: "integer", minimum: 100, maximum: 599 },
+              description: "Status codes that mean done.",
+            },
+          },
+        },
+        deadline: {
+          type: "string",
+          pattern: "^[0-9]{1,7}[smhd]$",
+          description: "Stop polling after this long, e.g. \"6h\"; at least one interval, at most \"7d\".",
+        },
+        callback_url: {
+          type: "string",
+          maxLength: 2048,
+          description: "https:// URL that receives a signed POST with the watch's final state.",
+        },
+        idempotency_key: {
+          type: "string",
+          pattern: "^[A-Za-z0-9_-]{1,128}$",
+          description: "Repeat a call with the same key and request to get the same watch back.",
+        },
+      },
+    },
+  },
 ];
 
 export const capabilityNames = capabilities.map((c) => c.name);

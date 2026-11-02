@@ -1,13 +1,13 @@
 // The agent journey against a deployed (or local) stack: a fresh Agent Auth identity, a
 // project, and real deliveries to the staging receiver, checked end to end including the
-// signature, lanes, delays, callbacks and crons. Used by `staging.mjs` after each staging deploy, and by agent.e2e.mjs locally.
+// signature, lanes, delays, callbacks, crons and watches. Used by `staging.mjs` after each staging deploy, and by agent.e2e.mjs locally.
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { AgentAuthClient, MemoryStorage } from "@auth/agent";
 
 const CAPABILITIES = [
   "create_project", "get_project", "schedule_http", "get_task", "list_tasks", "cancel_task", "redrive_task",
-  "create_cron", "get_cron", "list_crons", "delete_cron",
+  "create_cron", "get_cron", "list_crons", "delete_cron", "watch_http",
 ];
 
 class JourneyError extends Error {}
@@ -201,6 +201,26 @@ export async function runJourney(c) {
   );
   check(deleted?.code === "cron_not_found", `deleted cron still readable: ${deleted?.code ?? "found"}`);
   log("cron created, replaced, listed and deleted");
+
+  // 8. A watch: its first poll is immediate, and a 200 satisfies { status: [200] }. Longer
+  //    watches (polls every 5m or more) are covered by the API's tests.
+  const watch = await exec("watch_http", {
+    url: hook("watch"),
+    headers: { "X-Journey": run },
+    every: "5m",
+    until: { status: [200] },
+    deadline: "1h",
+  });
+  check(watch.watch?.every_ms === 300_000, `watch_http returned ${JSON.stringify(watch)}`);
+  const polled = await until("the watch's poll", async () => (await deliveries()).find((d) => d.name === "watch"));
+  check(polled.method === "GET" && polled.headers["x-journey"] === run, "the poll was not a GET with the watch's headers");
+  const watched = await settled(watch, ["succeeded", "failed"]);
+  check(
+    watched.status === "succeeded" && watched.watch.reason === "matched" && watched.watch.matched === 200,
+    `watch ended ${watched.status}: ${JSON.stringify(watched.watch)}`,
+  );
+  check(watched.header_names.join() === "X-Journey", "the watch's header names were not kept");
+  log("watch matched on its first poll");
 
   const all = await deliveries();
   check(!all.some((d) => d.name === "later"), "a canceled task was delivered");
