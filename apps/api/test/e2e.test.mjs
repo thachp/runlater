@@ -23,7 +23,8 @@ function assertion(project, scope = "project schedule read cancel") {
   return `${payload}.${sig}`;
 }
 
-/** Requests the Worker sent out, and scripted replies per path (default 200). */
+/** Requests the Worker sent out, and scripted replies per path: a status, or { status, body }
+ * (default 200). */
 const received = [];
 const replies = new Map();
 
@@ -50,8 +51,9 @@ before(async () => {
         body: await req.text(),
       });
       const script = replies.get(url.pathname) ?? [];
-      const status = script.length ? script.shift() : 200;
-      return new Response(`status ${status}`, { status });
+      const reply = script.length ? script.shift() : 200;
+      const { status, body } = typeof reply === "number" ? { status: reply, body: `status ${reply}` } : reply;
+      return new Response(body, { status });
     },
   }));
   await mf.ready;
@@ -270,6 +272,51 @@ describe("api", () => {
 
     assert.equal((await api("POST", "/v1/crons/nightly/delete", { scope: "cancel" })).status, 200);
     assert.equal((await api("GET", "/v1/crons/nightly")).json.error.code, "cron_not_found");
+  });
+
+  test("watches a URL until its JSON matches, then calls back", async () => {
+    replies.set("/job-status", [{ status: 200, body: JSON.stringify({ state: "done", output: "s3://out" }) }]);
+    const { status, json } = await api("POST", "/v1/watches", {
+      body: {
+        url: "https://receiver.example.com/job-status",
+        headers: { Authorization: "Bearer job-token" },
+        every: "5m",
+        until: { path: "/state", in: ["done", "error"] },
+        deadline: "1h",
+        callback_url: "https://receiver.example.com/watched",
+      },
+    });
+    assert.equal(status, 201);
+    assert.equal(json.method, "GET");
+    assert.equal(json.watch.every_ms, 300_000);
+    const done = await settled("proj_a", json.id, ["succeeded", "failed"]);
+    assert.equal(done.status, "succeeded");
+    assert.equal(done.watch.reason, "matched");
+    assert.equal(done.watch.matched, "done");
+    const poll = received.find((r) => r.headers["runlater-task-id"] === json.id);
+    assert.equal(poll.method, "GET");
+    assert.equal(poll.headers.authorization, "Bearer job-token");
+
+    const cb = await settled("proj_a", done.callback_task_id, ["succeeded"]);
+    const report = JSON.parse(received.find((r) => r.headers["runlater-task-id"] === cb.id).body);
+    assert.equal(report.task.watch.matched, "done");
+    assert.equal(JSON.parse(report.task.watch.last_body).output, "s3://out");
+  });
+
+  test("a watch that is not done yet waits for its next poll", async () => {
+    replies.set("/slow-job", [{ status: 200, body: '{"state":"running"}' }]);
+    const before = Date.now();
+    const { json } = await api("POST", "/v1/watches", {
+      body: { url: "https://receiver.example.com/slow-job", every: "5m", until: { status: [204] }, deadline: "1h" },
+    });
+    const waiting = await until(async () => {
+      const t = (await api("GET", `/v1/tasks/${json.id}`)).json;
+      return t.attempt_count === 1 && t.status === "scheduled" && t;
+    });
+    assert.ok(waiting.next_attempt_ms >= before + 300_000);
+    assert.equal(waiting.watch.last_status, 200);
+    assert.equal((await api("POST", `/v1/tasks/${json.id}/cancel`, { scope: "cancel" })).json.status, "canceled");
+    assert.equal((await api("POST", "/v1/watches", { body: { url: "https://receiver.example.com/x", every: "1m", until: { status: [200] }, deadline: "1h" } })).json.error.field, "every");
   });
 
   test("lists tasks newest first with a cursor", async () => {
