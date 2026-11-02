@@ -303,6 +303,18 @@ describe("api", () => {
     assert.equal(JSON.parse(report.task.watch.last_body).output, "s3://out");
   });
 
+  test("a watch ends when the body it needs is over 64 KiB", async () => {
+    const big = JSON.stringify({ state: "done", log: "x".repeat(100 * 1024) });
+    replies.set("/big-job", [{ status: 200, body: big }]);
+    const { json } = await api("POST", "/v1/watches", {
+      body: { url: "https://receiver.example.com/big-job", every: "5m", until: { path: "/state", in: ["done"] }, deadline: "1h" },
+    });
+    const done = await settled("proj_a", json.id, ["succeeded", "failed"]);
+    assert.equal(done.status, "failed");
+    assert.equal(done.watch.reason, "response_too_large");
+    assert.equal(done.watch.last_body.length, 16 * 1024);
+  });
+
   test("a watch that is not done yet waits for its next poll", async () => {
     replies.set("/slow-job", [{ status: 200, body: '{"state":"running"}' }]);
     const before = Date.now();

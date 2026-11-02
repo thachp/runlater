@@ -177,13 +177,14 @@ export default function Delivery() {
           stops it, and the callback reports the matched value and up to 16 KiB of the last response.
         </li>
         <li>
-          It fails after three polls in a row get a 5xx, 429, timeout or network error, at once on another 4xx or a
-          redirect, or at the deadline (<code>watch.reason</code>: <code>poll_failing</code>,{" "}
-          <code>poll_rejected</code>, <code>timed_out</code>).
+          It fails after three polls in a row get a 408, 425, 429, 5xx, timeout or network error; at once on any other
+          4xx or a redirect; when <code>until</code> needs a body longer than 64 KiB; or at the deadline (
+          <code>watch.reason</code>: <code>poll_failing</code>, <code>poll_rejected</code>,{" "}
+          <code>response_too_large</code>, <code>timed_out</code>).
         </li>
         <li>
-          Each poll costs one delivery attempt: every 5 minutes for 6 hours is 72 of the trial&apos;s 100. Header values
-          are deleted when the watch ends.
+          Each poll costs one delivery attempt as it runs: every 5 minutes for 6 hours is 73 of the trial&apos;s 100,
+          and attempts a watch uses are not there for other tasks. Header values are deleted when the watch ends.
         </li>
       </ul>
 

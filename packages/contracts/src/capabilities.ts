@@ -166,8 +166,9 @@ export const capabilities: CapabilityDefinition[] = [
     name: "watch_http",
     description:
       "Hand off waiting on a long-running job: RunLater polls a public https:// URL (now, then every 5m to 24h) until the " +
-      "response matches `until`, the deadline passes (at most 7d), or 3 polls in a row fail (5xx, timeout, network). " +
-      "A 4xx or redirect ends it at once. Each poll costs one delivery attempt. The watch is a task: get_task shows its " +
+      "response matches `until`, the deadline passes (at most 7d), or 3 polls in a row fail (408, 425, 429, 5xx, timeout, " +
+      "network). Any other 4xx, or a redirect, ends it at once. Each poll costs one delivery attempt, taken as it runs, " +
+      "not reserved up front: a long watch can use up attempts other tasks are waiting for. The watch is a task: get_task shows its " +
       "progress under `watch`, cancel_task stops it, and callback_url receives a signed POST with the result, including " +
       "the matched value and up to 16 KiB of the last response body. Headers (e.g. an API token) are deleted when it ends.",
     input: {

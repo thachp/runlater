@@ -264,11 +264,12 @@ components:
         reason:
           type: [string, "null"]
           description: >
-            Why it ended: matched, timed_out, poll_failing, poll_rejected or budget_exhausted.
+            Why it ended: matched, timed_out, poll_failing, poll_rejected, response_too_large or
+            budget_exhausted.
             Null while polling, or if canceled.
         matched: { description: The value that satisfied until (the status code for a status-only condition). }
         last_status: { type: [integer, "null"] }
-        last_body: { type: [string, "null"], description: Up to 16 KiB of the last poll's response body. }
+        last_body: { type: [string, "null"], description: "Up to 16 KiB of the last poll's response body. Null in lists." }
     CronRequest:
       type: object
       additionalProperties: false

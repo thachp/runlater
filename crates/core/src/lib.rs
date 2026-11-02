@@ -15,4 +15,6 @@ pub use cron::{valid_cron_name, CronError, CronRequest, CronRequestError, CronSp
 pub use request::{valid_lane, Method, ScheduleRequest, TaskSpec, ValidationError};
 pub use retry::{backoff_ms, classify, Outcome, Verdict};
 pub use task::{Attempt, CancelError, Cancelled, ClaimError, RedriveError, Stale, Status, Task};
-pub use watch::{judge, next_poll, Poll, Until, Watch, WatchRequest, WatchRequestError, WatchSpec};
+pub use watch::{
+    judge, next_poll, Poll, PollBody, Until, Watch, WatchRequest, WatchRequestError, WatchSpec,
+};

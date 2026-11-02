@@ -7,7 +7,7 @@ use crate::ledger::{ApiError, Claimed, Delivery, Dispatch, Ledger};
 use futures_util::future::{join_all, select, Either};
 use futures_util::StreamExt;
 use runlater_core::limits::{ATTEMPT_TIMEOUT_MS, MAX_WATCH_RESPONSE_BYTES};
-use runlater_core::{CronRequest, Outcome, ScheduleRequest, Status, WatchRequest};
+use runlater_core::{CronRequest, Outcome, PollBody, ScheduleRequest, Status, WatchRequest};
 use runlater_egress::{sign, Destination};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -206,9 +206,11 @@ struct FinishBody {
     task_id: String,
     fence: u64,
     outcome: Outcome,
-    /// A watch's poll: up to 64 KiB of the response body.
+    /// A watch's poll: up to 64 KiB of the response body, and whether it was longer.
     #[serde(default)]
     body: Option<String>,
+    #[serde(default)]
+    truncated: bool,
 }
 
 #[derive(Deserialize)]
@@ -328,7 +330,10 @@ impl TaskLedger {
                         &f.task_id,
                         f.fence,
                         f.outcome,
-                        f.body.as_deref(),
+                        f.body.as_deref().map(|text| PollBody {
+                            text,
+                            truncated: f.truncated,
+                        }),
                         t,
                         jitter(),
                     )
@@ -443,7 +448,8 @@ async fn process(env: &Env, d: &Dispatch) -> Result<()> {
     let Some(delivery) = claim.deliver else {
         return Ok(());
     };
-    let (outcome, body) = deliver(&delivery).await;
+    let (outcome, read) = deliver(&delivery).await;
+    let (body, truncated) = read.map_or((None, false), |(b, t)| (Some(b), t));
     let _: serde_json::Value = call(
         &stub,
         &d.project_id,
@@ -453,6 +459,7 @@ async fn process(env: &Env, d: &Dispatch) -> Result<()> {
             fence: delivery.fence,
             outcome,
             body,
+            truncated,
         },
     )
     .await?;
@@ -475,8 +482,11 @@ async fn queue(batch: MessageBatch<Dispatch>, env: Env, _ctx: Context) -> Result
     Ok(())
 }
 
+/// A poll's response body as read, and whether it was cut short.
+type Read = Option<(String, bool)>;
+
 /// Makes one attempt. For a watch's poll, also returns up to 64 KiB of the response body.
-async fn deliver(d: &Delivery) -> (Outcome, Option<String>) {
+async fn deliver(d: &Delivery) -> (Outcome, Read) {
     // Re-check policy on every attempt; the provider flag `global_fetch_strictly_public`
     // separately refuses private addresses after DNS resolution.
     let Ok(destination) = Destination::parse(&d.url) else {
@@ -496,18 +506,22 @@ async fn deliver(d: &Delivery) -> (Outcome, Option<String>) {
     }
 }
 
-/// Reads at most [`MAX_WATCH_RESPONSE_BYTES`] of a response; a longer body is cut short.
-async fn read_capped(response: &mut Response) -> Result<String> {
-    let mut stream = response.stream()?;
+/// Reads at most [`MAX_WATCH_RESPONSE_BYTES`] of a response, and whether there was more.
+async fn read_capped(response: &mut Response) -> Result<(String, bool)> {
     let mut bytes = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        bytes.extend_from_slice(&chunk?);
-        if bytes.len() >= MAX_WATCH_RESPONSE_BYTES {
-            bytes.truncate(MAX_WATCH_RESPONSE_BYTES);
-            break;
+    let mut truncated = false;
+    // A response with no body has no stream; that is an empty body, not an error.
+    if let Ok(mut stream) = response.stream() {
+        while let Some(chunk) = stream.next().await {
+            bytes.extend_from_slice(&chunk?);
+            if bytes.len() > MAX_WATCH_RESPONSE_BYTES {
+                bytes.truncate(MAX_WATCH_RESPONSE_BYTES);
+                truncated = true;
+                break;
+            }
         }
     }
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated))
 }
 
 async fn send(
@@ -515,7 +529,7 @@ async fn send(
     d: &Delivery,
     body: String,
     signed: [(&'static str, String); 4],
-) -> Result<(Outcome, Option<String>)> {
+) -> Result<(Outcome, Read)> {
     let headers = Headers::new();
     headers.set("User-Agent", USER_AGENT)?;
     for (k, v) in &d.headers {
@@ -555,12 +569,14 @@ async fn send(
                 .flatten()
                 .and_then(|v| crate::http::parse_retry_after(&v)),
         };
-        let body = if d.read_body {
-            read_capped(&mut response).await.ok()
-        } else {
-            None
-        };
-        Ok::<_, Error>((outcome, body))
+        if !d.read_body {
+            return Ok::<_, Error>((outcome, None));
+        }
+        // A body cut off mid-read is a failed poll, not an empty answer.
+        Ok(match read_capped(&mut response).await {
+            Ok(read) => (outcome, Some(read)),
+            Err(_) => (Outcome::Network, None),
+        })
     };
     let deadline = Delay::from(Duration::from_millis(ATTEMPT_TIMEOUT_MS as u64));
     futures_util::pin_mut!(attempt, deadline);

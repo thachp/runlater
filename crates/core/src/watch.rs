@@ -221,18 +221,31 @@ impl Until {
     /// The value that satisfied the condition (the matched JSON value, or the status), if
     /// this response does.
     pub fn matches(&self, status: u16, body: Option<&str>) -> Option<Value> {
-        match &self.status {
-            Some(codes) if !codes.contains(&status) => return None,
-            None if !(200..=299).contains(&status) => return None,
-            _ => {}
+        if !self.status_allows(status) {
+            return None;
         }
         match (&self.path, &self.one_of) {
             (Some(path), Some(values)) => {
                 let doc: Value = serde_json::from_str(body?).ok()?;
                 let found = doc.pointer(path)?;
-                values.contains(found).then(|| found.clone())
+                // Numbers compare by value, so 3 matches 3.0.
+                let same = |v: &Value| match (v.as_f64(), found.as_f64()) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => v == found,
+                };
+                values.iter().any(same).then(|| found.clone())
             }
             _ => Some(Value::from(status)),
+        }
+    }
+}
+
+impl Until {
+    /// Whether a response with this status can match: one of `status`, or any 2xx.
+    fn status_allows(&self, status: u16) -> bool {
+        match &self.status {
+            Some(codes) => codes.contains(&status),
+            None => (200..=299).contains(&status),
         }
     }
 }
@@ -257,16 +270,35 @@ pub enum Poll {
     Matched(Value),
     /// Poll again later.
     NotYet,
-    /// Stop polling: `poll_failing` (too many failed polls in a row) or `poll_rejected`
-    /// (an answer that will not change, such as a 404 or a redirect).
+    /// Stop polling: `poll_failing` (too many failed polls in a row), `poll_rejected` (an
+    /// answer that will not change, such as a 404 or a redirect) or `response_too_large` (the
+    /// condition needs a body longer than RunLater reads).
     Fail(&'static str),
+}
+
+/// A polled response's body as read: at most [`MAX_WATCH_RESPONSE_BYTES`], and whether
+/// there was more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PollBody<'a> {
+    pub text: &'a str,
+    pub truncated: bool,
 }
 
 /// Judges a poll's result. `errors` is how many polls in a row had failed before this one;
 /// returns the verdict and the new count.
-pub fn judge(until: &Until, outcome: &Outcome, body: Option<&str>, errors: u32) -> (Poll, u32) {
+pub fn judge(
+    until: &Until,
+    outcome: &Outcome,
+    body: Option<PollBody<'_>>,
+    errors: u32,
+) -> (Poll, u32) {
     if let Outcome::Http { status, .. } = outcome {
-        if let Some(value) = until.matches(*status, body) {
+        // A cut-off body never parses, so a path condition could never match it.
+        let unreadable = body.is_some_and(|b| b.truncated) && until.path.is_some();
+        if unreadable && until.status_allows(*status) {
+            return (Poll::Fail("response_too_large"), errors);
+        }
+        if let Some(value) = until.matches(*status, body.map(|b| b.text)) {
             return (Poll::Matched(value), 0);
         }
     }
@@ -445,13 +477,20 @@ mod tests {
         assert_eq!(both.matches(201, Some(r#"{"status":"failed"}"#)), None);
     }
 
+    fn text(s: &str) -> Option<PollBody<'_>> {
+        Some(PollBody {
+            text: s,
+            truncated: false,
+        })
+    }
+
     #[test]
     fn judges_polls() {
         let u = until_status_done();
-        let running = Some(r#"{"status":"running"}"#);
+        let running = text(r#"{"status":"running"}"#);
         assert_eq!(judge(&u, &http(200), running, 2), (Poll::NotYet, 0));
         assert_eq!(
-            judge(&u, &http(200), Some(r#"{"status":"failed"}"#), 0),
+            judge(&u, &http(200), text(r#"{"status":"failed"}"#), 0),
             (Poll::Matched(json!("failed")), 0)
         );
         assert_eq!(judge(&u, &http(503), None, 0), (Poll::NotYet, 1));
@@ -483,6 +522,43 @@ mod tests {
             (Poll::Matched(json!(404)), 0)
         );
         assert_eq!(judge(&gone, &http(200), None, 0), (Poll::NotYet, 0));
+    }
+
+    #[test]
+    fn a_cut_off_body_ends_a_watch_that_needs_it() {
+        let cut = Some(PollBody {
+            text: r#"{"status":"succeeded","log":"#,
+            truncated: true,
+        });
+        assert_eq!(
+            judge(&until_status_done(), &http(200), cut, 1),
+            (Poll::Fail("response_too_large"), 1)
+        );
+        // Not a 2xx: the body was never going to be looked at.
+        assert_eq!(
+            judge(&until_status_done(), &http(503), cut, 0),
+            (Poll::NotYet, 1)
+        );
+        // A status-only condition does not need the body.
+        let ok = Until {
+            status: Some(vec![200]),
+            ..Default::default()
+        };
+        assert_eq!(
+            judge(&ok, &http(200), cut, 0),
+            (Poll::Matched(serde_json::json!(200)), 0)
+        );
+    }
+
+    #[test]
+    fn numbers_match_by_value() {
+        let u = Until {
+            path: Some("/progress".into()),
+            one_of: Some(vec![serde_json::json!(100)]),
+            status: None,
+        };
+        assert!(u.matches(200, Some(r#"{"progress":100.0}"#)).is_some());
+        assert!(u.matches(200, Some(r#"{"progress":"100"}"#)).is_none());
     }
 
     #[test]

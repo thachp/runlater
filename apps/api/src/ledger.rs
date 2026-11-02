@@ -14,7 +14,7 @@ use runlater_core::limits::{
 };
 use runlater_core::{
     judge, next_poll, valid_lane, Attempt, CancelError, ClaimError, CronRequest, CronRequestError,
-    Method, Outcome, Poll, RedriveError, Schedule, ScheduleRequest, Status, Task, Until,
+    Method, Outcome, Poll, PollBody, RedriveError, Schedule, ScheduleRequest, Status, Task, Until,
     ValidationError, Watch, WatchRequest, WatchRequestError,
 };
 use serde::{Deserialize, Serialize};
@@ -273,8 +273,8 @@ pub struct WatchView {
     pub until: Until,
     /// Polls in a row that failed (5xx, timeout, network); three end the watch.
     pub consecutive_errors: u32,
-    /// Why the watch ended: matched, timed_out, poll_failing, poll_rejected or
-    /// budget_exhausted. None while it is still polling, or if it was canceled.
+    /// Why the watch ended: matched, timed_out, poll_failing, poll_rejected,
+    /// response_too_large or budget_exhausted. None while it is still polling, or if canceled.
     pub reason: Option<String>,
     /// The value that satisfied `until`.
     pub matched: Option<serde_json::Value>,
@@ -449,7 +449,8 @@ impl TaskRow {
         })
     }
 
-    fn watch_view(&self) -> Result<Option<WatchView>, DbError> {
+    /// `full` includes the last response body; lists leave it out to stay small.
+    fn watch_view(&self, full: bool) -> Result<Option<WatchView>, DbError> {
         let Some(watch) = self.watch()? else {
             return Ok(None);
         };
@@ -462,7 +463,7 @@ impl TaskRow {
             reason: state.reason,
             matched: state.matched,
             last_status: state.last_status,
-            last_body: state.last_body,
+            last_body: state.last_body.filter(|_| full),
         }))
     }
 
@@ -487,7 +488,7 @@ impl TaskRow {
             lane: self.lane.clone(),
             cron: self.cron.clone(),
             alert_for: self.alert_for.clone(),
-            watch: self.watch_view()?,
+            watch: self.watch_view(attempts.is_some())?,
             created_ms: self.created_ms,
             updated_ms: self.updated_ms,
             finished_ms: task.terminal_ms,
@@ -824,14 +825,14 @@ impl<'a, D: Db> Ledger<'a, D> {
         {
             return Ok((existing, false));
         }
-        let needs = 1 + i64::from(request.callback.is_some());
-        self.admit(&project, needs, needs, now)?;
         if spec.watch.deadline_ms >= project.expires_ms {
             return Err(ApiError {
                 field: Some("deadline"),
                 ..ApiError::bad_request("deadline is after this project's trial ends")
             });
         }
+        let needs = 1 + i64::from(request.callback.is_some());
+        self.admit(&project, needs, needs, now)?;
         let watch = serde_json::to_string(&spec.watch).map_err(|e| DbError(e.to_string()))?;
         self.insert(
             NewTask {
@@ -1131,7 +1132,7 @@ impl<'a, D: Db> Ledger<'a, D> {
         task_id: &str,
         fence: u64,
         outcome: Outcome,
-        body: Option<&str>,
+        body: Option<PollBody<'_>>,
         now: i64,
         jitter: f64,
     ) -> Result<Option<Status>, DbError> {
@@ -1508,7 +1509,7 @@ impl<'a, D: Db> Ledger<'a, D> {
         row: &TaskRow,
         fence: u64,
         outcome: Outcome,
-        body: Option<&str>,
+        body: Option<PollBody<'_>>,
         now: i64,
     ) -> Result<Option<Status>, DbError> {
         let watch = row
@@ -1545,7 +1546,7 @@ impl<'a, D: Db> Ledger<'a, D> {
             Outcome::Http { status, .. } => Some(status),
             _ => None,
         };
-        state.last_body = body.map(|b| excerpt(b, WATCH_EXCERPT_BYTES));
+        state.last_body = body.map(|b| excerpt(b.text, WATCH_EXCERPT_BYTES));
         self.record_outcome(&row.id, fence, &outcome, now)?;
         self.store_watch(&row.id, errors, &state)?;
         self.save_row(row, &task, now)?;
@@ -2950,6 +2951,10 @@ mod tests {
             .expect("poll is due");
         let a = deliver(l, &d, now);
         assert!(a.read_body, "polls read the response");
+        let body = body.map(|text| PollBody {
+            text,
+            truncated: false,
+        });
         l.finish_response(id, a.fence, outcome, body, now, 0.0)
             .unwrap()
             .expect("current poll")
@@ -3021,6 +3026,23 @@ mod tests {
         assert_eq!(report["task"]["status"], "succeeded");
         assert_eq!(report["task"]["watch"]["matched"], "succeeded");
         assert_eq!(report["task"]["watch"]["last_body"], done);
+    }
+
+    #[test]
+    fn lists_leave_out_the_last_response_body() {
+        let db = Memory::new();
+        let l = setup(&db);
+        l.watch(watching(serde_json::json!({})), "w1", T0).unwrap();
+        poll(&l, "w1", http(200), Some(r#"{"status":"running"}"#), T0);
+        let listed = l
+            .list(None, None, None, None)
+            .unwrap()
+            .tasks
+            .remove(0)
+            .watch
+            .unwrap();
+        assert_eq!((listed.last_status, listed.last_body), (Some(200), None));
+        assert!(watch_view(&l, "w1").last_body.is_some(), "get_task has it");
     }
 
     #[test]
