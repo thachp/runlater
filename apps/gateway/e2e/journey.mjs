@@ -1,9 +1,12 @@
 // The agent journey against a deployed (or local) stack: a fresh Agent Auth identity, a
 // project, and real deliveries to the staging receiver, checked end to end including the
-// signature, lanes, delays, callbacks, crons and watches. Used by `staging.mjs` after each staging deploy, and by agent.e2e.mjs locally.
+// signature, lanes, delays, callbacks, crons and watches, and hosted MCP. Used by `staging.mjs` after each staging deploy, and by agent.e2e.mjs locally.
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { AgentAuthClient, MemoryStorage } from "@auth/agent";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { connectHosted } from "./oauth.mjs";
 
 const CAPABILITIES = [
   "create_project", "get_project", "schedule_http", "get_task", "list_tasks", "cancel_task", "redrive_task",
@@ -221,6 +224,33 @@ export async function runJourney(c) {
   );
   check(watched.header_names.join() === "X-Journey", "the watch's header names were not kept");
   log("watch matched on its first poll");
+
+  // 9. Hosted MCP: a client connects through OAuth consent (its own project and trial) and
+  //    schedules a delivery with the schedule_http tool.
+  const tokens = await connectHosted(c.gatewayUrl);
+  const mcp = new Client({ name: "runlater-journey", version: "1.0.0" });
+  await mcp.connect(
+    new StreamableHTTPClientTransport(new URL(`${c.gatewayUrl}/mcp`), {
+      requestInit: { headers: { Authorization: `Bearer ${tokens.access_token}` } },
+    }),
+  );
+  try {
+    const tool = async (name, args = {}) => {
+      const r = await mcp.callTool({ name, arguments: args });
+      check(!r.isError, `${name} over MCP failed: ${r.content?.[0]?.text}`);
+      return JSON.parse(r.content[0].text);
+    };
+    const names = (await mcp.listTools()).tools.map((t) => t.name);
+    check(CAPABILITIES.every((n) => names.includes(n)), `MCP tools were ${names.join(", ")}`);
+    const mcpProject = await tool("create_project");
+    check(mcpProject.id !== project.id, "a hosted MCP connection shared the agent's project");
+    const viaMcp = await tool("schedule_http", { url: hook("mcp"), body: run });
+    await until("the hosted MCP delivery", async () => (await deliveries()).find((d) => d.name === "mcp"));
+    await until("the hosted MCP task to succeed", async () => (await tool("get_task", { task_id: viaMcp.id })).status === "succeeded");
+  } finally {
+    await mcp.close();
+  }
+  log("hosted MCP connected and delivered");
 
   const all = await deliveries();
   check(!all.some((d) => d.name === "later"), "a canceled task was delivered");

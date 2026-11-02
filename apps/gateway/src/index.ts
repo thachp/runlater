@@ -1,8 +1,12 @@
-// Public entry for agents. Serves Agent Auth discovery and the agent endpoints, and turns
-// capability executions into signed calls on the private Rust API (API binding).
+// Public entry for agents. Serves Agent Auth discovery and the agent endpoints, the hosted MCP
+// server at /mcp behind OAuth, and turns capability executions into signed calls on the
+// private Rust API (API binding).
 
+import { OAuthProvider, type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { importSigningKey } from "./api";
 import { BASE_PATH, createAuth, type AuthEnv } from "./auth";
+import { handleAuthorize } from "./consent";
+import { handleMcp, type McpProps } from "./mcp";
 
 export { AuthStore } from "./store";
 
@@ -10,7 +14,14 @@ export interface Env extends AuthEnv {
   /** Hex-encoded 32-byte Ed25519 seed; its public key is the API's GATEWAY_PUBLIC_KEY. */
   ASSERTION_PRIVATE_KEY: string;
   REGISTER_RATE: RateLimit;
+  OAUTH_RATE: RateLimit;
+  /** OAuth clients, grants and tokens for hosted MCP, managed by workers-oauth-provider. */
+  OAUTH_KV: KVNamespace;
+  /** Set by OAuthProvider before it calls the handlers below. */
+  OAUTH_PROVIDER: OAuthHelpers;
 }
+
+const DAY_SECS = 24 * 3600;
 
 /** Agent Auth endpoints an autonomous agent needs; everything else is not served. */
 const AGENT_ROUTES = new Set([
@@ -87,9 +98,12 @@ function signingKey(env: Env): Promise<CryptoKey> {
   return keyCache.key;
 }
 
-export default {
+/** Everything except /mcp and the OAuth endpoints, which OAuthProvider serves first. */
+const gateway = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname === "/authorize") return handleAuthorize(request, env);
 
     if (request.method === "GET" && url.pathname === "/health") {
       const api = await env.API.fetch("https://api.internal/health");
@@ -146,5 +160,56 @@ export default {
       body: request.method === "GET" || request.method === "HEAD" ? null : body,
     });
     return auth.handler(buffered);
+  },
+} satisfies ExportedHandler<Env>;
+
+const mcp = {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext & { props: McpProps }): Promise<Response> {
+    let key: CryptoKey;
+    try {
+      key = await signingKey(env);
+    } catch {
+      return error(500, "misconfigured", "assertion signing key is not configured");
+    }
+    return handleMcp(request, env, key, ctx.props);
+  },
+};
+
+/** One provider per public URL: the protected resource's identifier is that URL plus /mcp. */
+const providers = new Map<string, OAuthProvider<Env>>();
+function provider(env: Env): OAuthProvider<Env> {
+  let p = providers.get(env.PUBLIC_URL);
+  if (!p) {
+    p = new OAuthProvider<Env>({
+      apiRoute: "/mcp",
+      apiHandler: mcp as never,
+      defaultHandler: gateway,
+      authorizeEndpoint: "/authorize",
+      tokenEndpoint: "/oauth/token",
+      clientRegistrationEndpoint: "/oauth/register",
+      accessTokenTTL: 3600,
+      // The grant is the connection's only identity; keep it while the client keeps using it.
+      refreshTokenTTL: 30 * DAY_SECS,
+      refreshTokenIdleTTL: 30 * DAY_SECS,
+      resourceMetadata: { resource: `${env.PUBLIC_URL}/mcp`, resource_name: "RunLater" },
+    });
+    providers.set(env.PUBLIC_URL, p);
+  }
+  return p;
+}
+
+/** Unauthenticated OAuth calls that write to KV: registering a client, and each consent page. */
+const OAUTH_LIMITED = new Set(["/oauth/register", "/authorize"]);
+
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    if (OAUTH_LIMITED.has(path) && request.method !== "OPTIONS") {
+      const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+      if (!(await env.OAUTH_RATE.limit({ key: `${path}:${ip}` })).success) {
+        return error(429, "rate_limited", "too many requests; try again shortly");
+      }
+    }
+    return provider(env).fetch(request, env, ctx);
   },
 } satisfies ExportedHandler<Env>;

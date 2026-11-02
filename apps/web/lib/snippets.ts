@@ -3,6 +3,14 @@
 
 import { GATEWAY_URL } from "./site";
 
+export const mcpRemoteConfig = `{
+  "mcpServers": {
+    "runlater": { "url": "${GATEWAY_URL}/mcp" }
+  }
+}`;
+
+export const mcpClaudeCode = `claude mcp add --transport http runlater ${GATEWAY_URL}/mcp`;
+
 export const mcpConfig = `{
   "mcpServers": {
     "runlater": {

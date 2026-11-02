@@ -7,9 +7,9 @@ Status: **draft for review** · Companion to [PRODUCT.md](PRODUCT.md)
 | Decision | Choice |
 | --- | --- |
 | Primary customer | AI agents |
-| Identity | Agent Auth only (Better Auth `@better-auth/agent-auth` host). API keys, MCP OAuth, invitations, anonymous trials, receiver pairing are removed. |
+| Identity | Agent Auth (Better Auth `@better-auth/agent-auth` host), plus MCP OAuth for the hosted `/mcp` server: a no-account consent page, one project per grant. API keys, invitations and receiver pairing are removed. |
 | Backend | Rust (`workers-rs`) on Cloudflare Workers — task ledger, scheduling, delivery |
-| Agent-facing layer | TypeScript Worker — Agent Auth host and capabilities; MCP clients reach it through the Agent Auth MCP bridge |
+| Agent-facing layer | TypeScript Worker — Agent Auth host and capabilities, and a hosted MCP server at `/mcp` |
 | Frontend | Next.js on Cloudflare Workers via OpenNext |
 | Approach | Clean rebuild in a new layout; port the proven ledger/delivery core; delete milestone code. No migration of beta data. |
 
@@ -43,7 +43,8 @@ flowchart LR
 - Agent Auth discovery, host/agent registration, capability execution (signature + `htm/htu/ath` binding checks).
 - Owns identity tables in D1: `host`, `agent`, `project(host_id → project_id, trial, expiry, revoked_at)`.
 - Maps each capability to one internal API call. Never accepts a project id from the caller; derives it from the authenticated host.
-- MCP: no hosted `/mcp` endpoint. MCP clients run the Agent Auth bridge (`@auth/agent-cli mcp --url <gateway>`), a local stdio MCP server that holds the agent's keys and exposes generic Agent Auth tools (`connect_agent`, `list_capabilities`, `execute_capability`, …). Our capability names, descriptions and input schemas are what the agent reads through them.
+- MCP, hosted: `/mcp` (Streamable HTTP, stateless) behind `@cloudflare/workers-oauth-provider` (OAuth 2.1, dynamic client registration, PKCE; clients, grants and tokens in the `OAUTH_KV` namespace). `/authorize` is a one-click consent page with no account; approving creates an owner `mcp:<id>` whose grant carries it, and `runlater_project` maps that owner to a project exactly as it maps an Agent Auth host. Tools are the capabilities, run through the same code path (`runCapability`).
+- MCP, local: MCP clients can also run the Agent Auth bridge (`@auth/agent-cli mcp --url <gateway>`), a local stdio MCP server that holds the agent's keys and exposes generic Agent Auth tools (`connect_agent`, `list_capabilities`, `execute_capability`, …). Our capability names, descriptions and input schemas are what the agent reads through them.
 - Rate limits registration and capability calls (Workers Rate Limiting binding).
 
 **`apps/api` (Rust)** — the task authority. Not on a public route.
@@ -161,6 +162,6 @@ Each phase is one PR that leaves `main` green.
 
 ## Risks
 
-- **MCP compatibility** — Agent Auth isn't standard MCP OAuth; MCP clients need the `@auth/agent-cli` bridge, which stores agent keys on the user's machine. Validated in phase 4 (CI runs it); clients that can only use remote MCP servers are not supported.
+- **MCP compatibility** — Agent Auth isn't standard MCP OAuth, so remote MCP clients use the hosted `/mcp` server and its OAuth consent page instead; the `@auth/agent-cli` bridge still works for clients that run local servers. Both are covered by `npm run test:e2e`.
 - **Agent Auth maturity** — packages are at 0.6.x and the protocol may change. Keep it isolated in `apps/gateway/src/auth`.
 - **Removing the live MCP/OAuth path** breaks any current users at cutover. Phase 7 must check for live tasks/grants first.

@@ -13,13 +13,16 @@
     "@auth/agent": "0.6.2",
     "@auth/agent-cli": "0.5.1",
     "@cloudflare/workers-types": "5.20261001.1",
-    "@modelcontextprotocol/sdk": "1.32.2",
     "@runlater/tsconfig": "*",
     "vitest": "3.2.4"
   },
   "dependencies": {
     "@better-auth/agent-auth": "0.6.2",
+    "@cfworker/json-schema": "4.1.1",
+    "@cloudflare/workers-oauth-provider": "1.2.4",
+    "@runlater/contracts": "*",
     "better-auth": "1.7.14",
-    "@runlater/contracts": "*"
+    "zod": "4.1.12",
+    "@modelcontextprotocol/sdk": "1.32.2"
   }
 }

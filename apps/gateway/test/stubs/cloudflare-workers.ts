@@ -5,3 +5,10 @@ export class DurableObject {
     readonly env: unknown,
   ) {}
 }
+
+export class WorkerEntrypoint {
+  constructor(
+    readonly ctx: unknown,
+    readonly env: unknown,
+  ) {}
+}

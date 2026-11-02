@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import worker, { type Env } from "../src/index";
 
 const envWithApi = (status: number) =>
-  ({ API: { fetch: async () => new Response(null, { status }) } }) as unknown as Env;
+  ({ PUBLIC_URL: "https://gateway.test", API: { fetch: async () => new Response(null, { status }) } }) as unknown as Env;
 const ctx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
 const get = (path: string, env: Env) => worker.fetch(new Request(`https://gateway.test${path}`), env, ctx);

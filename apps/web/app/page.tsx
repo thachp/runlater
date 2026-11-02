@@ -25,7 +25,7 @@ const FEATURES = [
   ["Alerts when a cron stops", "If a cron's runs fail or can't start, alert_url gets cron.failing, then cron.recovered once it works again."],
   ["Public HTTPS only", "Destinations must be public https:// names. Private networks, IPs and localhost are refused."],
   ["No pile-up after downtime", "If a cron misses several runs, it runs once when it can, not once for every slot it missed."],
-  ["Works from MCP", "MCP clients connect through the Agent Auth bridge. Agents in code use the Agent Auth SDK."],
+  ["Works from MCP", "Add gateway.runlater.io/mcp as a remote MCP server and click Connect. Agents in code use the Agent Auth SDK."],
 ] as const;
 
 export default function Home() {

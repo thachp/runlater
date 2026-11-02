@@ -16,7 +16,10 @@ import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { AgentAuthClient, MemoryStorage } from "@auth/agent";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { createHash } from "node:crypto";
 import { runJourney } from "./journey.mjs";
+import { REDIRECT, connectHosted } from "./oauth.mjs";
 
 const gatewayDir = fileURLToPath(new URL("..", import.meta.url));
 const apiDir = fileURLToPath(new URL("../../api/", import.meta.url));
@@ -92,7 +95,11 @@ before(async () => {
           serviceBindings: { API: "api" },
           d1Databases: { DB: "gateway-db" },
           durableObjects: { AUTH_STORE: { className: "AuthStore", useSQLite: true } },
-          ratelimits: { REGISTER_RATE: { namespace_id: "1001", simple: { limit: 100, period: 60 } } },
+          ratelimits: {
+            REGISTER_RATE: { namespace_id: "1001", simple: { limit: 100, period: 60 } },
+            OAUTH_RATE: { namespace_id: "1003", simple: { limit: 100, period: 60 } },
+          },
+          kvNamespaces: { OAUTH_KV: "oauth-kv" },
           outboundService: () => {
             throw new Error("the gateway must not reach the internet");
           },
@@ -458,6 +465,153 @@ describe("MCP bridge (@auth/agent-cli mcp)", () => {
       return t.status === "succeeded" && t;
     });
     assert.equal(done.attempt_count, 1);
+  });
+});
+
+describe("hosted MCP at /mcp", () => {
+  const b64url = (b) => Buffer.from(b).toString("base64url");
+  const form = (o) => new URLSearchParams(o);
+
+  /** Registers a client and walks the consent page; returns the token response. */
+  async function connect(clientName = "Test Client") {
+    const r = await connectHosted(origin, clientName);
+    assert.equal(r.pageHeaders.get("x-frame-options"), "DENY");
+    assert.ok(r.html.includes(`Connect ${clientName} to RunLater?`), r.html);
+    assert.ok(r.html.includes("127.0.0.1"), "the page names where it returns to");
+    assert.equal(`${r.redirect.origin}${r.redirect.pathname}`, REDIRECT);
+    return r;
+  }
+
+  async function mcpClient(accessToken) {
+    const client = new Client({ name: "e2e", version: "1.0.0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
+        requestInit: { headers: { Authorization: `Bearer ${accessToken}` } },
+      }),
+    );
+    return client;
+  }
+  const value = (r) => JSON.parse(r.content[0].text);
+
+  test("an unauthenticated request points the client at the authorization server", async () => {
+    const res = await fetch(`${origin}/mcp`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    assert.equal(res.status, 401);
+    assert.match(res.headers.get("www-authenticate") ?? "", /resource_metadata=/);
+    const meta = await (await fetch(`${origin}/.well-known/oauth-protected-resource/mcp`)).json();
+    assert.equal(meta.resource, `${origin}/mcp`);
+    const as = await (await fetch(`${origin}/.well-known/oauth-authorization-server`)).json();
+    assert.equal(as.authorization_endpoint, `${origin}/authorize`);
+    assert.equal(as.registration_endpoint, `${origin}/oauth/register`);
+  });
+
+  test("a client connects through the consent page and uses the capabilities as tools", async () => {
+    const { access_token, refresh_token, client_id } = await connect();
+    const client = await mcpClient(access_token);
+    const { tools } = await client.listTools();
+    assert.deepEqual(tools.map((t) => t.name).sort(), [...CAPABILITIES].sort());
+    assert.equal(tools.find((t) => t.name === "schedule_http").inputSchema.required[0], "url");
+
+    const missing = await client.callTool({ name: "get_project", arguments: {} });
+    assert.equal(missing.isError, true);
+    assert.equal(value(missing).error.code, "project_not_found");
+
+    const project = value(await client.callTool({ name: "create_project", arguments: {} }));
+    assert.match(project.id, /^prj_/);
+    const task = value(await client.callTool({ name: "schedule_http", arguments: { url: "https://dest.example.com/from-hosted-mcp" } }));
+    const done = await until(async () => {
+      const t = value(await client.callTool({ name: "get_task", arguments: { task_id: task.id } }));
+      return t.status === "succeeded" && t;
+    });
+    assert.equal(done.attempt_count, 1);
+
+    const bad = await client.callTool({ name: "schedule_http", arguments: { url: "http://dest.example.com/" } });
+    assert.equal(bad.isError, true);
+    assert.equal(value(bad).error.field, "url");
+    await client.close();
+
+    // A refreshed token is the same connection: same project.
+    const refreshed = await (
+      await fetch(`${origin}/oauth/token`, { method: "POST", body: form({ grant_type: "refresh_token", refresh_token, client_id }) })
+    ).json();
+    const again = await mcpClient(refreshed.access_token);
+    assert.equal(value(await again.callTool({ name: "get_project", arguments: {} })).id, project.id);
+    await again.close();
+
+    // A second connection is a separate owner with its own project.
+    const other = await mcpClient((await connect("Other Client")).access_token);
+    const otherProject = value(await other.callTool({ name: "create_project", arguments: {} }));
+    assert.notEqual(otherProject.id, project.id);
+    const peek = await other.callTool({ name: "get_task", arguments: { task_id: task.id } });
+    assert.equal(peek.isError, true);
+    assert.equal(value(peek).error.code, "task_not_found");
+    await other.close();
+  });
+
+  test("/mcp only takes POST: no standalone stream, no session to delete", async () => {
+    const { access_token } = await connect("Methods");
+    for (const method of ["GET", "DELETE"]) {
+      const res = await fetch(`${origin}/mcp`, { method, headers: { Authorization: `Bearer ${access_token}`, Accept: "text/event-stream" } });
+      assert.equal(res.status, 405, method);
+      assert.equal(res.headers.get("allow"), "POST");
+    }
+  });
+
+  test("the consent page escapes what the client says about itself", async () => {
+    const name = `<img src=x onerror=alert(1)>"'`;
+    const r = await connectHosted(origin, name);
+    assert.ok(!r.html.includes("<img"), "client_name reached the page unescaped");
+    assert.ok(r.html.includes("&lt;img src=x onerror=alert(1)&gt;&quot;&#39;"));
+    assert.ok(!/form-action/.test(r.pageHeaders.get("content-security-policy")), "form-action would block the redirect back");
+  });
+
+  test("declining sends access_denied back to the client", async () => {
+    const reg = await (
+      await fetch(`${origin}/oauth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_name: "Declined", redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" }),
+      })
+    ).json();
+    const query = form({
+      response_type: "code",
+      client_id: reg.client_id,
+      redirect_uri: REDIRECT,
+      code_challenge: b64url(createHash("sha256").update("v".repeat(43)).digest()),
+      code_challenge_method: "S256",
+      state: "st-2",
+    });
+    const page = await fetch(`${origin}/authorize?${query}`);
+    const handle = (await page.text()).match(/name="handle" value="([^"]+)"/)[1];
+    const cookie = page.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
+    const deny = await fetch(`${origin}/authorize`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { Cookie: cookie },
+      body: form({ handle, action: "deny" }),
+    });
+    assert.equal(deny.status, 302);
+    assert.equal(new URL(deny.headers.get("location")).searchParams.get("error"), "access_denied");
+  });
+
+  test("a consent form cannot be approved without the browser that opened it", async () => {
+    const reg = await (
+      await fetch(`${origin}/oauth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_name: "Forged", redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" }),
+      })
+    ).json();
+    const query = form({
+      response_type: "code",
+      client_id: reg.client_id,
+      redirect_uri: REDIRECT,
+      code_challenge: b64url(createHash("sha256").update("w".repeat(43)).digest()),
+      code_challenge_method: "S256",
+      state: "st-3",
+    });
+    const handle = (await (await fetch(`${origin}/authorize?${query}`)).text()).match(/name="handle" value="([^"]+)"/)[1];
+    const forged = await fetch(`${origin}/authorize`, { method: "POST", redirect: "manual", body: form({ handle, action: "approve" }) });
+    assert.equal(forged.status, 400);
   });
 });
 

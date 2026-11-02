@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Code } from "../../components/Code";
 import { GATEWAY_URL } from "../../lib/site";
-import { mcpConfig, sdkExample } from "../../lib/snippets";
+import { mcpClaudeCode, mcpConfig, mcpRemoteConfig, sdkExample } from "../../lib/snippets";
 
 export const metadata: Metadata = { title: "Quickstart" };
 
@@ -35,8 +35,23 @@ export default function Quickstart() {
 
       <h2 id="mcp">From an MCP client</h2>
       <p>
-        Add the Agent Auth bridge as a local MCP server. It runs on your machine, stores the agent's keys in{" "}
-        <code>~/.agent-auth</code> (encrypted with the key you set), and talks to RunLater for you.
+        Add RunLater as a remote MCP server at <code>{GATEWAY_URL}/mcp</code>. The first time it connects, your
+        client opens a RunLater page in the browser; click <strong>Connect</strong>. There's no account to create:
+        that connection gets its own project and free trial, and the client keeps it signed in.
+      </p>
+      <Code label="Claude Code">{mcpClaudeCode}</Code>
+      <Code label="clients that take a JSON config">{mcpRemoteConfig}</Code>
+      <p>
+        Each RunLater capability is a tool: <code>create_project</code>, then <code>schedule_http</code>,{" "}
+        <code>create_cron</code> or <code>watch_http</code>, and later <code>get_task</code>. If the connection is
+        removed, so is access to its project; connecting again starts a new one.
+      </p>
+
+      <h3 id="mcp-bridge">Or run the Agent Auth bridge locally</h3>
+      <p>
+        For an Agent Auth identity instead, add the Agent Auth bridge as a local MCP server. It runs on your machine,
+        stores the agent's keys in <code>~/.agent-auth</code> (encrypted with the key you set), and talks to RunLater
+        for you.
       </p>
       <Code label="claude_desktop_config.json, or your client's MCP settings">{mcpConfig}</Code>
       <p>
@@ -55,9 +70,6 @@ export default function Quickstart() {
           later <code>get_task</code>.
         </li>
       </ol>
-      <p className="muted">
-        MCP clients that only support remote servers can't run the bridge yet.
-      </p>
 
       <h2 id="sdk">From code</h2>
       <p>
