@@ -15,4 +15,5 @@ export const LIMITS: [string, string][] = [
   ["Tasks held", "1,000 per project, finished ones included until purged"],
   ["Retention", "Tasks and attempts are kept 30 days after they finish"],
   ["Crons", "10 per project, each running at most once an hour"],
+  ["Watches", "A poll every 5 minutes to 24 hours, for up to 7 days"],
 ];
