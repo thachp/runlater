@@ -25,6 +25,7 @@ Nothing deploys until `DEPLOY_ENABLED` is set, so the workflow can merge before 
    - Account · Workers Scripts · Edit
    - Account · D1 · Edit (from phase 4)
    - Account · Queues · Edit (from phase 3)
+   - Account · Workers KV Storage · Edit (hosted MCP)
    - Zone `runlater.io` · Workers Routes · Edit (only once custom domains are added to config)
 
    Give it an expiry and record the rotation date.
@@ -92,6 +93,14 @@ environment variable `RECEIVER_URL` to its `*.workers.dev` URL, printed by the d
 (`https://runlater-receiver-staging.<account>.workers.dev`).
 
 Each run creates a new agent identity and project in staging; they are not cleaned up.
+
+### Hosted MCP
+
+The gateway serves `/mcp`, `/authorize`, `/oauth/token`, `/oauth/register` and the OAuth discovery
+documents. Its clients, grants and tokens live in the KV namespaces `runlater-oauth-staging` and
+`runlater-oauth-production` (created 2026-11-01; ids in `apps/gateway/wrangler.jsonc`), bound as
+`OAUTH_KV`. Entries expire on their own: tokens after an hour, grants 30 days after last use,
+registered clients after 90 days. The deploy token needs Account · Workers KV Storage · Edit.
 
 ## Hostnames
 

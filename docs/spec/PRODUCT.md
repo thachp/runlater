@@ -18,7 +18,7 @@ assume a human signed up, pasted an API key, and wired a dashboard.
 
 | Priority | User | How they reach us |
 | --- | --- | --- |
-| Primary | **AI agents** acting for a person or system | Agent Auth capabilities (directly, or as MCP tools via the Agent Auth MCP bridge) |
+| Primary | **AI agents** acting for a person or system | Agent Auth capabilities, or the same capabilities as tools on the hosted MCP server (`/mcp`) |
 | Secondary | Developers building those agents | Same capabilities over HTTP; docs site |
 
 There is no human sign-up, password, or dashboard in v1. The agent *is* the customer.
@@ -72,7 +72,10 @@ scheduled ──(run_at reached)──▶ delivering ──2xx──▶ succeede
 
 ## Capabilities (the API surface)
 
-Each one is an Agent Auth capability. MCP clients reach them through the Agent Auth MCP bridge, which runs locally and exposes generic tools (`connect_agent`, `list_capabilities`, `execute_capability`); the agent picks a RunLater capability by name inside `execute_capability`:
+Each one is an Agent Auth capability. MCP clients reach them two ways:
+
+- **Hosted MCP server** at `https://gateway.runlater.io/mcp` (Streamable HTTP). Each capability is a tool. Clients sign in with standard MCP OAuth: on first connect a RunLater consent page opens, the person clicks **Connect**, and there is no account. Each approved connection is its own owner with its own project and trial, separate from any Agent Auth identity; the OAuth grant is its only key (refresh tokens last 30 days from last use).
+- **Agent Auth MCP bridge**, which runs locally and exposes generic tools (`connect_agent`, `list_capabilities`, `execute_capability`); the agent picks a RunLater capability by name inside `execute_capability`:
 
 ```json
 { "mcpServers": { "runlater": {
@@ -170,7 +173,7 @@ A watch hands off waiting on someone else's long-running job: RunLater polls a s
 
 ## Open questions
 
-1. **Remote-only MCP clients.** The local bridge works (tested end to end). Clients that only support remote MCP servers can't run it. Do we want a hosted MCP endpoint, and how would it authenticate without standard MCP OAuth?
+1. ~~**Remote-only MCP clients.**~~ Resolved: a hosted `/mcp` with one-click OAuth consent (no account), one project per connection.
 2. **Key loss.** If an agent loses its keys, its project is gone. Acceptable for a trial?
 3. **Abuse.** New keys are new identities (Sybil). Is a global trial cap + per-IP registration limit enough for launch?
 4. **What happens after the trial?** Even without billing, do we want a waitlist / "contact us" path?

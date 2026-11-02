@@ -3,9 +3,9 @@
 
 import { agentAuth, agentError, type Capability } from "@better-auth/agent-auth";
 import { betterAuth, type BetterAuthOptions, type BetterAuthPlugin } from "better-auth";
-import { ApiClient, ApiError } from "./api";
-import { ArgumentError, capabilities, capabilityNames, execute } from "./capabilities";
-import { ensureProject, findProject } from "./projects";
+import { ApiError } from "./api";
+import { ArgumentError, capabilities, capabilityNames } from "./capabilities";
+import { runCapability } from "./projects";
 import type { AuthStore } from "./store";
 
 export const BASE_PATH = "/api/auth";
@@ -97,14 +97,7 @@ export function createAuth(env: AuthEnv, ctx: ExecutionContext, signingKey: Cryp
       if (host?.status !== "active") {
         throw new ApiError(403, { error: { code: "host_revoked", message: "this agent's host is not active" } });
       }
-      const projectId =
-        capability === "create_project" ? await ensureProject(env.DB, hostId) : await findProject(env.DB, hostId);
-      if (!projectId) {
-        throw new ApiError(404, {
-          error: { code: "project_not_found", message: "call create_project before using other capabilities" },
-        });
-      }
-      return await execute(new ApiClient(env.API, signingKey, projectId), capability, args);
+      return await runCapability(env, signingKey, hostId, capability, args);
     } catch (e) {
       if (e instanceof ApiError) {
         const { code, message, field } = e.body.error;
