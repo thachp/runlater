@@ -7,7 +7,8 @@ import type { McpProps } from "./mcp";
 
 export interface ConsentEnv {
   OAUTH_PROVIDER: OAuthHelpers;
-  REGISTER_RATE: RateLimit;
+  /** Per-IP limit on the OAuth endpoints, separate from Agent Auth registration's. */
+  OAUTH_RATE: RateLimit;
 }
 
 const escape = (s: string) =>
@@ -16,7 +17,10 @@ const escape = (s: string) =>
 function page(title: string, body: string, headers: Headers = new Headers(), status = 200): Response {
   headers.set("Content-Type", "text/html; charset=utf-8");
   headers.set("Cache-Control", "no-store");
-  headers.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https: http://localhost:* http://127.0.0.1:*; frame-ancestors 'none'");
+  // No form-action: browsers apply it to the redirect after the POST, and that goes to the
+  // client's own redirect URI (https, loopback or an app scheme). The handle's binding cookie
+  // is what stops a forged post.
+  headers.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'");
   headers.set("X-Frame-Options", "DENY");
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escape(title)} · RunLater</title><style>
@@ -41,7 +45,13 @@ export async function handleAuthorize(request: Request, env: ConsentEnv): Promis
   const oauth = env.OAUTH_PROVIDER;
   try {
     if (request.method === "GET") {
-      const authRequest = await oauth.parseAuthRequest(request);
+      let authRequest;
+      try {
+        authRequest = await oauth.parseAuthRequest(request);
+      } catch (e) {
+        // The client sent a bad authorization request; its reason helps whoever set it up.
+        return failure(`This sign-in request isn't valid${e instanceof Error ? `: ${e.message}` : "."}`);
+      }
       const about = await oauth.describeConsent(authRequest);
       const { handle, headers } = await oauth.beginConsent(authRequest);
       const name = about.clientDomain ? `${about.clientName} (${about.clientDomain})` : about.clientName;
@@ -68,11 +78,6 @@ export async function handleAuthorize(request: Request, env: ConsentEnv): Promis
       headers.set("Location", redirectTo);
       return new Response(null, { status: 302, headers });
     }
-    // Every approval is a new project and trial; limit how fast one address can make them.
-    const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
-    if (!(await env.REGISTER_RATE.limit({ key: ip })).success) {
-      return failure("Too many connections from this network. Try again in a minute.", 429);
-    }
     const { request: authRequest, headers } = await oauth.approveConsent(request, handle);
     const id = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
     const props: McpProps = { owner: `mcp:${id}` };
@@ -81,7 +86,7 @@ export async function handleAuthorize(request: Request, env: ConsentEnv): Promis
     return new Response(null, { status: 302, headers });
   } catch (e) {
     if (e instanceof AuthorizationError) return failure("This sign-in link has expired or was already used. Start again from your app.");
-    if (e instanceof Error) return failure(e.message);
-    throw e;
+    console.error("consent failed", e);
+    return failure("Something went wrong on RunLater's side. Start again from your app.", 500);
   }
 }

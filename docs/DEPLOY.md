@@ -135,7 +135,8 @@ on 2026-10-28/29; everything after was scanners. The `harimu-*` Workers in the s
 
 - Every 15 minutes: `gateway.runlater.io/health` (which also checks the API) and the site's main pages.
 - Daily, and on manual dispatch: the full agent journey against production, delivering to the staging
-  receiver. Each run leaves one agent and one trial project in production.
+  receiver. Each run leaves one agent, two trial projects (Agent Auth and hosted MCP) and one OAuth
+  client and grant in production.
 
 A failed run is the alert: GitHub emails whoever last changed the workflow. GitHub pauses scheduled
 workflows after 60 days without repository activity; re-enable it under Actions if that happens.

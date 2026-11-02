@@ -38,6 +38,10 @@ function result(value: unknown, isError = false) {
 
 /** Handles one /mcp request for an authenticated grant. */
 export async function handleMcp(request: Request, env: McpEnv, key: CryptoKey, props: McpProps): Promise<Response> {
+  // Stateless: no server-initiated stream (GET) and no session to end (DELETE).
+  if (request.method !== "POST") {
+    return new Response(null, { status: 405, headers: { Allow: "POST" } });
+  }
   const server = new Server(
     { name: "runlater", version: "1.0.0" },
     { capabilities: { tools: {} }, instructions: INSTRUCTIONS, jsonSchemaValidator: new CfWorkerJsonSchemaValidator() },
@@ -56,7 +60,8 @@ export async function handleMcp(request: Request, env: McpEnv, key: CryptoKey, p
       if (e instanceof ArgumentError) {
         return result({ error: { code: "invalid_request", message: e.message, ...(e.field ? { field: e.field } : {}) } }, true);
       }
-      throw e;
+      console.error("tool failed", params.name, e);
+      return result({ error: { code: "internal_error", message: "RunLater could not complete this call; try again" } }, true);
     }
   });
   const transport = new WebStandardStreamableHTTPServerTransport({

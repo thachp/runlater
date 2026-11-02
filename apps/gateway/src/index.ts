@@ -14,6 +14,7 @@ export interface Env extends AuthEnv {
   /** Hex-encoded 32-byte Ed25519 seed; its public key is the API's GATEWAY_PUBLIC_KEY. */
   ASSERTION_PRIVATE_KEY: string;
   REGISTER_RATE: RateLimit;
+  OAUTH_RATE: RateLimit;
   /** OAuth clients, grants and tokens for hosted MCP, managed by workers-oauth-provider. */
   OAUTH_KV: KVNamespace;
   /** Set by OAuthProvider before it calls the handlers below. */
@@ -197,8 +198,18 @@ function provider(env: Env): OAuthProvider<Env> {
   return p;
 }
 
+/** Unauthenticated OAuth calls that write to KV: registering a client, and each consent page. */
+const OAUTH_LIMITED = new Set(["/oauth/register", "/authorize"]);
+
 export default {
-  fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    if (OAUTH_LIMITED.has(path) && request.method !== "OPTIONS") {
+      const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+      if (!(await env.OAUTH_RATE.limit({ key: `${path}:${ip}` })).success) {
+        return error(429, "rate_limited", "too many requests; try again shortly");
+      }
+    }
     return provider(env).fetch(request, env, ctx);
   },
 } satisfies ExportedHandler<Env>;

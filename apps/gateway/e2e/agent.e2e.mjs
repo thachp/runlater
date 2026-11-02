@@ -95,7 +95,10 @@ before(async () => {
           serviceBindings: { API: "api" },
           d1Databases: { DB: "gateway-db" },
           durableObjects: { AUTH_STORE: { className: "AuthStore", useSQLite: true } },
-          ratelimits: { REGISTER_RATE: { namespace_id: "1001", simple: { limit: 100, period: 60 } } },
+          ratelimits: {
+            REGISTER_RATE: { namespace_id: "1001", simple: { limit: 100, period: 60 } },
+            OAUTH_RATE: { namespace_id: "1003", simple: { limit: 100, period: 60 } },
+          },
           kvNamespaces: { OAUTH_KV: "oauth-kv" },
           outboundService: () => {
             throw new Error("the gateway must not reach the internet");
@@ -540,7 +543,25 @@ describe("hosted MCP at /mcp", () => {
     assert.notEqual(otherProject.id, project.id);
     const peek = await other.callTool({ name: "get_task", arguments: { task_id: task.id } });
     assert.equal(peek.isError, true);
+    assert.equal(value(peek).error.code, "task_not_found");
     await other.close();
+  });
+
+  test("/mcp only takes POST: no standalone stream, no session to delete", async () => {
+    const { access_token } = await connect("Methods");
+    for (const method of ["GET", "DELETE"]) {
+      const res = await fetch(`${origin}/mcp`, { method, headers: { Authorization: `Bearer ${access_token}`, Accept: "text/event-stream" } });
+      assert.equal(res.status, 405, method);
+      assert.equal(res.headers.get("allow"), "POST");
+    }
+  });
+
+  test("the consent page escapes what the client says about itself", async () => {
+    const name = `<img src=x onerror=alert(1)>"'`;
+    const r = await connectHosted(origin, name);
+    assert.ok(!r.html.includes("<img"), "client_name reached the page unescaped");
+    assert.ok(r.html.includes("&lt;img src=x onerror=alert(1)&gt;&quot;&#39;"));
+    assert.ok(!/form-action/.test(r.pageHeaders.get("content-security-policy")), "form-action would block the redirect back");
   });
 
   test("declining sends access_denied back to the client", async () => {

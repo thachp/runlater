@@ -22,7 +22,10 @@
   // Hosted MCP: OAuth clients, grants and tokens (workers-oauth-provider).
   "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "local" }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AuthStore"] }],
-  "ratelimits": [{ "name": "REGISTER_RATE", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } }],
+  "ratelimits": [
+    { "name": "REGISTER_RATE", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } },
+    { "name": "OAUTH_RATE", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } }
+  ],
   "env": {
     "staging": {
       "name": "runlater-gateway-staging",
@@ -34,7 +37,10 @@
         { "binding": "DB", "database_name": "runlater-gateway-staging", "database_id": "ff3501c9-62a7-44e2-b17a-3b24b7183d1d", "migrations_dir": "migrations" }
       ],
       "durable_objects": { "bindings": [{ "name": "AUTH_STORE", "class_name": "AuthStore" }] },
-      "ratelimits": [{ "name": "REGISTER_RATE", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } }],
+      "ratelimits": [
+        { "name": "REGISTER_RATE", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } },
+        { "name": "OAUTH_RATE", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } }
+      ],
       "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "8d9c410b9f39424fb155ca27b542afe0" }]
     },
     "production": {
@@ -46,7 +52,10 @@
         { "binding": "DB", "database_name": "runlater-gateway-production", "database_id": "73ca0a7b-8022-4d88-aba5-b57bed67ba5a", "migrations_dir": "migrations" }
       ],
       "durable_objects": { "bindings": [{ "name": "AUTH_STORE", "class_name": "AuthStore" }] },
-      "ratelimits": [{ "name": "REGISTER_RATE", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } }],
+      "ratelimits": [
+        { "name": "REGISTER_RATE", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } },
+        { "name": "OAUTH_RATE", "namespace_id": "1004", "simple": { "limit": 20, "period": 60 } }
+      ],
       "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "d172e7fad1f3452badcbf756685c7abe" }]
     }
   }
